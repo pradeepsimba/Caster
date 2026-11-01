@@ -259,13 +259,12 @@ class MediaServerService : Service() {
                 .apply { setReferenceCounted(false); acquire() }
         }
         if (wifiLock == null) {
-            val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                WifiManager.WIFI_MODE_FULL_LOW_LATENCY
-            } else {
-                @Suppress("DEPRECATION") WifiManager.WIFI_MODE_FULL_HIGH_PERF
-            }
+            // LOW_LATENCY only takes effect while the screen is on and the app is in front, so with the screen
+            // off Wi-Fi falls into power-save and the server stops answering. HIGH_PERF keeps the radio awake
+            // screen-off up to Android 13 (newer versions treat it as LOW_LATENCY, which is the best available).
+            @Suppress("DEPRECATION")
             wifiLock = applicationContext.getSystemService(WifiManager::class.java)
-                .createWifiLock(mode, "$packageName:MediaServer")
+                .createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "$packageName:MediaServer")
                 .apply { setReferenceCounted(false); acquire() }
         }
     }
