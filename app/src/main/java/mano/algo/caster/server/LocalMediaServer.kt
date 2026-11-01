@@ -8,6 +8,7 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
 import android.os.Build
+import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import android.util.LruCache
 import android.util.Log
@@ -17,6 +18,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.util.Collections
@@ -32,7 +34,11 @@ import java.util.concurrent.Executors
  *  GET  /api/videos?t=       gallery listing                  (token)
  *  GET  /api/thumb/{id}?t=   JPEG thumbnail (Android 10+)     (token)
  *  GET  /api/info/{id}?t=    codecs and size of a video, so the page can warn about unsupported formats (token)
- *  GET  /video/{id}?t=       the video, with 206 range support (token)
+ *  GET  /video/{id}?t=       the video, with 206 range support (token); `&c=1` serves the converted copy
+ *  GET  /api/list?k=v|a|i    videos, music or photos (music and photos only when the owner enabled them) (token)
+ *  GET  /api/sub/{id}?t=     WebVTT subtitles found next to the video file (token)
+ *  GET  /api/convert/{id}?t=&op=start|status   re-encodes a video to H.264 for browsers that can't play it (token)
+ *  GET  /api/remote?t=&...   page state in, queued phone-remote commands out (token)
  *
  * NanoHTTPD invokes [serve] on one worker thread per connection; this class holds no mutable state.
  */
@@ -89,14 +95,24 @@ class LocalMediaServer(
         if (!PairingManager.isValid(session.parameters["t"]?.firstOrNull())) {
             return error(Response.Status.UNAUTHORIZED, "unauthorized")
         }
+        val kind = session.parameters["k"]?.firstOrNull() ?: "v"
         return when {
-            path == "/api/videos" -> listVideos()
-            path.startsWith("/api/thumb/") -> thumbnail(videoUri(path.removePrefix("/api/thumb/")))
-            path.startsWith("/api/info/") -> videoInfo(videoUri(path.removePrefix("/api/info/")))
+            path == "/api/videos" -> listMedia("v")
+            path == "/api/list" -> listMedia(kind)
+            path == "/api/remote" -> remote(session)
+            path.startsWith("/api/thumb/") -> thumbnail(mediaUri(path.removePrefix("/api/thumb/"), kind), kind)
+            path.startsWith("/api/info/") -> videoInfo(mediaUri(path.removePrefix("/api/info/"), "v"))
+            path.startsWith("/api/sub/") -> subtitles(mediaUri(path.removePrefix("/api/sub/"), "v"))
+            path.startsWith("/api/convert/") -> convert(
+                path.removePrefix("/api/convert/"), session.parameters["op"]?.firstOrNull() ?: "status",
+            )
             path.startsWith("/video/") -> {
-                val uri = videoUri(path.removePrefix("/video/")) ?: return error(Response.Status.NOT_FOUND, "not_found")
-                if (method == Method.GET) recordWatching(session.parameters["t"]?.firstOrNull(), uri)
-                serveVideo(uri, session.headers["range"], head = method == Method.HEAD)
+                val uri = mediaUri(path.removePrefix("/video/"), kind) ?: return error(Response.Status.NOT_FOUND, "not_found")
+                if (method == Method.GET && kind == "v") recordWatching(session.parameters["t"]?.firstOrNull(), uri)
+                val converted = if (session.parameters["c"]?.firstOrNull() == "1" && kind == "v") {
+                    VideoConverter.fileFor(appContext, ContentUris.parseId(uri)).takeIf { it.exists() }
+                } else null
+                serveVideo(uri, session.headers["range"], head = method == Method.HEAD, converted = converted)
             }
             else -> error(Response.Status.NOT_FOUND, "not_found")
         }
@@ -155,27 +171,49 @@ class LocalMediaServer(
 
     // ---- gallery -------------------------------------------------------------------------------------
 
-    private fun listVideos(): Response {
-        val videos = JSONArray()
+    private fun tableFor(kind: String): Uri? = when (kind) {
+        "v" -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        "a" -> MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+        "i" -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        else -> null
+    }
+
+    /** Lists videos ("v"), music ("a") or photos ("i"). */
+    private fun listMedia(kind: String): Response {
+        val table = tableFor(kind) ?: return error(Response.Status.NOT_FOUND, "not_found")
+        if (kind != "v" && !ShareSettings.state.value.shareExtras) return error(Response.Status.FORBIDDEN, "extras_off")
+        val items = JSONArray()
+        val limit = if (kind == "v") MAX_LISTED else MAX_LISTED * 3   // phones hold far more photos than videos
         try {
-            val projection = arrayOf(
-                MediaStore.Video.Media._ID,
-                MediaStore.Video.Media.DISPLAY_NAME,
-                MediaStore.Video.Media.SIZE,
-                MediaStore.Video.Media.DURATION,
-            )
+            val folderColumn = when (kind) {
+                "v" -> MediaStore.Video.Media.BUCKET_DISPLAY_NAME
+                "i" -> MediaStore.Images.Media.BUCKET_DISPLAY_NAME
+                else -> null
+            }
+            val projection = listOfNotNull(
+                MediaStore.MediaColumns._ID,
+                MediaStore.MediaColumns.DISPLAY_NAME,
+                MediaStore.MediaColumns.SIZE,
+                if (kind == "i") null else MediaStore.Video.Media.DURATION, // same column name for music
+                folderColumn,
+            ).toTypedArray()
             appContext.contentResolver.query(
-                MediaStore.Video.Media.EXTERNAL_CONTENT_URI, projection, null, null,
-                "${MediaStore.Video.Media.DATE_ADDED} DESC",
+                table, projection, null, null, "${MediaStore.MediaColumns.DATE_ADDED} DESC",
             )?.use { c ->
-                while (c.moveToNext() && videos.length() < MAX_LISTED) {
-                    if (!ShareSettings.isAllowed(c.getLong(0))) continue
-                    videos.put(
+                val nameCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
+                val sizeCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
+                val durCol = c.getColumnIndex(MediaStore.Video.Media.DURATION)
+                val folderCol = folderColumn?.let { c.getColumnIndex(it) } ?: -1
+                while (c.moveToNext() && items.length() < limit) {
+                    val id = c.getLong(0)
+                    if (kind == "v" && !ShareSettings.isAllowed(id)) continue
+                    items.put(
                         JSONObject()
-                            .put("id", c.getLong(0).toString())
-                            .put("name", c.getString(1) ?: "video")
-                            .put("size", c.getLong(2))
-                            .put("durationMs", c.getLong(3)),
+                            .put("id", id.toString())
+                            .put("name", c.getString(nameCol) ?: "item")
+                            .put("size", c.getLong(sizeCol))
+                            .put("durationMs", if (durCol >= 0) c.getLong(durCol) else 0L)
+                            .put("folder", if (folderCol >= 0) c.getString(folderCol) ?: "" else ""),
                     )
                 }
             }
@@ -183,18 +221,25 @@ class LocalMediaServer(
             return error(Response.Status.FORBIDDEN, "storage_permission")
         }
         val scope = if (ShareSettings.state.value.mode == ShareMode.ALL) "all" else "selected"
-        return json(JSONObject().put("scope", scope).put("videos", videos))
+        return json(
+            JSONObject().put("scope", scope).put("extras", ShareSettings.state.value.shareExtras)
+                .put("kind", kind).put("videos", items),
+        )
     }
 
     /**
-     * Only numeric MediaStore ids are accepted, so a client can never name an arbitrary file or Uri,
-     * and only ones inside the owner's current selection, so guessing ids can't reveal other videos.
+     * Only numeric MediaStore ids are accepted, so a client can never name an arbitrary file or Uri.
+     * Videos must be inside the owner's current selection, and music and photos need the owner's opt-in,
+     * so guessing ids can't reveal anything that isn't shared.
      */
-    private fun videoUri(rawId: String): Uri? {
+    private fun mediaUri(rawId: String, kind: String): Uri? {
         val id = rawId.substringBefore('/').toLongOrNull() ?: return null
-        if (!ShareSettings.isAllowed(id)) return null
-        return ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
+        val table = tableFor(kind) ?: return null
+        val allowed = if (kind == "v") ShareSettings.isAllowed(id) else ShareSettings.state.value.shareExtras
+        if (!allowed) return null
+        return ContentUris.withAppendedId(table, id)
     }
+
 
     /** Reads the track codecs without decoding anything; unknown fields are simply missing, not an error. */
     private fun videoInfo(uri: Uri?): Response {
@@ -242,9 +287,10 @@ class LocalMediaServer(
         return name
     }
 
-    private fun thumbnail(uri: Uri?): Response {
+    private fun thumbnail(uri: Uri?, kind: String): Response {
         if (uri == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return error(Response.Status.NOT_FOUND, "not_found")
-        val key = ContentUris.parseId(uri)
+        // Ids of videos, music and photos overlap, so each kind gets its own range of cache keys.
+        val key = ContentUris.parseId(uri) + when (kind) { "a" -> 1L shl 60; "i" -> 1L shl 61; else -> 0L }
         // Decoding a frame is the slowest thing the server does, so each encoded thumbnail is made once.
         val bytes = thumbCache.get(key) ?: run {
             val bitmap = try {
@@ -259,18 +305,85 @@ class LocalMediaServer(
             .apply { addHeader("Cache-Control", "private, max-age=86400") }
     }
 
+    // ---- subtitles, conversion, remote ---------------------------------------------------------------
+
+    /**
+     * Looks for `name.srt` / `name.vtt` (also `name.en.srt`) beside the video. Best effort: newer Android
+     * hides other apps' non-media files, so this works mainly on older phones and for files the app can read.
+     */
+    private fun subtitles(uri: Uri?): Response {
+        if (uri == null) return error(Response.Status.NOT_FOUND, "not_found")
+        val text = runCatching {
+            val path = appContext.contentResolver.query(uri, arrayOf(MediaStore.MediaColumns.DATA), null, null, null)
+                ?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: return@runCatching null
+            val video = File(path)
+            val base = video.nameWithoutExtension
+            val file = video.parentFile?.listFiles()
+                ?.filter {
+                    it.isFile && it.name.startsWith("$base.") && it.extension.lowercase() in SUBTITLE_EXTENSIONS &&
+                        it.length() < MAX_SUBTITLE_BYTES
+                }
+                ?.minByOrNull { it.name.length } ?: return@runCatching null
+            val raw = file.readText().removePrefix("﻿").replace("\r\n", "\n")
+            if (raw.trimStart().startsWith("WEBVTT")) raw else "WEBVTT\n\n" + SRT_TIMESTAMP.replace(raw, "$1.$2")
+        }.getOrNull() ?: return error(Response.Status.NOT_FOUND, "no_subtitles")
+        return newFixedLengthResponse(Response.Status.OK, "text/vtt; charset=utf-8", text)
+            .apply { addHeader("Cache-Control", "private, max-age=3600") }
+    }
+
+    private fun convert(rawId: String, op: String): Response {
+        val uri = mediaUri(rawId, "v") ?: return error(Response.Status.NOT_FOUND, "not_found")
+        val id = ContentUris.parseId(uri)
+        val state = if (op == "start") VideoConverter.start(appContext, id, uri) else VideoConverter.state(appContext, id)
+        val body = JSONObject()
+        when (state) {
+            null -> body.put("state", "none")
+            ConvertState.Done -> body.put("state", "done")
+            ConvertState.Failed -> body.put("state", "failed")
+            is ConvertState.Running -> body.put("state", "running").put("percent", state.percent)
+        }
+        return json(body)
+    }
+
+    /** The page reports what it is playing; the reply carries whatever the phone owner pressed since the last report. */
+    private fun remote(session: IHTTPSession): Response {
+        val p = session.parameters
+        val (deviceId, label) = PairingManager.clientOf(p["t"]?.firstOrNull()) ?: return error(Response.Status.UNAUTHORIZED, "unauthorized")
+        if (p["s"]?.firstOrNull() == "idle") {
+            RemoteControl.idle(deviceId)
+        } else {
+            RemoteControl.report(
+                RemoteState(
+                    deviceId, label,
+                    title = (p["n"]?.firstOrNull() ?: "").take(120),
+                    playing = p["s"]?.firstOrNull() == "playing",
+                    positionSec = p["p"]?.firstOrNull()?.toDoubleOrNull()?.toInt() ?: 0,
+                    durationSec = p["d"]?.firstOrNull()?.toDoubleOrNull()?.toInt() ?: 0,
+                    reportedAt = System.currentTimeMillis(),
+                ),
+            )
+        }
+        val cmds = JSONArray()
+        RemoteControl.drain(deviceId).forEach { cmds.put(it) }
+        return json(JSONObject().put("cmds", cmds))
+    }
+
     // ---- streaming (RFC 7233 single range) -----------------------------------------------------------
 
-    private fun serveVideo(uri: Uri, rangeHeader: String?, head: Boolean): Response {
+    private fun serveVideo(uri: Uri, rangeHeader: String?, head: Boolean, converted: File? = null): Response {
         val afd = try {
-            appContext.contentResolver.openAssetFileDescriptor(uri, "r")
+            if (converted != null) {
+                AssetFileDescriptor(ParcelFileDescriptor.open(converted, ParcelFileDescriptor.MODE_READ_ONLY), 0, converted.length())
+            } else {
+                appContext.contentResolver.openAssetFileDescriptor(uri, "r")
+            }
         } catch (e: SecurityException) {
             return error(Response.Status.FORBIDDEN, "storage_permission")
         } catch (e: Exception) {
             null
         } ?: return error(Response.Status.NOT_FOUND, "not_found")
 
-        val mime = appContext.contentResolver.getType(uri) ?: "video/mp4"
+        val mime = if (converted != null) "video/mp4" else appContext.contentResolver.getType(uri) ?: "video/mp4"
         val length = fileLength(afd)
         if (length < 0) {
             if (head) { afd.closeQuietly(); return mediaHeaders(newFixedLengthResponse(Response.Status.OK, mime, "")) }
@@ -442,6 +555,9 @@ class LocalMediaServer(
     private companion object {
         const val TAG = "LocalMediaServer"
         const val MAX_LISTED = 1000
+        val SUBTITLE_EXTENSIONS = setOf("srt", "vtt")
+        const val MAX_SUBTITLE_BYTES = 2L * 1024 * 1024
+        val SRT_TIMESTAMP = Regex("""(\d{2}:\d{2}:\d{2}),(\d{3})""")
 
         /** Encoded JPEG thumbnails, capped by bytes (about 6 MB, a few hundred videos' worth). */
         val thumbCache = object : LruCache<Long, ByteArray>(6 * 1024 * 1024) {

@@ -19,6 +19,10 @@ data class ShareSelection(
     val ids: Set<Long> = emptySet(),
     val port: Int = ShareSettings.DEFAULT_PORT,
     val hostname: String = ShareSettings.DEFAULT_HOSTNAME,
+    /** Also list the phone's photos and music (videos follow [mode]; these are all-or-nothing). */
+    val shareExtras: Boolean = false,
+    /** Sharing stops by itself this many minutes after it starts; 0 means never. */
+    val autoStopMinutes: Int = 0,
 )
 
 /**
@@ -32,6 +36,8 @@ object ShareSettings {
     private const val KEY_IDS = "ids"
     private const val KEY_PORT = "port"
     private const val KEY_HOSTNAME = "hostname"
+    private const val KEY_EXTRAS = "extras"
+    private const val KEY_AUTO_STOP = "auto_stop"
     private const val KEY_INSTANCE_ID = "instance_id"
 
     const val DEFAULT_HOSTNAME = MdnsResponder.DEFAULT_HOSTNAME
@@ -69,7 +75,11 @@ object ShareSettings {
             val ids = p.getStringSet(KEY_IDS, emptySet()).orEmpty().mapNotNull { it.toLongOrNull() }.toSet()
             val port = p.getInt(KEY_PORT, DEFAULT_PORT).takeIf(::isValidPort) ?: DEFAULT_PORT
             val hostname = p.getString(KEY_HOSTNAME, null)?.takeIf(::isValidHostname) ?: DEFAULT_HOSTNAME
-            _state.value = ShareSelection(mode, ids, port, hostname)
+            _state.value = ShareSelection(
+                mode, ids, port, hostname,
+                shareExtras = p.getBoolean(KEY_EXTRAS, false),
+                autoStopMinutes = p.getInt(KEY_AUTO_STOP, 0).coerceAtLeast(0),
+            )
             instanceId = p.getString(KEY_INSTANCE_ID, null) ?: ByteArray(6).also(java.security.SecureRandom()::nextBytes)
                 .joinToString("") { "%02x".format(it) }
                 .also { p.edit().putString(KEY_INSTANCE_ID, it).apply() }
@@ -102,6 +112,16 @@ object ShareSettings {
         persist()
     }
 
+    fun setShareExtras(enabled: Boolean) {
+        _state.update { it.copy(shareExtras = enabled) }
+        persist()
+    }
+
+    fun setAutoStopMinutes(minutes: Int) {
+        _state.update { it.copy(autoStopMinutes = minutes.coerceAtLeast(0)) }
+        persist()
+    }
+
     fun isAllowed(id: Long): Boolean = state.value.let { it.mode == ShareMode.ALL || id in it.ids }
 
     private fun persist() {
@@ -111,6 +131,8 @@ object ShareSettings {
             ?.putStringSet(KEY_IDS, s.ids.map { it.toString() }.toSet())
             ?.putInt(KEY_PORT, s.port)
             ?.putString(KEY_HOSTNAME, s.hostname)
+            ?.putBoolean(KEY_EXTRAS, s.shareExtras)
+            ?.putInt(KEY_AUTO_STOP, s.autoStopMinutes)
             ?.apply()
     }
 }

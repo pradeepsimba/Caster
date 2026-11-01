@@ -119,7 +119,7 @@ fun SectionTitle(title: String, subtitle: String? = null) {
 }
 
 @Composable
-fun AddressBox(url: String, compact: Boolean = false, onShare: (() -> Unit)? = null, onCopy: () -> Unit) {
+fun AddressBox(url: String, compact: Boolean = false, onShare: (() -> Unit)? = null, onQr: (() -> Unit)? = null, onCopy: () -> Unit) {
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
@@ -137,6 +137,7 @@ fun AddressBox(url: String, compact: Boolean = false, onShare: (() -> Unit)? = n
                     fontWeight = FontWeight.Medium,
                 )
             }
+            if (onQr != null) TextButton(onClick = onQr) { Text("QR") }
             if (onShare != null) TextButton(onClick = onShare) { Text("Share") }
             TextButton(onClick = onCopy) { Text("Copy") }
         }
@@ -220,7 +221,7 @@ fun BatteryCard(onAllow: () -> Unit, onSettings: () -> Unit) {
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     Button(onClick = onAllow, shape = RoundedCornerShape(12.dp)) { Text("Allow background") }
-                    TextButton(onClick = onSettings) { Text("App settings") }
+                    TextButton(onClick = onSettings) { Text("Battery settings") }
                 }
             }
         }

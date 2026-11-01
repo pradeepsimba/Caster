@@ -52,12 +52,20 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import mano.algo.caster.server.ActivityTracker
 import mano.algo.caster.server.MediaServerService
 import mano.algo.caster.server.PairingManager
+import mano.algo.caster.server.RemoteControl
 import mano.algo.caster.server.ShareMode
 import mano.algo.caster.server.ShareSettings
 
 private val STORAGE_PERMISSION =
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Manifest.permission.READ_MEDIA_VIDEO
     else Manifest.permission.READ_EXTERNAL_STORAGE
+
+private val EXTRAS_PERMISSIONS =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        listOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_AUDIO)
+    } else {
+        listOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+    }
 
 private fun isIgnoringBatteryOptimizations(context: Context): Boolean =
     context.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(context.packageName)
@@ -69,6 +77,25 @@ private fun requestBatteryExemption(context: Context) {
     } catch (e: ActivityNotFoundException) {
         openAppSettings(context)
     }
+}
+
+/** ColorOS / OxygenOS keep their own per-app power screen; try the known ones, then Android's app settings. */
+private fun openBatteryScreen(context: Context) {
+    val screens = listOf(
+        "com.oplus.battery" to "com.oplus.powermanager.fuelgaue.PowerConsumptionActivity",
+        "com.coloros.oppoguardelf" to "com.coloros.powermanager.fuelgaue.PowerConsumptionActivity",
+        "com.coloros.oppoguardelf" to "com.coloros.powermanager.fuelgaue.PowerUsageModelActivity",
+    )
+    for ((pkg, cls) in screens) {
+        val intent = Intent().setClassName(pkg, cls).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try {
+            context.startActivity(intent)
+            return
+        } catch (e: ActivityNotFoundException) {
+        } catch (e: SecurityException) {
+        }
+    }
+    openAppSettings(context)
 }
 
 private fun openAppSettings(context: Context) {
@@ -104,6 +131,7 @@ fun CasterApp() {
     val devices by PairingManager.devices.collectAsStateWithLifecycle()
     val selection by ShareSettings.state.collectAsStateWithLifecycle()
     val watching by ActivityTracker.watching.collectAsStateWithLifecycle()
+    val remotes by RemoteControl.all.collectAsStateWithLifecycle()
     remember(context) { ShareSettings.init(context) }
 
     var tab by rememberSaveable { mutableIntStateOf(Tab.Home.ordinal) }
@@ -135,6 +163,8 @@ fun CasterApp() {
         hasStorage = ok
         if (ok) picking = true
     }
+    // Photos and music need their own permissions on Android 13+ (older versions use the one storage permission).
+    val extrasPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
     fun openPicker() {
         if (granted(STORAGE_PERMISSION)) picking = true else pickerPermission.launch(STORAGE_PERMISSION)
     }
@@ -207,8 +237,10 @@ fun CasterApp() {
                 onApprove = { PairingManager.approve() },
                 onDeny = { PairingManager.deny() },
                 onAllowBackground = { requestBatteryExemption(context) },
-                onAppSettings = { openAppSettings(context) },
+                onAppSettings = { openBatteryScreen(context) },
                 watching = watching,
+                remotes = remotes,
+                onRemote = RemoteControl::send,
                 onShare = { shareAddress(context, it) },
                 modifier = screenModifier,
             )
@@ -235,6 +267,14 @@ fun CasterApp() {
                 onSavePort = ShareSettings::setPort,
                 preferredName = selection.hostname,
                 onSaveName = ShareSettings::setHostname,
+                shareExtras = selection.shareExtras,
+                onShareExtras = { on ->
+                    ShareSettings.setShareExtras(on)
+                    val needed = EXTRAS_PERMISSIONS.filter { !granted(it) }
+                    if (on && needed.isNotEmpty()) extrasPermission.launch(needed.toTypedArray())
+                },
+                autoStopMinutes = selection.autoStopMinutes,
+                onAutoStop = ShareSettings::setAutoStopMinutes,
                 modifier = screenModifier,
             )
         }

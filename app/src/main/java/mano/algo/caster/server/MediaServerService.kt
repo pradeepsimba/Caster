@@ -16,6 +16,7 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -85,6 +86,7 @@ class MediaServerService : Service() {
     private var wifiLock: WifiManager.WifiLock? = null
     private var multicastLock: WifiManager.MulticastLock? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var watchdog: kotlinx.coroutines.Job? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -98,6 +100,15 @@ class MediaServerService : Service() {
         scope.launch {
             ShareSettings.state.map { it.port to it.hostname }.distinctUntilChanged().drop(1).collect { reconcile() }
         }
+        // Auto-stop timer: counted from when sharing started, and re-read if the owner changes it meanwhile.
+        val startedAt = SystemClock.elapsedRealtime()
+        scope.launch {
+            ShareSettings.state.map { it.autoStopMinutes }.distinctUntilChanged().collectLatest { minutes ->
+                if (minutes <= 0) return@collectLatest
+                delay((minutes * 60_000L - (SystemClock.elapsedRealtime() - startedAt)).coerceAtLeast(0))
+                stopSelf()
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -109,14 +120,14 @@ class MediaServerService : Service() {
                 stopSelf()
                 return START_NOT_STICKY
             }
-            ACTION_APPROVE -> { PairingManager.approve(); return START_NOT_STICKY }
-            ACTION_DENY -> { PairingManager.deny(); return START_NOT_STICKY }
+            ACTION_APPROVE -> { PairingManager.approve(); return START_NOT_STICKY }            ACTION_DENY -> { PairingManager.deny(); return START_NOT_STICKY }
         }
 
         acquireLocks()
         registerNetworkCallback()
         _state.value = ServerState.Starting
         scope.launch { reconcile() }
+        startAddressWatchdog()
         return START_NOT_STICKY // Registered media dies with the process, so a restart would serve nothing.
     }
 
@@ -133,6 +144,8 @@ class MediaServerService : Service() {
         server = null
         boundHost = null
         PairingManager.reset()
+        RemoteControl.clear()
+        VideoConverter.clear(this)
         releaseLocks()
         _state.value = ServerState.Stopped
         super.onDestroy()
@@ -240,6 +253,20 @@ class MediaServerService : Service() {
         runCatching { cm.registerNetworkCallback(request, callback) }
             .onSuccess { networkCallback = callback }
             .onFailure { Log.w(TAG, "Network callback unavailable", it) }
+    }
+
+    /**
+     * A phone hotspot is not a Wi-Fi network the callback sees, so toggling it goes unnoticed. Re-check the
+     * address every [WATCHDOG_INTERVAL_MS]; reconcile() does nothing when the address and server are unchanged.
+     */
+    private fun startAddressWatchdog() {
+        if (watchdog?.isActive == true) return
+        watchdog = scope.launch {
+            while (true) {
+                delay(WATCHDOG_INTERVAL_MS)
+                reconcile()
+            }
+        }
     }
 
     private fun onNetworkChanged() {
@@ -370,6 +397,7 @@ class MediaServerService : Service() {
         private const val ACTION_STOP = "mano.algo.caster.action.STOP_SERVER"
         /** `name`, `name-2` ... up to this many, when other devices already use the name. */
         private const val MAX_NAME_ATTEMPTS = 9
+        private const val WATCHDOG_INTERVAL_MS = 30_000L
 
         /** How many ports above the preferred one to try before letting the OS choose. */
         private const val PORT_FALLBACKS = 19

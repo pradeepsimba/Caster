@@ -1,5 +1,6 @@
 package mano.algo.caster.ui
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,7 +16,9 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -40,6 +43,10 @@ fun SettingsScreen(
     onSavePort: (Int) -> Unit,
     preferredName: String,
     onSaveName: (String) -> Unit,
+    shareExtras: Boolean,
+    onShareExtras: (Boolean) -> Unit,
+    autoStopMinutes: Int,
+    onAutoStop: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // Re-seeded whenever the saved port changes, so Reset and external changes show up in the field.
@@ -131,6 +138,51 @@ fun SettingsScreen(
         }
 
         NameCard(state, preferredName, onSaveName)
+
+        Card(
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        ) {
+            Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Photos and music", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "Also show every photo and song on this phone to approved screens. Videos keep following the Library choice.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(checked = shareExtras, onCheckedChange = onShareExtras)
+                }
+            }
+        }
+
+        Card(
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        ) {
+            Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Auto-stop timer", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Stop sharing by itself after this long, counted from when sharing started. Saves battery if you forget.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    listOf(0 to "Off", 30 to "30 min", 60 to "1 hour", 120 to "2 hours", 240 to "4 hours").forEach { (minutes, label) ->
+                        FilterChip(
+                            selected = autoStopMinutes == minutes,
+                            onClick = { onAutoStop(minutes) },
+                            label = { Text(label) },
+                        )
+                    }
+                }
+            }
+        }
 
         Card(
             shape = RoundedCornerShape(24.dp),

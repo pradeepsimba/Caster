@@ -8,6 +8,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.style.TextOverflow
@@ -43,6 +44,8 @@ import androidx.compose.ui.unit.dp
 import mano.algo.caster.server.ActivityTracker
 import mano.algo.caster.server.NowWatching
 import mano.algo.caster.server.PairRequest
+import mano.algo.caster.server.RemoteControl
+import mano.algo.caster.server.RemoteState
 import mano.algo.caster.server.ServerState
 
 @Composable
@@ -58,11 +61,15 @@ fun HomeScreen(
     onAllowBackground: () -> Unit,
     onAppSettings: () -> Unit,
     watching: List<NowWatching>,
+    remotes: List<RemoteState>,
+    onRemote: (deviceId: String, command: String) -> Unit,
     onShare: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val scheme = MaterialTheme.colorScheme
     val running = state is ServerState.Running
+    var qrUrl by remember { mutableStateOf<String?>(null) }
+    qrUrl?.let { QrDialog(it) { qrUrl = null } }
 
     Column(
         modifier = modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 8.dp),
@@ -126,7 +133,7 @@ fun HomeScreen(
 
                 if (state is ServerState.Running) {
                     val primaryUrl = state.nameUrl ?: state.baseUrl
-                    AddressBox(primaryUrl, onShare = { onShare(primaryUrl) }) { onCopy(primaryUrl) }
+                    AddressBox(primaryUrl, onShare = { onShare(primaryUrl) }, onQr = { qrUrl = primaryUrl }) { onCopy(primaryUrl) }
                     if (state.nameUrl != null) {
                         Text(
                             "Name not opening? Android and Fire TV can't resolve it. Use the IP address:",
@@ -134,7 +141,7 @@ fun HomeScreen(
                             textAlign = TextAlign.Center,
                             modifier = Modifier.alpha(0.8f),
                         )
-                        AddressBox(state.baseUrl, compact = true) { onCopy(state.baseUrl) }
+                        AddressBox(state.baseUrl, compact = true, onQr = { qrUrl = state.baseUrl }) { onCopy(state.baseUrl) }
                     }
                     if (state.nameChanged) {
                         Text(
@@ -186,7 +193,7 @@ fun HomeScreen(
             }
         }
 
-        if (running && watching.isNotEmpty()) NowWatchingCard(watching)
+        if (running && (watching.isNotEmpty() || remotes.isNotEmpty())) NowWatchingCard(watching, remotes, onRemote)
 
         if (!batteryUnrestricted) BatteryCard(onAllowBackground, onAppSettings)
         Spacer(Modifier.height(8.dp))
@@ -194,7 +201,7 @@ fun HomeScreen(
 }
 
 @Composable
-private fun NowWatchingCard(entries: List<NowWatching>) {
+private fun NowWatchingCard(entries: List<NowWatching>, remotes: List<RemoteState>, onRemote: (String, String) -> Unit) {
     // The ticker lives here, so nothing recomposes every few seconds unless somebody is actually watching.
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
@@ -204,7 +211,11 @@ private fun NowWatchingCard(entries: List<NowWatching>) {
         }
     }
     val active = entries.filter { now - it.lastSeen < ActivityTracker.ACTIVE_WINDOW_MS }
-    if (active.isEmpty()) return
+    // A page that reports its state is the more precise source: it knows about pauses, photos and music too.
+    val live = remotes.filter { now - it.reportedAt < RemoteControl.FRESH_MS * 2 }
+    val liveIds = live.map { it.deviceId }.toSet()
+    val passive = active.filter { it.deviceId !in liveIds }
+    if (passive.isEmpty() && live.isEmpty()) return
 
     Card(
         shape = RoundedCornerShape(24.dp),
@@ -215,7 +226,8 @@ private fun NowWatchingCard(entries: List<NowWatching>) {
                 StatusDot(Color(0xFF22C55E), pulsing = true)
                 Text("Now watching", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             }
-            active.forEach { entry ->
+            live.forEach { r -> RemoteRow(r, onRemote) }
+            passive.forEach { entry ->
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Box(
                         modifier = Modifier.size(40.dp).background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(12.dp)),
@@ -235,6 +247,47 @@ private fun NowWatchingCard(entries: List<NowWatching>) {
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun RemoteRow(r: RemoteState, onRemote: (String, String) -> Unit) {
+    fun clock(sec: Int) =
+        if (sec >= 3600) "%d:%02d:%02d".format(sec / 3600, sec % 3600 / 60, sec % 60)
+        else "%d:%02d".format(sec / 60, sec % 60)
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(r.deviceLabel, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        Text(
+            r.title.ifBlank { "Playing" },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (r.durationSec > 0) {
+            // While the finger is down the slider shows the finger; the screen only jumps when it is released.
+            var dragging by remember { mutableStateOf<Float?>(null) }
+            // After release, keep showing the chosen spot until the screen has had time to report the new one.
+            var sent by remember { mutableStateOf<Float?>(null) }
+            LaunchedEffect(sent) { if (sent != null) { delay(2_500); sent = null } }
+            val shown = dragging ?: sent ?: r.positionSec.toFloat()
+            androidx.compose.material3.Slider(
+                value = shown.coerceIn(0f, r.durationSec.toFloat()),
+                onValueChange = { dragging = it },
+                onValueChangeFinished = {
+                    dragging?.let { onRemote(r.deviceId, "seekto:${it.toInt()}"); sent = it }
+                    dragging = null
+                },
+                valueRange = 0f..r.durationSec.toFloat(),
+            )
+            Text("${clock(shown.toInt())} / ${clock(r.durationSec)}", style = MaterialTheme.typography.labelSmall)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            androidx.compose.material3.TextButton(onClick = { onRemote(r.deviceId, "seek:-10") }) { Text("-10s") }
+            FilledTonalButton(onClick = { onRemote(r.deviceId, "toggle") }) { Text(if (r.playing) "Pause" else "Play") }
+            androidx.compose.material3.TextButton(onClick = { onRemote(r.deviceId, "seek:10") }) { Text("+10s") }
+            androidx.compose.material3.TextButton(onClick = { onRemote(r.deviceId, "next") }) { Text("Next") }
         }
     }
 }

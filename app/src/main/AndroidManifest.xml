@@ -14,6 +14,9 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- Needed to list and stream the gallery's videos. -->
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <!-- Only used when the owner turns on "Photos and music" in Settings. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
