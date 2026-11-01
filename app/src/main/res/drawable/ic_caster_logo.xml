@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Full logo (rounded tile + glyph) for use inside the app and as the pre-Android-8 launcher icon. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:pathData="M26,4h56a22,22 0 0 1 22,22v56a22,22 0 0 1 -22,22h-56a22,22 0 0 1 -22,-22v-56a22,22 0 0 1 22,-22z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="14"
+                android:startY="6"
+                android:endX="98"
+                android:endY="102"
+                android:type="linear">
+                <item android:offset="0" android:color="#FF4F46E5" />
+                <item android:offset="0.55" android:color="#FF3B82F6" />
+                <item android:offset="1" android:color="#FF0EA5E9" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:scaleX="1.25"
+        android:scaleY="1.25"
+        android:translateX="-3.5">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:pathData="M33,40L33,68L57,54Z"
+            android:strokeColor="#FFFFFFFF"
+            android:strokeLineJoin="round"
+            android:strokeWidth="5" />
+        <path
+            android:fillColor="#00000000"
+            android:pathData="M67,45A12,12 0 0 1 67,63"
+            android:strokeColor="#FFFFFFFF"
+            android:strokeLineCap="round"
+            android:strokeWidth="5" />
+        <path
+            android:fillColor="#00000000"
+            android:pathData="M75,38A22,22 0 0 1 75,70"
+            android:strokeColor="#B3FFFFFF"
+            android:strokeLineCap="round"
+            android:strokeWidth="5" />
+    </group>
+</vector>
