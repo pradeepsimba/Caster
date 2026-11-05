@@ -132,9 +132,17 @@ fun HomeScreen(
                 )
 
                 if (state is ServerState.Running) {
-                    val primaryUrl = state.nameUrl ?: state.baseUrl
+                    // On a hotspot the name stops resolving once the screen turns off, the IP keeps working.
+                    val primaryUrl = if (state.hotspot) state.baseUrl else state.nameUrl ?: state.baseUrl
                     AddressBox(primaryUrl, onShare = { onShare(primaryUrl) }, onQr = { qrUrl = primaryUrl }) { onCopy(primaryUrl) }
-                    if (state.nameUrl != null) {
+                    if (state.hotspot) {
+                        Text(
+                            "You're sharing from your hotspot. Use this IP address: the name stops working when the screen is off.",
+                            style = MaterialTheme.typography.bodySmall,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.alpha(0.8f),
+                        )
+                    } else if (state.nameUrl != null) {
                         Text(
                             "Name not opening? Android and Fire TV can't resolve it. Use the IP address:",
                             style = MaterialTheme.typography.bodySmall,

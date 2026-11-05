@@ -56,6 +56,8 @@ sealed interface ServerState {
         val announcedName: String? = null,
         val requestedPort: Int = port,
         val requestedName: String? = null,
+        /** The phone is the hotspot; names stop resolving there while the screen is off, so lead with the IP. */
+        val hotspot: Boolean = false,
     ) : ServerState {
         val portChanged: Boolean get() = port != requestedPort
         /** The name asked for was already used on this network, so another one was picked. */
@@ -197,7 +199,10 @@ class MediaServerService : Service() {
                 boundRequestedName = wantedName
                 val name = startMdns(ip!!, wantedName)
                 publish(
-                    ServerState.Running(host, port, name, requestedPort = wanted, requestedName = wantedName),
+                    ServerState.Running(
+                        host, port, name, requestedPort = wanted, requestedName = wantedName,
+                        hotspot = NetworkUtils.isHotspot(this@MediaServerService),
+                    ),
                     "Sharing videos at ${name ?: host}:$port" + if (port != wanted) " (port $wanted was busy)" else "",
                 )
                 return@withLock
