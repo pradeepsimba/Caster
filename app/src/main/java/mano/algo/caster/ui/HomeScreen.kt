@@ -64,6 +64,7 @@ fun HomeScreen(
     remotes: List<RemoteState>,
     onRemote: (deviceId: String, command: String) -> Unit,
     onShare: (String) -> Unit,
+    onCastChoose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val scheme = MaterialTheme.colorScheme
@@ -200,6 +201,8 @@ fun HomeScreen(
                 Spacer(Modifier.height(4.dp))
             }
         }
+
+        if (running) CastCard(onChooseVideo = onCastChoose)
 
         if (running && (watching.isNotEmpty() || remotes.isNotEmpty())) NowWatchingCard(watching, remotes, onRemote)
 

@@ -82,6 +82,7 @@ dependencies {
     implementation(libs.androidx.media3.common)
     implementation(libs.zxing.core)
     implementation(libs.androidx.profileinstaller)
+    implementation(libs.play.services.cast.framework)
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)

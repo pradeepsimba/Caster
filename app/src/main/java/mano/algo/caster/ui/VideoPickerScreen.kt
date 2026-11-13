@@ -53,6 +53,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import mano.algo.caster.server.ShareSettings
 
 private data class PickerVideo(val id: Long, val name: String, val durationMs: Long, val size: Long)
 
@@ -160,7 +161,7 @@ fun VideoPickerScreen(
 }
 
 @Composable
-private fun VideoRow(video: PickerVideo, checked: Boolean, onToggle: () -> Unit) {
+private fun VideoRow(video: PickerVideo, checked: Boolean?, onToggle: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -178,7 +179,7 @@ private fun VideoRow(video: PickerVideo, checked: Boolean, onToggle: () -> Unit)
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Checkbox(checked = checked, onCheckedChange = null)
+        if (checked != null) Checkbox(checked = checked, onCheckedChange = null)
     }
 }
 
@@ -215,6 +216,47 @@ private fun Thumbnail(id: Long) {
             Image(image, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
         } else {
             Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = MaterialTheme.colorScheme.outline)
+        }
+    }
+}
+
+/** Full-screen list of the videos that are shared; tapping one hands it to [onPick] (used to start it on a Chromecast). */
+@Composable
+fun CastPickerScreen(
+    onCancel: () -> Unit,
+    onPick: (id: Long, name: String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val videos by produceState<List<PickerVideo>?>(initialValue = null) {
+        // Only what the owner shares: the server refuses the rest, so the Chromecast could never fetch it.
+        value = withContext(Dispatchers.IO) { queryVideos(context).filter { ShareSettings.isAllowed(it.id) } }
+    }
+    BackHandler(onBack = onCancel)
+
+    Column(modifier = modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onCancel) { Icon(Icons.Filled.Close, contentDescription = "Cancel") }
+            Text("Choose a video to cast", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        }
+        val list = videos
+        Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+            when {
+                list == null -> CircularProgressIndicator()
+                list.isEmpty() -> Text(
+                    "No shared videos. Choose videos in the Library tab first.",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    items(list, key = { it.id }) { video ->
+                        VideoRow(video = video, checked = null, onToggle = { onPick(video.id, video.name) })
+                    }
+                }
+            }
         }
     }
 }

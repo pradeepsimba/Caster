@@ -112,6 +112,19 @@ object PairingManager {
         return true
     }
 
+    /**
+     * A token for something the owner starts on this phone itself (casting to a Chromecast), so there is no
+     * approval step. It is listed under Devices and can be disconnected like any other; the same label reuses its token.
+     */
+    @Synchronized
+    fun issueLocal(label: String): String {
+        clients.entries.firstOrNull { it.value.label == label }?.let { return it.key }
+        val token = randomHex(16)
+        clients[token] = Client(id = randomHex(4), label = label, pairedAt = System.currentTimeMillis())
+        publishDevices()
+        return token
+    }
+
     @Synchronized
     fun deny() {
         val request = _pending.value ?: return

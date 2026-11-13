@@ -40,6 +40,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import mano.algo.caster.MainActivity
 import mano.algo.caster.R
+import mano.algo.caster.cast.CastController
 import java.io.IOException
 import java.net.Inet4Address
 
@@ -146,6 +147,7 @@ class MediaServerService : Service() {
         server = null
         boundHost = null
         PairingManager.reset()
+        CastController.stop()   // the Chromecast's access just ended with the server, so end its session too
         RemoteControl.clear()
         VideoConverter.clear(this)
         releaseLocks()

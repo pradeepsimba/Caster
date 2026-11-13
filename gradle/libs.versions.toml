@@ -13,8 +13,10 @@ coroutines = "1.10.2"
 media3 = "1.8.0"
 zxing = "3.5.3"
 profileinstaller = "1.4.1"
+castFramework = "22.3.1"
 
 [libraries]
+play-services-cast-framework = { group = "com.google.android.gms", name = "play-services-cast-framework", version.ref = "castFramework" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }

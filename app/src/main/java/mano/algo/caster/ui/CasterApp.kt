@@ -49,11 +49,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import mano.algo.caster.cast.CastController
 import mano.algo.caster.server.ActivityTracker
 import mano.algo.caster.server.MediaServerService
 import mano.algo.caster.server.PairingManager
 import mano.algo.caster.server.RemoteControl
 import mano.algo.caster.server.ShareMode
+import mano.algo.caster.server.ServerState
 import mano.algo.caster.server.ShareSettings
 
 private val STORAGE_PERMISSION =
@@ -132,10 +134,11 @@ fun CasterApp() {
     val selection by ShareSettings.state.collectAsStateWithLifecycle()
     val watching by ActivityTracker.watching.collectAsStateWithLifecycle()
     val remotes by RemoteControl.all.collectAsStateWithLifecycle()
-    remember(context) { ShareSettings.init(context) }
+    remember(context) { ShareSettings.init(context); true }   // returns a value, because remember must not return Unit
 
     var tab by rememberSaveable { mutableIntStateOf(Tab.Home.ordinal) }
     var picking by rememberSaveable { mutableStateOf(false) }
+    var castPicking by rememberSaveable { mutableStateOf(false) }
 
     fun granted(permission: String) =
         ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
@@ -193,6 +196,17 @@ fun CasterApp() {
         return
     }
 
+    if (castPicking) {
+        CastPickerScreen(
+            onCancel = { castPicking = false },
+            onPick = { id, name ->
+                (state as? ServerState.Running)?.let { CastController.cast(context, id, name, it.baseUrl) }
+                castPicking = false
+            },
+        )
+        return
+    }
+
     // From any other tab, the back gesture returns to Home before it leaves the app.
     BackHandler(enabled = tab != Tab.Home.ordinal) { tab = Tab.Home.ordinal }
 
@@ -242,6 +256,7 @@ fun CasterApp() {
                 remotes = remotes,
                 onRemote = RemoteControl::send,
                 onShare = { shareAddress(context, it) },
+                onCastChoose = { castPicking = true },
                 modifier = screenModifier,
             )
             Tab.Library -> LibraryScreen(

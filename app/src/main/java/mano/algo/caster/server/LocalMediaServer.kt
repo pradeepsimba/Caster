@@ -324,7 +324,7 @@ class LocalMediaServer(
                         it.length() < MAX_SUBTITLE_BYTES
                 }
                 ?.minByOrNull { it.name.length } ?: return@runCatching null
-            val raw = file.readText().removePrefix("﻿").replace("\r\n", "\n")
+            val raw = file.readText().removePrefix("\uFEFF").replace("\r\n", "\n")
             if (raw.trimStart().startsWith("WEBVTT")) raw else "WEBVTT\n\n" + SRT_TIMESTAMP.replace(raw, "$1.$2")
         }.getOrNull() ?: return error(Response.Status.NOT_FOUND, "no_subtitles")
         return newFixedLengthResponse(Response.Status.OK, "text/vtt; charset=utf-8", text)
