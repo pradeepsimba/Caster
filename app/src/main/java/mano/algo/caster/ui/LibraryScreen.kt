@@ -68,10 +68,7 @@ fun LibraryScreen(
             StatCard("Shared", shared?.toString() ?: "–", if (selection.mode == ShareMode.ALL) "all of them" else "selected", Modifier.weight(1f))
         }
 
-        Card(
-            shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-        ) {
+        CasterCard(high = false) {
             Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("What to share", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 ScopeOption(
@@ -111,11 +108,7 @@ fun LibraryScreen(
 
 @Composable
 private fun StatCard(label: String, value: String, caption: String, modifier: Modifier = Modifier) {
-    Card(
-        modifier = modifier,
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
-    ) {
+    CasterCard(modifier = modifier, high = true) {
         Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(label, style = MaterialTheme.typography.labelLarge, modifier = Modifier.alpha(0.75f))
             Text(value, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)

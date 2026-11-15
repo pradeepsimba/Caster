@@ -33,6 +33,16 @@ class FireTvCommandsTest {
     }
 
     @Test
+    fun onlyHomeHasALongPress() {
+        val down = FireTvCommands.longPress(TvKey.HOME, down = true)
+        assertEquals("/v1/FireTV?action=home", down?.path)
+        assertEquals("{${q}keyActionType$q:${q}keyDown$q}", down?.body)
+        assertEquals("{${q}keyActionType$q:${q}keyUp$q}", FireTvCommands.longPress(TvKey.HOME, down = false)?.body)
+        assertNull(FireTvCommands.longPress(TvKey.OK, down = true))
+        assertEquals("input keyevent --longpress 3", TvCommands.longPress(TvKey.HOME))
+    }
+
+    @Test
     fun buttonsTheServiceLacksAreNotSent() {
         assertNull(FireTvCommands.forKey(TvKey.VOLUME_UP))
         assertNull(FireTvCommands.forKey(TvKey.ENTER))

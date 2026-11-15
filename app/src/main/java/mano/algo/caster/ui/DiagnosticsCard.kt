@@ -35,10 +35,7 @@ fun DiagnosticsCard() {
     val context = LocalContext.current
     var report by remember { mutableStateOf(CrashLog.read(context)) }
 
-    Card(
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-    ) {
+    CasterCard(high = false) {
         Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("If the app keeps closing", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             if (report.isBlank()) {

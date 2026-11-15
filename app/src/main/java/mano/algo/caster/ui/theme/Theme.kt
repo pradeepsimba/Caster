@@ -1,9 +1,10 @@
 package mano.algo.caster.ui.theme
 
-import android.app.Activity
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
@@ -11,6 +12,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 
 private val DarkColorScheme = darkColorScheme(
     primary = Indigo80,
@@ -20,7 +22,16 @@ private val DarkColorScheme = darkColorScheme(
     secondary = Sky80,
     tertiary = Amber80,
     background = InkDark,
-    surface = SurfaceDark,
+    surface = InkDark,
+    onSurface = Color(0xFFE8EAF2),
+    onSurfaceVariant = Color(0xFFA9AFC0),
+    outline = Color(0xFF6B7185),
+    outlineVariant = Color(0xFF2B3140),
+    surfaceContainerLowest = DarkContainerLowest,
+    surfaceContainerLow = DarkContainerLow,
+    surfaceContainer = DarkContainer,
+    surfaceContainerHigh = DarkContainerHigh,
+    surfaceContainerHighest = DarkContainerHighest,
 )
 
 private val LightColorScheme = lightColorScheme(
@@ -31,7 +42,25 @@ private val LightColorScheme = lightColorScheme(
     secondary = Sky40,
     tertiary = Amber40,
     background = InkLight,
-    surface = Color.White,
+    surface = InkLight,
+    onSurface = Color(0xFF12141C),
+    onSurfaceVariant = Color(0xFF505668),
+    outline = Color(0xFF8A90A3),
+    outlineVariant = Color(0xFFD9DCE8),
+    surfaceContainerLowest = LightContainerLowest,
+    surfaceContainerLow = LightContainerLow,
+    surfaceContainer = LightContainer,
+    surfaceContainerHigh = LightContainerHigh,
+    surfaceContainerHighest = LightContainerHighest,
+)
+
+// One set of corner sizes for the whole app, so every card, button and field rounds the same way.
+private val CasterShapes = Shapes(
+    extraSmall = RoundedCornerShape(8.dp),
+    small = RoundedCornerShape(12.dp),
+    medium = RoundedCornerShape(16.dp),
+    large = RoundedCornerShape(24.dp),
+    extraLarge = RoundedCornerShape(32.dp),
 )
 
 @Composable
@@ -54,6 +83,7 @@ fun CasterTheme(
     MaterialTheme(
         colorScheme = colorScheme,
         typography = Typography,
+        shapes = CasterShapes,
         content = content
     )
 }

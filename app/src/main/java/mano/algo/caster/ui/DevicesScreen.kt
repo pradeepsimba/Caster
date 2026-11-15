@@ -66,10 +66,7 @@ fun DevicesScreen(
 
         if (devices.isEmpty()) {
             item {
-                Card(
-                    shape = RoundedCornerShape(24.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-                ) {
+                CasterCard(high = false) {
                     EmptyState(
                         "No devices yet",
                         "Start sharing, open the address on your TV or computer, then approve the request here.",
@@ -92,10 +89,7 @@ fun DevicesScreen(
 
 @Composable
 private fun DeviceRow(device: PairedDevice, now: Long, onDisconnect: (String) -> Unit) {
-    Card(
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
-    ) {
+    CasterCard(high = true) {
         Row(
             modifier = Modifier.padding(16.dp).fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,

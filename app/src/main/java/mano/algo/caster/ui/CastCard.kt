@@ -81,11 +81,7 @@ fun CastCard(onChooseVideo: () -> Unit, modifier: Modifier = Modifier) {
             )
         }
 
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
-        ) {
+        CasterCard(modifier = Modifier.fillMaxWidth(), high = true) {
             Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Icon(CastIcon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)

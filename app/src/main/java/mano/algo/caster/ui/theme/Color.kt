@@ -18,3 +18,25 @@ val Amber80 = Color(0xFFFBBF24)
 val InkDark = Color(0xFF0B0D12)
 val SurfaceDark = Color(0xFF14171F)
 val InkLight = Color(0xFFF6F7FB)
+
+// Layered surfaces: each step is a little lighter (dark) or a little darker (light) than the page, so cards read as
+// raised without needing shadows.
+val DarkContainerLowest = Color(0xFF07080C)
+val DarkContainerLow = Color(0xFF11141B)
+val DarkContainer = Color(0xFF161A23)
+val DarkContainerHigh = Color(0xFF1C212C)
+val DarkContainerHighest = Color(0xFF252B38)
+
+val LightContainerLowest = Color(0xFFFFFFFF)
+val LightContainerLow = Color(0xFFFFFFFF)
+val LightContainer = Color(0xFFF0F1F8)
+val LightContainerHigh = Color(0xFFE9EBF4)
+val LightContainerHighest = Color(0xFFE2E4F0)
+
+// The big "sharing is on" card: always a deep gradient, in light and dark, so white text on it is always readable.
+val HeroStart = Color(0xFF3730A3)
+val HeroMid = Color(0xFF1E3A8A)
+val HeroEnd = Color(0xFF0C4A6E)
+
+val LiveGreen = Color(0xFF22C55E)
+val WarnAmber = Color(0xFFF59E0B)

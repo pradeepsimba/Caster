@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- Dark twin of the theme: the window is dark before the first screen is drawn (no white flash), and the
+         Chromecast device chooser dialog follows the dark setting too. -->
+    <style name="Theme.Caster" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+    </style>
+</resources>

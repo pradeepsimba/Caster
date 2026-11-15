@@ -2,5 +2,7 @@
 <resources>
 
     <!-- AppCompat, because the Chromecast device chooser dialog needs an AppCompat theme; the screens themselves are Compose. -->
-    <style name="Theme.Caster" parent="Theme.AppCompat.Light.NoActionBar" />
+    <style name="Theme.Caster" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+    </style>
 </resources>

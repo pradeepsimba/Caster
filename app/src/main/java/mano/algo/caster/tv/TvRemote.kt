@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import dadb.AdbAuthException
 import dadb.AdbKeyPair
+import dadb.AdbShellResponse
 import dadb.Dadb
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -75,6 +76,9 @@ object TvRemote {
 
     /** A held direction is released by itself after this long, so a lost "key up" can't leave the TV scrolling for ever. */
     private const val HOLD_LIMIT_MS = 8_000L
+
+    /** How long a long press is kept down on a Fire TV (Android counts 0.5 s as a long press). */
+    private const val LONG_PRESS_MS = 900L
     private const val APPROVAL_WAIT_MS = 60_000L
 
     /** An ADB command that takes longer than this is treated as a dead connection (a sleeping TV never answers). */
@@ -443,13 +447,13 @@ object TvRemote {
      * to sleep or left the network would make this wait forever and freeze every later button. A watchdog closes the
      * connection after [SHELL_DEADLINE_MS], which turns the wait into an error that is handled like any lost connection.
      */
-    private fun shellGuarded(adb: Dadb, command: String) {
+    private fun shellGuarded(adb: Dadb, command: String): AdbShellResponse {
         val guard = scope.launch {
             delay(SHELL_DEADLINE_MS)
             runCatching { adb.close() }
         }
         try {
-            adb.shell(command)
+            return adb.shell(command)
         } finally {
             guard.cancel()
         }
@@ -477,6 +481,46 @@ object TvRemote {
         when {
             link != null -> FireTvCommands.forKey(code)?.let { request -> enqueue { link.send(request) } }
             adb != null -> enqueue { shellGuarded(adb, TvCommands.key(code)) }
+        }
+    }
+
+    /**
+     * [code] held down, like a hold on the real remote (Home opens the quick menu). With ADB this is one command; on a
+     * Fire TV it is key down, a pause, then key up. A TV that doesn't take key down/up gets an ordinary press instead.
+     */
+    fun longPress(code: Int) {
+        val link = fire
+        val adb = connection
+        when {
+            link != null -> {
+                val down = FireTvCommands.longPress(code, down = true)
+                val up = FireTvCommands.longPress(code, down = false)
+                if (down == null || up == null) {
+                    key(code)
+                    return
+                }
+                enqueue {
+                    try {
+                        link.send(down)
+                    } catch (e: FireTvHttpException) {
+                        FireTvCommands.forKey(code)?.let { link.send(it) } // the best this TV allows
+                        return@enqueue
+                    }
+                    Thread.sleep(LONG_PRESS_MS) // the sender runs on its own IO thread; later buttons wait this one second
+                    try {
+                        link.send(up)
+                    } catch (e: FireTvHttpException) {
+                        // Only the release failed; the key is let go by the TV's own timeout.
+                    }
+                }
+            }
+            adb != null -> enqueue {
+                val answer = shellGuarded(adb, TvCommands.longPress(code))
+                // Older Fire OS doesn't know the "hold" option and prints its usage instead: press the key once then.
+                if (answer.exitCode != 0 || answer.allOutput.contains("Usage", ignoreCase = true)) {
+                    shellGuarded(adb, TvCommands.key(code))
+                }
+            }
         }
     }
 

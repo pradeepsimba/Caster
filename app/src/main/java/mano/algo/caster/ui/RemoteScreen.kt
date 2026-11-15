@@ -1,6 +1,9 @@
 package mano.algo.caster.ui
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -48,6 +51,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -134,10 +138,7 @@ private fun ConnectionCard(
     val connecting = state is TvRemote.State.Connecting
     val busy = connected || connecting || needsPin != null
 
-    Card(
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
-    ) {
+    CasterCard(high = true) {
         Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             when (state) {
                 is TvRemote.State.Connected -> StatusPill("Connected to ${state.host}", Color(0xFF22C55E), pulsing = true)
@@ -236,10 +237,7 @@ private fun RemotePad(
     val typingBox = remember { BringIntoViewRequester() }
     val scope = rememberCoroutineScope()
 
-    Card(
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
-    ) {
+    CasterCard(high = true) {
         Column(
             modifier = Modifier.padding(18.dp).fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -262,7 +260,7 @@ private fun RemotePad(
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 PadButton("Back", TvKey.BACK, onKey) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null) }
-                PadButton("Home", TvKey.HOME, onKey) { Icon(Icons.Filled.Home, contentDescription = null) }
+                PadButton("Home", TvKey.HOME, onKey, onLongPress = { TvRemote.longPress(TvKey.HOME) }) { Icon(Icons.Filled.Home, contentDescription = null) }
                 PadButton("Menu", TvKey.MENU, onKey) { Text("≡", style = MaterialTheme.typography.titleLarge) }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -278,13 +276,15 @@ private fun RemotePad(
                 }
             }
             if (!adb && volume !is TvRemote.VolumeState.Ready) VolumeSetup(volume, onEnableVolume)
+            Text(
+                "Tip: hold Home to open the TV's quick menu, like on the real remote.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 
-    Card(
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
-    ) {
+    CasterCard(high = true) {
         Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Open Caster on the TV", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             if (shareUrl != null && adb) {
@@ -409,26 +409,45 @@ private fun PadButton(
     onKey: (Int, Boolean) -> Unit,
     repeat: Boolean = false,
     accent: Boolean = false,
+    onLongPress: (() -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
     val haptic = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
-    val container = if (accent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface
-    val onContainer = if (accent) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+    val scheme = MaterialTheme.colorScheme
+    var pressed by remember { mutableStateOf(false) }
+    // A press shrinks the button a little and tints it, so it feels like something was pushed.
+    val scale by animateFloatAsState(if (pressed) 0.92f else 1f, tween(90), label = "press")
+    val container = when {
+        accent -> if (pressed) scheme.primary.copy(alpha = 0.8f) else scheme.primary
+        else -> if (pressed) scheme.surfaceContainerHighest else scheme.surfaceContainerLow
+    }
+    val onContainer = if (accent) scheme.onPrimary else scheme.onSurface
     Box(
         modifier = Modifier
             .size(width = 72.dp, height = 56.dp)
-            .background(container, RoundedCornerShape(16.dp))
+            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .background(container, RoundedCornerShape(if (accent) 28.dp else 18.dp))
             .semantics {
                 contentDescription = label
                 role = Role.Button
                 onClick(label) { onKey(keyCode, false); true }
+                if (onLongPress != null) onLongClick("$label, held") { onLongPress(); true }
             }
             .pointerInput(keyCode, repeat) {
                 detectTapGestures(
                     onPress = {
+                        pressed = true
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        onKey(keyCode, false)
+                        // A button with a long press (Home) waits to see which it is: a tap is sent when the finger lifts.
+                        var longFired = false
+                        val longJob = if (onLongPress != null) scope.launch {
+                            delay(550)
+                            longFired = true
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onLongPress()
+                        } else null
+                        if (onLongPress == null) onKey(keyCode, false)
                         val held = if (repeat) scope.launch {
                             delay(350)
                             // A Fire TV can hold a direction by itself, which is far smoother; otherwise repeat single presses.
@@ -439,15 +458,19 @@ private fun PadButton(
                                 }
                             }
                         } else null
+                        var lifted = false
                         try {
-                            tryAwaitRelease()
+                            lifted = tryAwaitRelease()
                         } finally {
+                            pressed = false
                             // Always let go, even if the screen is left while the button is down.
                             withContext(NonCancellable) {
+                                longJob?.cancelAndJoin()
                                 held?.cancelAndJoin()
                                 TvRemote.holdEnd(keyCode)
                             }
                         }
+                        if (onLongPress != null && lifted && !longFired) onKey(keyCode, false)
                     },
                 )
             },

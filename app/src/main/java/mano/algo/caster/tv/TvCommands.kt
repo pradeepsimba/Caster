@@ -29,6 +29,9 @@ object TvKey {
 object TvCommands {
     fun key(code: Int): String = "input keyevent $code"
 
+    /** The key held down long enough to count as a long press (Home, held, opens the quick menu). */
+    fun longPress(code: Int): String = "input keyevent --longpress $code"
+
     /** The key pressed [count] times in one command (a short burst, for deleting several letters at once). */
     fun keys(code: Int, count: Int): String = "input keyevent " + List(count.coerceIn(1, 200)) { code }.joinToString(" ")
 

@@ -22,7 +22,11 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.material3.Surface
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -33,6 +37,10 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
@@ -145,6 +153,17 @@ private enum class Tab(val label: String, val icon: ImageVector) {
     Settings("Settings", Icons.Filled.Settings),
 }
 
+/**
+ * A screen shown instead of the tabs. It paints the page colour (otherwise the dark theme would show black text on the
+ * light window) and stays clear of the status bar, the navigation bar and the keyboard.
+ */
+@Composable
+private fun FullScreenPage(content: @Composable () -> Unit) {
+    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        Box(modifier = Modifier.safeDrawingPadding()) { content() }
+    }
+}
+
 @Composable
 fun CasterApp() {
     val context = LocalContext.current
@@ -252,26 +271,30 @@ fun CasterApp() {
     LaunchedEffect(request?.id) { if (request != null) tab = Tab.Home.ordinal }
 
     if (picking) {
-        VideoPickerScreen(
-            initialSelection = selection.ids,
-            onCancel = { picking = false },
-            onDone = { ids ->
-                ShareSettings.setSelected(ids)
-                ShareSettings.setMode(ShareMode.SELECTED)
-                picking = false
-            },
-        )
+        FullScreenPage {
+            VideoPickerScreen(
+                initialSelection = selection.ids,
+                onCancel = { picking = false },
+                onDone = { ids ->
+                    ShareSettings.setSelected(ids)
+                    ShareSettings.setMode(ShareMode.SELECTED)
+                    picking = false
+                },
+            )
+        }
         return
     }
 
     if (castPicking) {
-        CastPickerScreen(
-            onCancel = { castPicking = false },
-            onPick = { id, name ->
-                (state as? ServerState.Running)?.let { CastController.cast(context, id, name, it.baseUrl) }
-                castPicking = false
-            },
-        )
+        FullScreenPage {
+            CastPickerScreen(
+                onCancel = { castPicking = false },
+                onPick = { id, name ->
+                    (state as? ServerState.Running)?.let { CastController.cast(context, id, name, it.baseUrl) }
+                    castPicking = false
+                },
+            )
+        }
         return
     }
 
@@ -280,11 +303,23 @@ fun CasterApp() {
 
     Scaffold(
         bottomBar = {
-            NavigationBar {
+            val haptic = LocalHapticFeedback.current
+            val scheme = MaterialTheme.colorScheme
+            NavigationBar(containerColor = scheme.surfaceContainer) {
                 Tab.entries.forEach { entry ->
                     NavigationBarItem(
                         selected = tab == entry.ordinal,
-                        onClick = { tab = entry.ordinal },
+                        onClick = {
+                            if (tab != entry.ordinal) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            tab = entry.ordinal
+                        },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = scheme.primary,
+                            selectedTextColor = scheme.primary,
+                            indicatorColor = scheme.primary.copy(alpha = 0.16f),
+                            unselectedIconColor = scheme.onSurfaceVariant,
+                            unselectedTextColor = scheme.onSurfaceVariant,
+                        ),
                         icon = {
                             if (entry == Tab.Devices && devices.isNotEmpty()) {
                                 BadgedBox(badge = { Badge { Text(devices.size.toString()) } }) { Icon(entry.icon, contentDescription = null) }

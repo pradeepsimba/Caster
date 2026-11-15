@@ -67,6 +67,13 @@ object FireTvCommands {
         return Request("/v1/FireTV?action=$action", """{"keyActionType":"${if (down) "keyDown" else "keyUp"}"}""")
     }
 
+    /**
+     * Key down or key up for Home. Kept down for a moment between the two, the TV sees a long press, the same as a hold
+     * on the real remote (it shows the quick menu). Only Home has it.
+     */
+    fun longPress(code: Int, down: Boolean): Request? =
+        if (code == TvKey.HOME) Request("/v1/FireTV?action=home", """{"keyActionType":"${if (down) "keyDown" else "keyUp"}"}""") else null
+
     /** Puts [text] into the text field that has focus on the TV (the whole text, so it can be sent again safely). */
     fun text(text: String) = Request("/v1/FireTV/keyboard", """{"text":${jsonString(text)}}""")
 

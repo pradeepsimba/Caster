@@ -7,4 +7,6 @@
     <color name="teal_700">#FF018786</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+    <!-- Matches the app's page colour, so the window already looks right before the first screen is drawn. -->
+    <color name="window_background">#FFF6F7FB</color>
 </resources>
