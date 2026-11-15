@@ -13,10 +13,10 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -28,29 +28,40 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Uses the phone as a remote for a Fire TV (or any Android TV). The TV has to have ADB debugging turned on; the phone
- * then sends it button presses, text and "open this page" over the Wi-Fi, the same way a computer would.
+ * Uses the phone as a remote for a Fire TV (or another Android TV).
  *
- * The first time, the TV shows an "Allow this device?" prompt. The phone proves itself with its own key (made on first
- * use, kept in the app's private storage and left out of backups), so after "Always allow" it connects without asking.
+ * Fire TV: like the official remote app. The TV shows a 4-digit code, you type it once, and the phone remembers it.
+ * Nothing has to be switched on in the TV's settings.
+ *
+ * ADB (advanced, any Android TV): needs ADB debugging turned on in the TV's developer options; the TV asks once to
+ * "Allow" this phone, which proves itself with its own key (made on first use, private to the app, left out of backups).
  */
 object TvRemote {
+    /** How the phone talks to the TV. */
+    enum class Link { FireTv, Adb }
+
     sealed interface State {
         data object Idle : State
 
-        /** Includes waiting for the owner to tap Allow on the TV. */
-        data class Connecting(val host: String) : State
-        data class Connected(val host: String) : State
+        /** Includes waiting for the owner to tap Allow on the TV (ADB). */
+        data class Connecting(val host: String, val viaAdb: Boolean = false) : State
+
+        /** The TV is showing a code; the owner types it on the phone. [error] is set after a wrong code. */
+        data class NeedsPin(val host: String, val error: String? = null) : State
+        data class Connected(val host: String, val link: Link) : State
         data class Failed(val message: String) : State
     }
 
     /** The ADB library needs Android 8 or newer (it uses file and Base64 classes added in that version). */
     val supported: Boolean get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
 
-    private const val SCAN_PORT = TvCommands.DEFAULT_PORT
     private const val PREFS = "caster_tv"
     private const val KEY_HOST = "host"
+    private const val KEY_TOKEN_PREFIX = "fire_token_"
     private const val APPROVAL_WAIT_MS = 60_000L
+    private const val WAKE_SETTLE_MS = 1_500L
+    private const val PIN_TRIES = 4
+    private const val DEVICE_NAME = "Caster"
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -64,7 +75,7 @@ object TvRemote {
 
     private val _found = MutableStateFlow<List<String>>(emptyList())
 
-    /** Addresses on this network that answered on the ADB port, after a search. */
+    /** Addresses on this network that answered like a TV remote service, after a search. */
     val found: StateFlow<List<String>> = _found.asStateFlow()
 
     private val _scanning = MutableStateFlow(false)
@@ -73,36 +84,141 @@ object TvRemote {
     // Read from the button handlers (main thread) and written from the connect and sender jobs.
     @Volatile private var connection: Dadb? = null
     @Volatile private var opening: Dadb? = null
+    @Volatile private var fire: FireTvLink? = null
+    @Volatile private var pairing: FireTvLink? = null
+
+    /** Bumped by every disconnect, so a job that was running for an older connection can tell and stay quiet. */
+    @Volatile private var generation = 0
     private var connectJob: Job? = null
     private var sender: Job? = null
 
     // Commands go through one queue, in order, and none is dropped (every typed letter matters). A held button is the
     // exception: it skips a press while the TV is still working through earlier ones, so it can't build up a lag.
-    private val commands = Channel<String>(Channel.UNLIMITED)
+    private val commands = Channel<() -> Unit>(Channel.UNLIMITED)
     private val pending = AtomicInteger(0)
 
+    private var appContext: Context? = null
+
     fun init(context: Context) {
+        appContext = context.applicationContext
         if (_savedHost.value.isEmpty()) {
             _savedHost.value = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_HOST, "").orEmpty()
         }
     }
 
-    fun connect(context: Context, rawHost: String) {
-        val target = TvCommands.parseTarget(rawHost)
-        val host = rawHost.trim()
+    private fun prefs(context: Context) = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    /** Common start of both connect methods; returns the parsed address, or null after showing why it can't go on. */
+    private fun begin(context: Context, rawHost: String): TvCommands.Target? {
         if (!supported) {
             _state.value = State.Failed("The TV remote needs Android 8 or newer.")
-            return
+            return null
         }
+        appContext = context.applicationContext
+        val target = TvCommands.parseTarget(rawHost)
         if (target == null) {
             _state.value = State.Failed("Enter the TV's address on your Wi-Fi, like 192.168.0.50.")
+            return null
+        }
+        disconnect()
+        _savedHost.value = rawHost.trim()
+        prefs(context).edit().putString(KEY_HOST, rawHost.trim()).apply()
+        return target
+    }
+
+    // --- Fire TV: pairing code ---------------------------------------------------------------------------------
+
+    fun connectFire(context: Context, rawHost: String) {
+        val target = begin(context, rawHost) ?: return
+        val host = target.host
+        val store = prefs(context)
+        _state.value = State.Connecting(host)
+        val mine = generation
+
+        connectJob = scope.launch {
+            try {
+                val link = FireTvLink(host, store.getString(KEY_TOKEN_PREFIX + host, null))
+                link.wake() // the TV's remote service may be asleep until it is poked
+                delay(WAKE_SETTLE_MS)
+                if (link.token != null) {
+                    // Paired before: the first button press will tell if the TV has since forgotten this phone.
+                    if (isActive && mine == generation) {
+                        fire = link
+                        _state.value = State.Connected(host, Link.FireTv)
+                        startSender(mine)
+                    }
+                } else {
+                    askForPin(link, mine)
+                }
+            } catch (e: Throwable) {
+                if (isActive && mine == generation) _state.value = State.Failed("Couldn't connect to the TV: ${e.message ?: e.javaClass.simpleName}")
+            }
+        }
+    }
+
+    /** Asks the TV to show its code. The service can take a moment to start after waking, so it tries a few times. */
+    private suspend fun askForPin(link: FireTvLink, mine: Int) {
+        repeat(PIN_TRIES) {
+            try {
+                link.send(FireTvCommands.requestPin(DEVICE_NAME))
+                if (mine == generation) {
+                    pairing = link
+                    _state.value = State.NeedsPin(link.host)
+                }
+                return
+            } catch (e: Exception) {
+                if (mine != generation) return
+                delay(1_500)
+            }
+        }
+        if (mine == generation) {
+            _state.value = State.Failed(
+                "The TV didn't answer on ${link.host}. Check that it's on, on the same Wi-Fi as this phone, " +
+                    "and not using a VPN. If it still fails, use \"Connect with ADB\" below.",
+            )
+        }
+    }
+
+    /** The owner typed the code the TV shows. */
+    fun submitPin(context: Context, pin: String) {
+        val link = pairing ?: return
+        val host = link.host
+        if (!FireTvCommands.isPin(pin.trim())) {
+            _state.value = State.NeedsPin(host, "The code is 4 digits.")
             return
         }
+        val store = prefs(context)
+        val mine = generation
+        connectJob = scope.launch {
+            try {
+                val token = FireTvCommands.tokenFrom(link.send(FireTvCommands.verifyPin(pin.trim())))
+                if (!isActive || mine != generation) return@launch
+                if (token == null) {
+                    _state.value = State.NeedsPin(host, "That code didn't work. Check the TV and try again.")
+                    return@launch
+                }
+                link.token = token
+                store.edit().putString(KEY_TOKEN_PREFIX + host, token).apply()
+                pairing = null
+                fire = link
+                _state.value = State.Connected(host, Link.FireTv)
+                startSender(mine)
+            } catch (e: Throwable) {
+                if (isActive && mine == generation) {
+                    _state.value = State.NeedsPin(host, "That code didn't work. Check the TV and try again.")
+                }
+            }
+        }
+    }
+
+    // --- ADB -------------------------------------------------------------------------------------------------
+
+    fun connectAdb(context: Context, rawHost: String) {
+        val target = begin(context, rawHost) ?: return
+        val host = rawHost.trim()
         val app = context.applicationContext
-        disconnect()
-        _state.value = State.Connecting(host)
-        _savedHost.value = host
-        app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_HOST, host).apply()
+        _state.value = State.Connecting(host, viaAdb = true)
+        val mine = generation
 
         connectJob = scope.launch {
             var adb: Dadb? = null
@@ -126,19 +242,19 @@ object TvRemote {
                 patience.cancel()
                 opening = null
                 connection = opened
-                if (!isActive) {
+                if (!isActive || mine != generation) {
                     // Cancelled while the answer was arriving: don't come back to life after the owner pressed Cancel.
                     connection = null
                     opened.close()
                     return@launch
                 }
-                _state.value = State.Connected(host)
-                startSender(opened)
+                _state.value = State.Connected(host, Link.Adb)
+                startSender(mine)
             } catch (e: Throwable) {
                 runCatching { adb?.close() }
                 if (opening === adb) opening = null
                 // After Cancel or a newer Connect this job is stale: stay quiet, the new state is already shown.
-                if (!isActive) return@launch
+                if (!isActive || mine != generation) return@launch
                 _state.value = State.Failed(
                     when {
                         gaveUp.get() -> "The TV didn't answer the \"Allow\" prompt in time. Try again and choose Allow on the TV."
@@ -150,62 +266,102 @@ object TvRemote {
         }
     }
 
+    // --- Shared ----------------------------------------------------------------------------------------------
+
     fun disconnect() {
+        generation++
         connectJob?.cancel()
         sender?.cancel()
         runCatching { opening?.close() }
         opening = null
         runCatching { connection?.close() }
         connection = null
+        fire = null
+        pairing = null
         while (commands.tryReceive().isSuccess) { /* drop anything still queued for the old connection */ }
         pending.set(0)
         _state.value = State.Idle
     }
 
-    private fun startSender(adb: Dadb) {
+    private fun startSender(mine: Int) {
         sender?.cancel()
         sender = scope.launch {
-            for (command in commands) {
+            for (task in commands) {
                 try {
-                    adb.shell(command)
-                    pending.decrementAndGet()
+                    task()
+                    if (mine == generation) pending.decrementAndGet() // a finished task of an old connection isn't counted
                 } catch (e: Throwable) {
-                    // The TV went to sleep, left the network, or turned ADB off. (If the owner pressed Disconnect, this job
-                    // was cancelled first and the screen already says so.)
-                    runCatching { adb.close() }
-                    if (isActive && connection === adb) {
-                        connection = null
-                        _state.value = State.Failed("Lost the connection to the TV. Connect again.")
-                    }
+                    // The TV went to sleep, left the network, turned ADB off or forgot this phone. (If the owner pressed
+                    // Disconnect, this job was cancelled first and the screen already says so.)
+                    if (isActive && mine == generation) lost(e)
                     break
                 }
             }
         }
     }
 
-    private fun enqueue(command: String) {
-        pending.incrementAndGet()
-        commands.trySend(command)
+    private fun lost(error: Throwable) {
+        val link = fire
+        // A TV that refuses the token has forgotten this phone: drop the saved pairing so the next connect asks for a code.
+        if (error is FireTvAuthException && link != null) {
+            appContext?.let { prefs(it).edit().remove(KEY_TOKEN_PREFIX + link.host).apply() }
+        }
+        runCatching { connection?.close() }
+        connection = null
+        fire = null
+        while (commands.tryReceive().isSuccess) { /* nothing more can be sent */ }
+        pending.set(0)
+        _state.value = State.Failed(
+            if (error is FireTvAuthException && link != null) "The TV has forgotten this phone. Connect again and enter the new code."
+            else "Lost the connection to the TV. Connect again.",
+        )
     }
+
+    private fun enqueue(task: () -> Unit) {
+        pending.incrementAndGet()
+        commands.trySend(task)
+    }
+
+    /** True when button [code] does something on the connected TV (the Fire TV service has no volume or Enter, for example). */
+    fun supportsKey(link: Link, code: Int) = link == Link.Adb || FireTvCommands.supports(code)
 
     /** One press of [code]. With [repeating] (a held button) a press is skipped while the TV is still catching up. */
     fun key(code: Int, repeating: Boolean = false) {
-        if (connection == null || (repeating && pending.get() >= 3)) return
-        enqueue(TvCommands.key(code))
+        if (repeating && pending.get() >= 3) return
+        val link = fire
+        // A held fast-forward would keep asking the Fire TV to speed up; only a single press is sent there.
+        if (repeating && link != null && (code == TvKey.FAST_FORWARD || code == TvKey.REWIND)) return
+        val adb = connection
+        when {
+            link != null -> FireTvCommands.forKey(code)?.let { request -> enqueue { link.send(request) } }
+            adb != null -> enqueue { adb.shell(TvCommands.key(code)) }
+        }
     }
 
     /** The text box on the phone changed from [old] to [new]: do the same edit on the TV, as it is typed. */
     fun typed(old: String, new: String) {
-        if (connection == null) return
-        TvCommands.edit(old, new).forEach(::enqueue)
+        val link = fire
+        val adb = connection
+        when {
+            // The Fire TV takes the whole text, so what is sent is always the full box (and a backspace is just a shorter text).
+            link != null -> enqueue { link.send(FireTvCommands.text(new)) }
+            adb != null -> TvCommands.edit(old, new).forEach { command -> enqueue { adb.shell(command) } }
+        }
     }
 
-    /** Opens [url] in the TV's browser, so Caster's page can be reached without typing an address on the TV. */
+    /** Opens [url] in the TV's browser (ADB only). */
     fun openUrl(url: String) {
-        if (connection != null) enqueue(TvCommands.openUrl(url))
+        val adb = connection ?: return
+        enqueue { adb.shell(TvCommands.openUrl(url)) }
     }
 
-    /** Looks for other devices on this phone's network that have ADB switched on (usually only the TV). */
+    /** Fire TV: opens the TV's browser; the address then has to be typed with the keyboard. */
+    fun openBrowser() {
+        val link = fire ?: return
+        enqueue { link.send(FireTvCommands.openBrowser()) }
+    }
+
+    /** Looks for other devices on this phone's network that answer like a TV remote service (usually only the TV). */
     fun scan(context: Context) {
         if (_scanning.value) return
         val own = NetworkUtils.resolveLocalIpv4(context.applicationContext)?.hostAddress ?: run {
@@ -221,7 +377,11 @@ object TvRemote {
                 val hits = (1..254).map { n ->
                     async {
                         val host = "$prefix.$n"
-                        if (host != own) gate.withPermit { if (reachable(host, SCAN_PORT, 500)) host else null } else null
+                        if (host != own) {
+                            gate.withPermit {
+                                if (reachable(host, FireTvCommands.WAKE_PORT, 500) || reachable(host, TvCommands.DEFAULT_PORT, 500)) host else null
+                            }
+                        } else null
                     }
                 }.awaitAll().filterNotNull()
                 _found.value = hits

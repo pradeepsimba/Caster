@@ -22,6 +22,9 @@
         android:maxSdkVersion="32" />
     <!-- Android 13+: needed for the foreground-service notification to be visible. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Android 17+ blocks all traffic with other devices on the home network (the web page reaching this phone,
+         the TV remote, Chromecast discovery) until the user allows this. Older versions ignore it. -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
 
     <application
         android:name=".CasterApplication"

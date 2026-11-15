@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Android 11 and older. -->
 <full-backup-content>
-    <!-- The key that proves this phone to a TV over ADB must never leave the phone. -->
+    <!-- The keys that prove this phone to a TV (ADB key, Fire TV pairing token) must never leave the phone. -->
     <exclude domain="file" path="adb_key" />
     <exclude domain="file" path="adb_key.pub" />
+    <exclude domain="sharedpref" path="caster_tv.xml" />
 </full-backup-content>

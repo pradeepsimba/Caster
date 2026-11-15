@@ -59,6 +59,9 @@ import mano.algo.caster.server.ServerState
 import mano.algo.caster.server.ShareSettings
 import mano.algo.caster.tv.TvRemote
 
+private const val LOCAL_NETWORK_PERMISSION = "android.permission.ACCESS_LOCAL_NETWORK"
+private const val LOCAL_NETWORK_SDK = 37 // Android 17
+
 private val STORAGE_PERMISSION =
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Manifest.permission.READ_MEDIA_VIDEO
     else Manifest.permission.READ_EXTERNAL_STORAGE
@@ -152,15 +155,53 @@ fun CasterApp() {
 
     var hasStorage by remember { mutableStateOf(granted(STORAGE_PERMISSION)) }
 
+    // Android 17+ keeps every app away from other devices on the home network until the user allows it: without this
+    // the web page can't reach the phone and the TV and Chromecast can't be found.
+    fun needsLocalNetwork() = Build.VERSION.SDK_INT >= LOCAL_NETWORK_SDK && !granted(LOCAL_NETWORK_PERMISSION)
+    var afterLocalNetwork by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var runEvenIfDenied by remember { mutableStateOf(true) }
+    val localNetworkPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        val next = afterLocalNetwork
+        afterLocalNetwork = null
+        if (!ok) {
+            Toast.makeText(
+                context,
+                "Local network access is off, so other devices can't reach Caster. Turn it on in the app's permissions.",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+        if (ok || runEvenIfDenied) next?.invoke()
+    }
+    /** Runs [next] once local network access is allowed (at once when it already is, or isn't needed on this Android). */
+    fun withLocalNetwork(runIfDenied: Boolean, next: () -> Unit) {
+        if (needsLocalNetwork()) {
+            afterLocalNetwork = next
+            runEvenIfDenied = runIfDenied
+            localNetworkPermission.launch(LOCAL_NETWORK_PERMISSION)
+        } else {
+            next()
+        }
+    }
+
     // Notification permission only affects whether the notification is visible; the server starts either way.
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         MediaServerService.start(context)
     }
-    fun startAfterStorage() {
+    fun startAfterLocalNetwork() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !granted(Manifest.permission.POST_NOTIFICATIONS)) {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         } else {
             MediaServerService.start(context)
+        }
+    }
+    fun startAfterStorage() = withLocalNetwork(runIfDenied = true) { startAfterLocalNetwork() }
+
+    // Sharing may already be running (it survives the app closing), so ask once when the app is opened too.
+    var askedLocalNetwork by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(state is ServerState.Running) {
+        if (state is ServerState.Running && !askedLocalNetwork && needsLocalNetwork()) {
+            askedLocalNetwork = true
+            withLocalNetwork(runIfDenied = true) { }
         }
     }
     // Without storage access the page would pair fine and then show an empty gallery, so ask first.
@@ -263,7 +304,7 @@ fun CasterApp() {
                 remotes = remotes,
                 onRemote = RemoteControl::send,
                 onShare = { shareAddress(context, it) },
-                onCastChoose = { castPicking = true },
+                onCastChoose = { withLocalNetwork(runIfDenied = true) { castPicking = true } },
                 modifier = screenModifier,
             )
             Tab.Library -> LibraryScreen(
@@ -283,9 +324,12 @@ fun CasterApp() {
                 found = tvFound,
                 scanning = tvScanning,
                 shareUrl = (state as? ServerState.Running)?.baseUrl,
-                onConnect = { TvRemote.connect(context, it) },
+                onConnect = { host -> withLocalNetwork(runIfDenied = false) { TvRemote.connectFire(context, host) } },
+                onConnectAdb = { host -> withLocalNetwork(runIfDenied = false) { TvRemote.connectAdb(context, host) } },
+                onSubmitPin = { pin -> TvRemote.submitPin(context, pin) },
                 onDisconnect = TvRemote::disconnect,
-                onScan = { TvRemote.scan(context) },
+                onScan = { withLocalNetwork(runIfDenied = false) { TvRemote.scan(context) } },
+                onOpenBrowser = TvRemote::openBrowser,
                 onKey = TvRemote::key,
                 onTyped = TvRemote::typed,
                 onOpenCaster = TvRemote::openUrl,
