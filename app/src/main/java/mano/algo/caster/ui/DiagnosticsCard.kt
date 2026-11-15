@@ -49,7 +49,7 @@ fun DiagnosticsCard() {
                 )
             } else {
                 Text(
-                    report.takeLast(900),
+                    report.takeLast(1600),
                     style = MaterialTheme.typography.labelSmall,
                     fontFamily = FontFamily.Monospace,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

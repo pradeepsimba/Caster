@@ -72,12 +72,14 @@ object VideoConverter {
                 .setAudioMimeType(MimeTypes.AUDIO_AAC)
                 .addListener(object : Transformer.Listener {
                     override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                        mano.algo.caster.CrashLog.note(context, "Video $id converted")
                         states[id] = if (part.renameTo(out)) ConvertState.Done else ConvertState.Failed
                         finish()
                     }
 
                     override fun onError(composition: Composition, exportResult: ExportResult, exportException: ExportException) {
                         Log.w(TAG, "Conversion failed for $id", exportException)
+                        mano.algo.caster.CrashLog.note(context, "Converting video $id failed")
                         part.delete()
                         states[id] = ConvertState.Failed
                         finish()
@@ -86,6 +88,7 @@ object VideoConverter {
                 .build()
             transformer = t
             runningId = id
+            mano.algo.caster.CrashLog.note(context, "Converting video $id started (web page can't play it)")
             t.start(MediaItem.fromUri(uri), part.absolutePath)
             pollProgress(t, id)
         } catch (e: Exception) {

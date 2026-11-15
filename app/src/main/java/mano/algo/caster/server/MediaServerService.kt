@@ -145,6 +145,7 @@ class MediaServerService : Service() {
             ACTION_DENY -> { PairingManager.deny(); return START_NOT_STICKY }
         }
 
+        mano.algo.caster.CrashLog.note(this, "Sharing started")
         try {
             acquireLocks()
             registerNetworkCallback()
@@ -161,6 +162,7 @@ class MediaServerService : Service() {
     }
 
     override fun onDestroy() {
+        mano.algo.caster.CrashLog.note(this, "Sharing stopped")
         networkCallback?.let { cb ->
             runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(cb) }
         }

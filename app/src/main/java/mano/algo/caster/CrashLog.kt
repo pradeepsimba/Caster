@@ -21,6 +21,8 @@ object CrashLog {
     private const val PREFS = "caster_crash"
     private const val KEY_LAST_EXIT = "last_exit_ms"
     private const val MAX_BYTES = 24_000
+    private const val TRAIL_FILE = "activity.log"
+    private const val TRAIL_LINES = 14
 
     fun install(context: Context) {
         val app = context.applicationContext
@@ -33,12 +35,33 @@ object CrashLog {
         runCatching { recordEarlierExits(app) }
     }
 
-    /** The whole record, newest last; empty when nothing has been recorded. */
-    fun read(context: Context): String = runCatching { file(context).takeIf { it.exists() }?.readText().orEmpty() }.getOrDefault("")
+    /**
+     * The whole record, newest last; empty when nothing has been recorded. When the app was closed by the system, the
+     * trail of what it was doing just before is added, so a heavy job (such as converting a video) shows up as the suspect.
+     */
+    fun read(context: Context): String {
+        val record = runCatching { file(context).takeIf { it.exists() }?.readText().orEmpty() }.getOrDefault("")
+        if (record.isBlank()) return ""
+        val trail = runCatching { trailFile(context).takeIf { it.exists() }?.readText().orEmpty() }.getOrDefault("")
+        return if (trail.isBlank()) record else record + "What the app was doing just before (oldest first):\n" + trail
+    }
 
     fun clear(context: Context) {
         runCatching { file(context).delete() }
+        runCatching { trailFile(context).delete() }
     }
+
+    /** A one-line note about what the app is doing now. Only the last few are kept; they are shown with a closing report. */
+    @Synchronized
+    fun note(context: Context, text: String) {
+        runCatching {
+            val file = trailFile(context)
+            val lines = (file.takeIf { it.exists() }?.readLines().orEmpty() + "${stampTime(System.currentTimeMillis())}  $text").takeLast(TRAIL_LINES)
+            file.writeText(lines.joinToString("\n", postfix = "\n"))
+        }
+    }
+
+    private fun trailFile(context: Context) = File(context.filesDir, TRAIL_FILE)
 
     private fun file(context: Context) = File(context.filesDir, FILE)
 
@@ -92,6 +115,8 @@ object CrashLog {
         16 -> "app was updated"
         else -> "unknown ($reason)"
     }
+
+    private fun stampTime(ms: Long) = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(ms))
 
     private fun stamp(ms: Long) = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(ms))
 
