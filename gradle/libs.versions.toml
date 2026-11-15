@@ -14,8 +14,15 @@ zxing = "3.5.3"
 profileinstaller = "1.4.1"
 castFramework = "22.3.1"
 dadb = "2.0.0"
+fragment = "1.8.9"
+appcompat = "1.7.1"
 
 [libraries]
+# The Cast library drags in fragment 1.1.0 and appcompat 1.1.0, which crash on every permission request made through
+# the modern ActivityResult API ("Can only use lower 16 bits for requestCode"). Newer versions are pinned here so
+# the build picks them instead.
+androidx-fragment = { group = "androidx.fragment", name = "fragment", version.ref = "fragment" }
+androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
 dadb = { group = "dev.mobile", name = "dadb", version.ref = "dadb" }
 play-services-cast-framework = { group = "com.google.android.gms", name = "play-services-cast-framework", version.ref = "castFramework" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
