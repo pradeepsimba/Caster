@@ -34,10 +34,9 @@ import java.util.concurrent.Executors
  *  GET  /api/videos?t=       gallery listing                  (token)
  *  GET  /api/thumb/{id}?t=   JPEG thumbnail (Android 10+)     (token)
  *  GET  /api/info/{id}?t=    codecs and size of a video, so the page can warn about unsupported formats (token)
- *  GET  /video/{id}?t=       the video, with 206 range support (token); `&c=1` serves the converted copy
+ *  GET  /video/{id}?t=       the video, with 206 range support (token)
  *  GET  /api/list?k=v|a|i    videos, music or photos (music and photos only when the owner enabled them) (token)
  *  GET  /api/sub/{id}?t=     WebVTT subtitles found next to the video file (token)
- *  GET  /api/convert/{id}?t=&op=start|status   re-encodes a video to H.264 for browsers that can't play it (token)
  *  GET  /api/remote?t=&...   page state in, queued phone-remote commands out (token)
  *
  * NanoHTTPD invokes [serve] on one worker thread per connection; this class holds no mutable state.
@@ -109,16 +108,10 @@ class LocalMediaServer(
             path.startsWith("/api/thumb/") -> thumbnail(mediaUri(path.removePrefix("/api/thumb/"), kind), kind)
             path.startsWith("/api/info/") -> videoInfo(mediaUri(path.removePrefix("/api/info/"), "v"))
             path.startsWith("/api/sub/") -> subtitles(mediaUri(path.removePrefix("/api/sub/"), "v"))
-            path.startsWith("/api/convert/") -> convert(
-                path.removePrefix("/api/convert/"), session.parameters["op"]?.firstOrNull() ?: "status",
-            )
             path.startsWith("/video/") -> {
                 val uri = mediaUri(path.removePrefix("/video/"), kind) ?: return error(Response.Status.NOT_FOUND, "not_found")
                 if (method == Method.GET && kind == "v") recordWatching(session.parameters["t"]?.firstOrNull(), uri)
-                val converted = if (session.parameters["c"]?.firstOrNull() == "1" && kind == "v") {
-                    VideoConverter.fileFor(appContext, ContentUris.parseId(uri)).takeIf { it.exists() }
-                } else null
-                serveVideo(uri, session.headers["range"], head = method == Method.HEAD, converted = converted)
+                serveVideo(uri, session.headers["range"], head = method == Method.HEAD)
             }
             else -> error(Response.Status.NOT_FOUND, "not_found")
         }
@@ -350,20 +343,6 @@ class LocalMediaServer(
             .apply { addHeader("Cache-Control", "private, max-age=3600") }
     }
 
-    private fun convert(rawId: String, op: String): Response {
-        val uri = mediaUri(rawId, "v") ?: return error(Response.Status.NOT_FOUND, "not_found")
-        val id = ContentUris.parseId(uri)
-        val state = if (op == "start") VideoConverter.start(appContext, id, uri) else VideoConverter.state(appContext, id)
-        val body = JSONObject()
-        when (state) {
-            null -> body.put("state", "none")
-            ConvertState.Done -> body.put("state", "done")
-            ConvertState.Failed -> body.put("state", "failed")
-            is ConvertState.Running -> body.put("state", "running").put("percent", state.percent)
-        }
-        return json(body)
-    }
-
     /** The page reports what it is playing; the reply carries whatever the phone owner pressed since the last report. */
     private fun remote(session: IHTTPSession): Response {
         val p = session.parameters
@@ -389,20 +368,16 @@ class LocalMediaServer(
 
     // ---- streaming (RFC 7233 single range) -----------------------------------------------------------
 
-    private fun serveVideo(uri: Uri, rangeHeader: String?, head: Boolean, converted: File? = null): Response {
+    private fun serveVideo(uri: Uri, rangeHeader: String?, head: Boolean): Response {
         val afd = try {
-            if (converted != null) {
-                AssetFileDescriptor(ParcelFileDescriptor.open(converted, ParcelFileDescriptor.MODE_READ_ONLY), 0, converted.length())
-            } else {
-                appContext.contentResolver.openAssetFileDescriptor(uri, "r")
-            }
+            appContext.contentResolver.openAssetFileDescriptor(uri, "r")
         } catch (e: SecurityException) {
             return error(Response.Status.FORBIDDEN, "storage_permission")
         } catch (e: Exception) {
             null
         } ?: return error(Response.Status.NOT_FOUND, "not_found")
 
-        val mime = if (converted != null) "video/mp4" else appContext.contentResolver.getType(uri) ?: "video/mp4"
+        val mime = appContext.contentResolver.getType(uri) ?: "video/mp4"
         val length = fileLength(afd)
         if (length < 0) {
             if (head) { afd.closeQuietly(); return mediaHeaders(newFixedLengthResponse(Response.Status.OK, mime, "")) }

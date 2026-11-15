@@ -976,7 +976,6 @@
     $('playerError').hidden = true;
     $('next').disabled = index >= playQueue.length - 1;
     clearSubs();
-    convertToken++;
     const url = mediaUrl(v);
     if (kind === 'i') {
       playerEl.classList.add('photo');
@@ -1026,7 +1025,6 @@
     clearTimeout(uiTimer);
     clearTimeout(blackCheck);
     inspectToken++;
-    convertToken++;
     clearSubs();
     stopRemoteSync();
     $('photo').hidden = true;
@@ -1075,7 +1073,7 @@
     if (!video.getAttribute('src')) return;      // cleared on purpose (a photo, or the player closing)
     $('playerError').textContent = 'This device can\'t play this file.';
     $('playerError').hidden = false;
-    if (kind === 'v' && playQueue[queueIndex]) showNote('This device can\'t play this video format.', mediaUrl(playQueue[queueIndex]), playQueue[queueIndex]);
+    if (kind === 'v' && playQueue[queueIndex]) showNote('This device can\'t play this video format.', mediaUrl(playQueue[queueIndex]));
     showUi();
   });
 
@@ -1118,50 +1116,11 @@
     return null;
   }
 
-  function showNote(text, link, convertFor) {
+  function showNote(text, link) {
     const note = $('playerNote');
-    note.replaceChildren(el('span', null, text + (convertFor ? ' The phone can convert it for this screen.' : ' Try Chrome or Edge on a computer, or open the link in a player like VLC.')));
-    if (convertFor) {
-      const b = el('button', 'pbtn main', 'Convert for this screen');
-      b.onclick = () => startConvert(convertFor);
-      note.append(document.createElement('br'), b);
-      if (TV) b.focus();
-    }
+    note.replaceChildren(el('span', null, text + ' Try Chrome or Edge on a computer, or open the link in a player like VLC.'));
     if (link) note.append(el('small', null, link));
     note.hidden = false;
-  }
-
-  // ---- convert on the phone (HEVC, MKV...) -> H.264 the browser can play -------------------------------
-  let convertToken = 0;
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
-  const convertUrl = (v, op) => base(current) + '/api/convert/' + v.id + '?t=' + encodeURIComponent(token(current)) + '&op=' + op;
-
-  function switchToConverted(v) {
-    const at = video.currentTime || 0;
-    $('playerNote').hidden = true;
-    $('playerError').hidden = true;
-    video.src = mediaUrl(v) + '&c=1';
-    video.addEventListener('loadedmetadata', () => { if (at > 1) video.currentTime = at; }, { once: true });
-    video.play().catch(() => {});
-    toast('Playing converted copy');
-  }
-
-  async function startConvert(v) {
-    const mine = ++convertToken;
-    const note = $('playerNote');
-    note.replaceChildren(el('span', null, 'Starting conversion on the phone…'));
-    try {
-      let r = await (await fetch(convertUrl(v, 'start'), { cache: 'no-store' })).json();
-      while (mine === convertToken && isOpen()) {
-        if (!r.state) { note.replaceChildren(el('span', null, 'The Caster app on the phone is too old to convert videos. Please update it.')); return; }
-        if (r.state === 'done') { switchToConverted(v); return; }
-        if (r.state === 'failed') { note.replaceChildren(el('span', null, 'The phone could not convert this video. Try VLC with the link below.')); return; }
-        const pct = r.state === 'running' ? ' ' + (r.percent || 0) + '%' : '';
-        note.replaceChildren(el('span', null, 'Converting on the phone…' + pct + ' Keep the phone awake and plugged in. Long videos take a while.'));
-        await sleep(1500);
-        r = await (await fetch(convertUrl(v, r.state === 'none' ? 'start' : 'status'), { cache: 'no-store' })).json();
-      }
-    } catch { if (mine === convertToken) note.replaceChildren(el('span', null, 'Lost contact with the phone.')); }
   }
 
   // ---- subtitles: a .srt/.vtt next to the video on the phone, or one picked from this device -------------
@@ -1245,12 +1204,7 @@
       const r = await fetch(base(current) + '/api/info/' + v.id + '?t=' + encodeURIComponent(token(current)), { cache: 'no-store' });
       if (!r.ok || mine !== inspectToken) return;
       const problem = describeProblem(await r.json());
-      if (problem && mine === inspectToken) {
-        const st = await (await fetch(convertUrl(v, 'status'), { cache: 'no-store' })).json().catch(() => ({}));
-        if (mine !== inspectToken) return;
-        if (st.state === 'done') { switchToConverted(v); return; }
-        showNote(problem, base(current) + '/video/' + v.id + '?t=' + token(current), v);
-      }
+      if (problem && mine === inspectToken) showNote(problem, base(current) + '/video/' + v.id + '?t=' + token(current));
     } catch { /* an older phone build has no info endpoint; the runtime check below still applies */ }
   }
 
@@ -1262,7 +1216,7 @@
       if (kind !== 'v' || !isOpen() || video.paused || video.currentTime < 1 || !$('playerNote').hidden) return;
       const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
       if (video.videoWidth === 0 || (q && q.totalVideoFrames === 0)) {
-        showNote("Sound is playing but this browser can't decode the picture, so the screen stays black.", video.src, playQueue[queueIndex]);
+        showNote("Sound is playing but this browser can't decode the picture, so the screen stays black.", video.src);
       }
     }, 2500);
   }

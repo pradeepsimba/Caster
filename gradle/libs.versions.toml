@@ -10,7 +10,6 @@ kotlin = "2.2.10"
 composeBom = "2026.02.01"
 nanohttpd = "2.3.1"
 coroutines = "1.10.2"
-media3 = "1.8.0"
 zxing = "3.5.3"
 profileinstaller = "1.4.1"
 castFramework = "22.3.1"
@@ -38,8 +37,6 @@ androidx-compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-te
 androidx-compose-material-icons-core = { group = "androidx.compose.material", name = "material-icons-core" }
 androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
 
-androidx-media3-transformer = { group = "androidx.media3", name = "media3-transformer", version.ref = "media3" }
-androidx-media3-common = { group = "androidx.media3", name = "media3-common", version.ref = "media3" }
 zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
 androidx-profileinstaller = { group = "androidx.profileinstaller", name = "profileinstaller", version.ref = "profileinstaller" }
 

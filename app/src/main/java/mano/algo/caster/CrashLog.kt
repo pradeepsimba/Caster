@@ -37,7 +37,7 @@ object CrashLog {
 
     /**
      * The whole record, newest last; empty when nothing has been recorded. When the app was closed by the system, the
-     * trail of what it was doing just before is added, so a heavy job (such as converting a video) shows up as the suspect.
+     * trail of what it was doing just before is added, so a heavy job shows up as the suspect.
      */
     fun read(context: Context): String {
         val record = runCatching { file(context).takeIf { it.exists() }?.readText().orEmpty() }.getOrDefault("")

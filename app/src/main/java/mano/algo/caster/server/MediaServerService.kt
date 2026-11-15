@@ -177,7 +177,6 @@ class MediaServerService : Service() {
         PairingManager.reset()
         CastController.stop()   // the Chromecast's access just ended with the server, so end its session too
         RemoteControl.clear()
-        VideoConverter.clear(this)
         releaseLocks()
         // A start that failed leaves its reason on screen instead of replacing it with a plain "stopped".
         if (!startFailed) _state.value = ServerState.Stopped

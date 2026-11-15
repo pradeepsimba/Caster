@@ -78,8 +78,6 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.nanohttpd)
-    implementation(libs.androidx.media3.transformer)
-    implementation(libs.androidx.media3.common)
     implementation(libs.zxing.core)
     implementation(libs.androidx.profileinstaller)
     implementation(libs.play.services.cast.framework)
