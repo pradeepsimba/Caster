@@ -83,6 +83,9 @@ class MediaServerService : Service() {
     )
     private val serverLock = Mutex()
 
+    /** Set when starting failed, so the reason stays on screen after the service closes (other stops show "stopped"). */
+    private var startFailed = false
+
     // Only touched while holding serverLock.
     private var server: LocalMediaServer? = null
     private var boundHost: String? = null
@@ -121,21 +124,39 @@ class MediaServerService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // Must be promoted within seconds of startForegroundService(), so do it before anything else.
-        promoteToForeground(buildNotification(getString(R.string.app_name), "Starting video sharing…"))
+        try {
+            promoteToForeground(buildNotification(getString(R.string.app_name), "Starting video sharing…"))
+        } catch (e: Exception) {
+            // The system refused (a missing permission, or the app isn't allowed to start it right now): close quietly
+            // rather than crash the app.
+            Log.e(TAG, "Couldn't start sharing in the foreground", e)
+            startFailed = true
+            _state.value = ServerState.Error("Couldn't start sharing: ${e.message ?: e.javaClass.simpleName}")
+            stopSelf()
+            return START_NOT_STICKY
+        }
 
         when (intent?.action) {
             ACTION_STOP -> {
                 stopSelf()
                 return START_NOT_STICKY
             }
-            ACTION_APPROVE -> { PairingManager.approve(); return START_NOT_STICKY }            ACTION_DENY -> { PairingManager.deny(); return START_NOT_STICKY }
+            ACTION_APPROVE -> { PairingManager.approve(); return START_NOT_STICKY }
+            ACTION_DENY -> { PairingManager.deny(); return START_NOT_STICKY }
         }
 
-        acquireLocks()
-        registerNetworkCallback()
-        _state.value = ServerState.Starting
-        scope.launch { reconcile() }
-        startAddressWatchdog()
+        try {
+            acquireLocks()
+            registerNetworkCallback()
+            _state.value = ServerState.Starting
+            scope.launch { reconcile() }
+            startAddressWatchdog()
+        } catch (e: Exception) {
+            Log.e(TAG, "Couldn't start sharing", e)
+            startFailed = true
+            _state.value = ServerState.Error("Couldn't start sharing: ${e.message ?: e.javaClass.simpleName}")
+            stopSelf()
+        }
         return START_NOT_STICKY // Registered media dies with the process, so a restart would serve nothing.
     }
 
@@ -156,7 +177,8 @@ class MediaServerService : Service() {
         RemoteControl.clear()
         VideoConverter.clear(this)
         releaseLocks()
-        _state.value = ServerState.Stopped
+        // A start that failed leaves its reason on screen instead of replacing it with a plain "stopped".
+        if (!startFailed) _state.value = ServerState.Stopped
         super.onDestroy()
     }
 
@@ -431,7 +453,13 @@ class MediaServerService : Service() {
         val state: StateFlow<ServerState> = _state.asStateFlow()
 
         fun start(context: Context) {
-            ContextCompat.startForegroundService(context, Intent(context, MediaServerService::class.java))
+            try {
+                ContextCompat.startForegroundService(context, Intent(context, MediaServerService::class.java))
+            } catch (e: Exception) {
+                // For example the system not allowing a foreground service to start at this moment.
+                Log.e(TAG, "Couldn't start the sharing service", e)
+                _state.value = ServerState.Error("Couldn't start sharing: ${e.message ?: e.javaClass.simpleName}")
+            }
         }
 
         fun stop(context: Context) {

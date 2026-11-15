@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      The Chromecast / Android TV screen shows whatever the receiver app is. Left empty, Google's built-in receiver is
+      used, and it shows the Chromecast logo. To show Caster's own logo and colours instead:
+        1. Register at https://cast.google.com/publish (one-time fee, Google account).
+        2. Add new application -> Styled Media Receiver. Give it the name "Caster" and upload the logo, splash image
+           and background colour you want.
+        3. Copy the Application ID it shows (8 letters and digits) and paste it below.
+        4. Until the receiver is published, add your Chromecast / Android TV's serial number under "Add new device".
+    -->
+    <string name="cast_receiver_app_id" translatable="false"></string>
+</resources>

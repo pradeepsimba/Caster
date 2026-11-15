@@ -52,13 +52,30 @@ object TvRemote {
         data class Failed(val message: String) : State
     }
 
+    /**
+     * Volume on a Fire TV. The Fire TV's own remote service has no volume buttons (Amazon's app can't change it either),
+     * so volume goes through ADB, which has to be switched on once in the TV's developer options.
+     */
+    sealed interface VolumeState {
+        data object Off : VolumeState
+
+        /** Waiting for the owner to tap Allow on the TV. */
+        data object Waiting : VolumeState
+        data object Ready : VolumeState
+        data class Failed(val message: String) : VolumeState
+    }
+
     /** The ADB library needs Android 8 or newer (it uses file and Base64 classes added in that version). */
     val supported: Boolean get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
 
     private const val PREFS = "caster_tv"
     private const val KEY_HOST = "host"
     private const val KEY_TOKEN_PREFIX = "fire_token_"
+    private const val KEY_VOLUME_PREFIX = "volume_on_"
     private const val APPROVAL_WAIT_MS = 60_000L
+
+    /** An ADB command that takes longer than this is treated as a dead connection (a sleeping TV never answers). */
+    private const val SHELL_DEADLINE_MS = 10_000L
     private const val WAKE_SETTLE_MS = 1_500L
     private const val PIN_TRIES = 4
     private const val DEVICE_NAME = "Caster"
@@ -67,6 +84,9 @@ object TvRemote {
 
     private val _state = MutableStateFlow<State>(State.Idle)
     val state: StateFlow<State> = _state.asStateFlow()
+
+    private val _volume = MutableStateFlow<VolumeState>(VolumeState.Off)
+    val volume: StateFlow<VolumeState> = _volume.asStateFlow()
 
     private val _savedHost = MutableStateFlow("")
 
@@ -86,6 +106,8 @@ object TvRemote {
     @Volatile private var opening: Dadb? = null
     @Volatile private var fire: FireTvLink? = null
     @Volatile private var pairing: FireTvLink? = null
+    @Volatile private var volumeAdb: Dadb? = null
+    private var volumeJob: Job? = null
 
     /** Bumped by every disconnect, so a job that was running for an older connection can tell and stay quiet. */
     @Volatile private var generation = 0
@@ -146,6 +168,7 @@ object TvRemote {
                         fire = link
                         _state.value = State.Connected(host, Link.FireTv)
                         startSender(mine)
+                        autoEnableVolume(host)
                     }
                 } else {
                     askForPin(link, mine)
@@ -203,6 +226,7 @@ object TvRemote {
                 fire = link
                 _state.value = State.Connected(host, Link.FireTv)
                 startSender(mine)
+                autoEnableVolume(host)
             } catch (e: Throwable) {
                 if (isActive && mine == generation) {
                     _state.value = State.NeedsPin(host, "That code didn't work. Check the TV and try again.")
@@ -278,9 +302,93 @@ object TvRemote {
         connection = null
         fire = null
         pairing = null
+        closeVolume()
         while (commands.tryReceive().isSuccess) { /* drop anything still queued for the old connection */ }
         pending.set(0)
         _state.value = State.Idle
+    }
+
+    private fun closeVolume() {
+        volumeJob?.cancel()
+        runCatching { volumeAdb?.close() }
+        volumeAdb = null
+        _volume.value = VolumeState.Off
+    }
+
+    /** After connecting to a Fire TV that had volume turned on before, bring it back without another tap. */
+    private fun autoEnableVolume(host: String) {
+        val app = appContext ?: return
+        if (prefs(app).getBoolean(KEY_VOLUME_PREFIX + host, false)) enableVolume(app)
+    }
+
+    /** Fire TV: turns on volume by opening ADB to the same TV. The TV asks once to Allow this phone. */
+    fun enableVolume(context: Context) {
+        val link = fire ?: return
+        if (!supported) {
+            _volume.value = VolumeState.Failed("Volume needs Android 8 or newer.")
+            return
+        }
+        val app = context.applicationContext
+        val mine = generation
+        closeVolume()
+        _volume.value = VolumeState.Waiting
+        volumeJob = scope.launch {
+            var adb: Dadb? = null
+            val gaveUp = AtomicBoolean(false)
+            try {
+                if (!reachable(link.host, TvCommands.DEFAULT_PORT)) {
+                    if (isActive && mine == generation) {
+                        _volume.value = VolumeState.Failed(
+                            "Couldn't reach ADB on the TV. Turn on ADB debugging in the TV's developer options first.",
+                        )
+                    }
+                    return@launch
+                }
+                val opened = Dadb.create(link.host, TvCommands.DEFAULT_PORT, keyPair(app), 3_000, 0)
+                adb = opened
+                volumeAdb = opened // so Disconnect can close it while it waits for Allow
+                val patience = launch {
+                    delay(APPROVAL_WAIT_MS)
+                    gaveUp.set(true)
+                    opened.close()
+                }
+                opened.shell("echo caster")
+                patience.cancel()
+                if (!isActive || mine != generation) {
+                    opened.close()
+                    if (volumeAdb === opened) volumeAdb = null
+                    return@launch
+                }
+                prefs(app).edit().putBoolean(KEY_VOLUME_PREFIX + link.host, true).apply()
+                _volume.value = VolumeState.Ready
+            } catch (e: Throwable) {
+                runCatching { adb?.close() }
+                if (volumeAdb === adb) volumeAdb = null
+                if (!isActive || mine != generation) return@launch
+                _volume.value = VolumeState.Failed(
+                    when {
+                        gaveUp.get() -> "The TV didn't answer the \"Allow\" prompt in time. Try again and choose Allow on the TV."
+                        e is AdbAuthException -> "The TV didn't accept this phone. Choose Allow when the TV asks."
+                        else -> "Couldn't turn on volume: ${e.message ?: e.javaClass.simpleName}"
+                    },
+                )
+            }
+        }
+    }
+
+    private fun sendVolume(code: Int) {
+        val adb = volumeAdb ?: return
+        if (_volume.value != VolumeState.Ready) return
+        enqueue {
+            try {
+                shellGuarded(adb, TvCommands.key(code))
+            } catch (e: Exception) {
+                // Only volume is affected: the rest of the remote keeps working.
+                runCatching { adb.close() }
+                if (volumeAdb === adb) volumeAdb = null
+                _volume.value = VolumeState.Failed("Volume stopped working. Turn it on again.")
+            }
+        }
     }
 
     private fun startSender(mine: Int) {
@@ -309,12 +417,30 @@ object TvRemote {
         runCatching { connection?.close() }
         connection = null
         fire = null
+        closeVolume()
         while (commands.tryReceive().isSuccess) { /* nothing more can be sent */ }
         pending.set(0)
         _state.value = State.Failed(
             if (error is FireTvAuthException && link != null) "The TV has forgotten this phone. Connect again and enter the new code."
             else "Lost the connection to the TV. Connect again.",
         )
+    }
+
+    /**
+     * Runs [command] on the TV. The ADB connection has no read timeout (it sits idle between presses), so a TV that went
+     * to sleep or left the network would make this wait forever and freeze every later button. A watchdog closes the
+     * connection after [SHELL_DEADLINE_MS], which turns the wait into an error that is handled like any lost connection.
+     */
+    private fun shellGuarded(adb: Dadb, command: String) {
+        val guard = scope.launch {
+            delay(SHELL_DEADLINE_MS)
+            runCatching { adb.close() }
+        }
+        try {
+            adb.shell(command)
+        } finally {
+            guard.cancel()
+        }
     }
 
     private fun enqueue(task: () -> Unit) {
@@ -332,9 +458,13 @@ object TvRemote {
         // A held fast-forward would keep asking the Fire TV to speed up; only a single press is sent there.
         if (repeating && link != null && (code == TvKey.FAST_FORWARD || code == TvKey.REWIND)) return
         val adb = connection
+        if (link != null && (code == TvKey.VOLUME_UP || code == TvKey.VOLUME_DOWN || code == TvKey.MUTE)) {
+            sendVolume(code)
+            return
+        }
         when {
             link != null -> FireTvCommands.forKey(code)?.let { request -> enqueue { link.send(request) } }
-            adb != null -> enqueue { adb.shell(TvCommands.key(code)) }
+            adb != null -> enqueue { shellGuarded(adb, TvCommands.key(code)) }
         }
     }
 
@@ -345,14 +475,14 @@ object TvRemote {
         when {
             // The Fire TV takes the whole text, so what is sent is always the full box (and a backspace is just a shorter text).
             link != null -> enqueue { link.send(FireTvCommands.text(new)) }
-            adb != null -> TvCommands.edit(old, new).forEach { command -> enqueue { adb.shell(command) } }
+            adb != null -> TvCommands.edit(old, new).forEach { command -> enqueue { shellGuarded(adb, command) } }
         }
     }
 
     /** Opens [url] in the TV's browser (ADB only). */
     fun openUrl(url: String) {
         val adb = connection ?: return
-        enqueue { adb.shell(TvCommands.openUrl(url)) }
+        enqueue { shellGuarded(adb, TvCommands.openUrl(url)) }
     }
 
     /** Fire TV: opens the TV's browser; the address then has to be typed with the keyboard. */

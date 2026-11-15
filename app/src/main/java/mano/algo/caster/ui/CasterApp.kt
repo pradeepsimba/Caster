@@ -22,6 +22,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
@@ -61,6 +63,19 @@ import mano.algo.caster.tv.TvRemote
 
 private const val LOCAL_NETWORK_PERMISSION = "android.permission.ACCESS_LOCAL_NETWORK"
 private const val LOCAL_NETWORK_SDK = 37 // Android 17
+
+/** Every permission worth asking for when the app opens, for the Android version it is running on. */
+private fun startupPermissionList(): List<String> = buildList {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        add(Manifest.permission.READ_MEDIA_VIDEO)
+        add(Manifest.permission.READ_MEDIA_IMAGES)
+        add(Manifest.permission.READ_MEDIA_AUDIO)
+        add(Manifest.permission.POST_NOTIFICATIONS)
+    } else {
+        add(Manifest.permission.READ_EXTERNAL_STORAGE)
+    }
+    if (Build.VERSION.SDK_INT >= LOCAL_NETWORK_SDK) add(LOCAL_NETWORK_PERMISSION)
+}
 
 private val STORAGE_PERMISSION =
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Manifest.permission.READ_MEDIA_VIDEO
@@ -143,6 +158,7 @@ fun CasterApp() {
     val tvHost by TvRemote.savedHost.collectAsStateWithLifecycle()
     val tvFound by TvRemote.found.collectAsStateWithLifecycle()
     val tvScanning by TvRemote.scanning.collectAsStateWithLifecycle()
+    val tvVolume by TvRemote.volume.collectAsStateWithLifecycle()
     remember(context) { TvRemote.init(context); true }
     remember(context) { ShareSettings.init(context); true }   // returns a value, because remember must not return Unit
 
@@ -196,13 +212,17 @@ fun CasterApp() {
     }
     fun startAfterStorage() = withLocalNetwork(runIfDenied = true) { startAfterLocalNetwork() }
 
-    // Sharing may already be running (it survives the app closing), so ask once when the app is opened too.
-    var askedLocalNetwork by rememberSaveable { mutableStateOf(false) }
-    LaunchedEffect(state is ServerState.Running) {
-        if (state is ServerState.Running && !askedLocalNetwork && needsLocalNetwork()) {
-            askedLocalNetwork = true
-            withLocalNetwork(runIfDenied = true) { }
-        }
+    // Everything the app can use is asked for as soon as it opens, so nothing fails later for a missing permission:
+    // videos, photos and music (or the single storage permission on older Android), notifications, and the local network.
+    val startupPermissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        hasStorage = granted(STORAGE_PERMISSION)
+    }
+    var askedAtStart by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        if (askedAtStart) return@LaunchedEffect
+        askedAtStart = true
+        val missing = startupPermissionList().filter { !granted(it) }
+        if (missing.isNotEmpty()) startupPermissions.launch(missing.toTypedArray())
     }
     // Without storage access the page would pair fine and then show an empty gallery, so ask first.
     val storagePermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
@@ -278,7 +298,8 @@ fun CasterApp() {
             }
         },
     ) { padding ->
-        val screenModifier = Modifier.padding(padding)
+        // The keyboard shrinks the page (beyond the bar it already covers) so a focused text box stays in view.
+        val screenModifier = Modifier.padding(padding).consumeWindowInsets(padding).imePadding()
         AnimatedContent(
             targetState = tab,
             transitionSpec = {
@@ -330,6 +351,8 @@ fun CasterApp() {
                 onDisconnect = TvRemote::disconnect,
                 onScan = { withLocalNetwork(runIfDenied = false) { TvRemote.scan(context) } },
                 onOpenBrowser = TvRemote::openBrowser,
+                volume = tvVolume,
+                onEnableVolume = { TvRemote.enableVolume(context) },
                 onKey = TvRemote::key,
                 onTyped = TvRemote::typed,
                 onOpenCaster = TvRemote::openUrl,

@@ -2,6 +2,9 @@ package mano.algo.caster.ui
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -51,6 +54,19 @@ fun DiagnosticsCard() {
                     fontFamily = FontFamily.Monospace,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (report.contains("o-kill", ignoreCase = true) || report.contains("POWER SAVING")) {
+                    Text(
+                        "Your phone's own battery manager is closing Caster, not a crash. Open the app's settings → Battery, " +
+                            "allow background activity and auto-start, and lock Caster in the recent apps list.",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    OutlinedButton(onClick = {
+                        context.startActivity(
+                            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null)),
+                        )
+                    }, shape = RoundedCornerShape(14.dp)) { Text("Open app settings") }
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = {
                         context.getSystemService(ClipboardManager::class.java)

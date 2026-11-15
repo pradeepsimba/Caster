@@ -8,6 +8,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.ui.focus.onFocusEvent
+import androidx.compose.runtime.remember
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -85,6 +89,8 @@ fun RemoteScreen(
     onDisconnect: () -> Unit,
     onScan: () -> Unit,
     onOpenBrowser: () -> Unit,
+    volume: TvRemote.VolumeState,
+    onEnableVolume: () -> Unit,
     onKey: (code: Int, repeating: Boolean) -> Unit,
     onTyped: (old: String, new: String) -> Unit,
     onOpenCaster: (String) -> Unit,
@@ -101,7 +107,7 @@ fun RemoteScreen(
         }
         ConnectionCard(state, savedHost, found, scanning, onConnect, onConnectAdb, onSubmitPin, onDisconnect, onScan)
         if (state is TvRemote.State.Connected) {
-            RemotePad(state.link, onKey, onTyped, shareUrl, onOpenCaster, onOpenBrowser)
+            RemotePad(state.link, volume, onEnableVolume, onKey, onTyped, shareUrl, onOpenCaster, onOpenBrowser)
         }
     }
 }
@@ -213,6 +219,8 @@ private fun ConnectionCard(
 @Composable
 private fun RemotePad(
     link: TvRemote.Link,
+    volume: TvRemote.VolumeState,
+    onEnableVolume: () -> Unit,
     onKey: (Int, Boolean) -> Unit,
     onTyped: (String, String) -> Unit,
     shareUrl: String?,
@@ -221,6 +229,9 @@ private fun RemotePad(
 ) {
     val adb = link == TvRemote.Link.Adb
     var typed by rememberSaveable { mutableStateOf("") }
+    // When the keyboard opens the page shrinks; this scrolls the typing box into the part that is still visible.
+    val typingBox = remember { BringIntoViewRequester() }
+    val scope = rememberCoroutineScope()
 
     Card(
         shape = RoundedCornerShape(24.dp),
@@ -256,13 +267,14 @@ private fun RemotePad(
                 PadButton("Play or pause", TvKey.PLAY_PAUSE, onKey) { Text("⏯") }
                 PadButton("Fast forward", TvKey.FAST_FORWARD, onKey, repeat = true) { Text("⏩") }
             }
-            if (adb) { // the Fire TV's remote service has no volume buttons
+            if (adb || volume is TvRemote.VolumeState.Ready) { // on a Fire TV volume goes through ADB, once it is turned on
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     PadButton("Volume down", TvKey.VOLUME_DOWN, onKey, repeat = true) { Text("Vol −") }
                     PadButton("Mute", TvKey.MUTE, onKey) { Text("Mute") }
                     PadButton("Volume up", TvKey.VOLUME_UP, onKey, repeat = true) { Text("Vol +") }
                 }
             }
+            if (!adb && volume !is TvRemote.VolumeState.Ready) VolumeSetup(volume, onEnableVolume)
         }
     }
 
@@ -303,7 +315,7 @@ private fun RemotePad(
                     "Select a search box on the TV, then type here: each letter goes to the TV as you type it. " +
                         "Letters the TV can't take (accents, emoji) are skipped."
                 } else {
-                    "Select a text box on the TV, then type here: it goes to the TV as you type. Typing is experimental on Fire TV."
+                    "Select a text box on the TV, then type here: it goes to the TV as you type."
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -325,7 +337,15 @@ private fun RemotePad(
                     onKey(TvKey.ENTER, false)
                     typed = ""
                 }),
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .bringIntoViewRequester(typingBox)
+                    .onFocusEvent { focus ->
+                        if (focus.isFocused) scope.launch {
+                            delay(300) // after the keyboard has finished opening
+                            typingBox.bringIntoView()
+                        }
+                    },
             )
             if (adb) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = {
@@ -337,6 +357,36 @@ private fun RemotePad(
                     }
                 }, shape = RoundedCornerShape(14.dp)) { Text("⌫ Delete") }
                 Button(onClick = { onKey(TvKey.ENTER, false); typed = "" }, shape = RoundedCornerShape(14.dp)) { Text("Enter") }
+            }
+        }
+    }
+}
+
+/** Fire TV only: the remote service has no volume, so it is turned on through ADB, once. */
+@Composable
+private fun VolumeSetup(volume: TvRemote.VolumeState, onEnable: () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+        Text("Volume", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        when (volume) {
+            is TvRemote.VolumeState.Waiting -> Text(
+                "Look at the TV and choose Allow (tick \"Always allow\").",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+            )
+            else -> {
+                Text(
+                    "The Fire TV's own remote service has no volume buttons, so this needs one extra step: on the TV open " +
+                        "Settings → My Fire TV → Developer options → ADB debugging and turn it on. No Developer options? " +
+                        "Open About and press OK on the device name 7 times.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                (volume as? TvRemote.VolumeState.Failed)?.let {
+                    Text(it.message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+                }
+                OutlinedButton(onClick = onEnable, shape = RoundedCornerShape(14.dp)) {
+                    Text(if (volume is TvRemote.VolumeState.Failed) "Try again" else "Turn on volume")
+                }
             }
         }
     }

@@ -64,6 +64,8 @@ object CrashLog {
                 context,
                 "EXIT at ${stamp(exit.timestamp)}: ${reasonName(exit.reason)}" +
                     (exit.description?.let { " — $it" } ?: "") +
+                    // "o-kill" is ColorOS / OxygenOS's own app killer, not an error in the app.
+                    (if (exit.description?.contains("o-kill", ignoreCase = true) == true) " [the phone's own battery manager closed the app; not a bug in Caster]" else "") +
                     " (memory ${exit.rss / 1024} MB)",
             )
         }
