@@ -29,16 +29,29 @@ class FireTvCommandsTest {
         assertEquals("{${q}keyActionType$q:${q}keyDown$q}", down?.body)
         assertEquals("{${q}keyActionType$q:${q}keyUp$q}", up?.body)
         assertNull(FireTvCommands.hold(TvKey.OK, down = true))
-        assertNull(FireTvCommands.hold(TvKey.FAST_FORWARD, down = true))
+        assertNull(FireTvCommands.hold(TvKey.PLAY_PAUSE, down = true))
     }
 
     @Test
-    fun onlyHomeHasALongPress() {
+    fun scanningCanBeHeld() {
+        val down = FireTvCommands.hold(TvKey.FAST_FORWARD, down = true)
+        val up = FireTvCommands.hold(TvKey.REWIND, down = false)
+        assertEquals("/v1/media?action=scan", down?.path)
+        assertTrue(down?.body?.contains("forward") == true && down.body?.contains("keyDown") == true)
+        assertTrue(up?.body?.contains("back") == true && up.body?.contains("keyUp") == true)
+    }
+
+    @Test
+    fun homeOkBackAndMenuHaveALongPress() {
         val down = FireTvCommands.longPress(TvKey.HOME, down = true)
         assertEquals("/v1/FireTV?action=home", down?.path)
         assertEquals("{${q}keyActionType$q:${q}keyDown$q}", down?.body)
         assertEquals("{${q}keyActionType$q:${q}keyUp$q}", FireTvCommands.longPress(TvKey.HOME, down = false)?.body)
-        assertNull(FireTvCommands.longPress(TvKey.OK, down = true))
+        assertEquals("/v1/FireTV?action=select", FireTvCommands.longPress(TvKey.OK, down = true)?.path)
+        assertEquals("/v1/FireTV?action=back", FireTvCommands.longPress(TvKey.BACK, down = false)?.path)
+        assertEquals("/v1/FireTV?action=menu", FireTvCommands.longPress(TvKey.MENU, down = true)?.path)
+        assertNull(FireTvCommands.longPress(TvKey.UP, down = true))
+        assertNull(FireTvCommands.longPress(TvKey.PLAY_PAUSE, down = true))
         assertEquals("input keyevent --longpress 3", TvCommands.longPress(TvKey.HOME))
     }
 

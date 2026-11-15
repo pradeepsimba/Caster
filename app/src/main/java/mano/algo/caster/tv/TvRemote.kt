@@ -479,13 +479,29 @@ object TvRemote {
             return
         }
         when {
-            link != null -> FireTvCommands.forKey(code)?.let { request -> enqueue { link.send(request) } }
+            link != null -> if (FireTvCommands.supports(code)) enqueue { sendPress(link, code) }
             adb != null -> enqueue { shellGuarded(adb, TvCommands.key(code)) }
         }
     }
 
     /**
-     * [code] held down, like a hold on the real remote (Home opens the quick menu). With ADB this is one command; on a
+     * One complete press of [code] on a Fire TV. Fast-forward and rewind are sent as down and then up: a "down" alone is a
+     * button that is never let go, which makes the TV scan faster and faster.
+     */
+    private fun sendPress(link: FireTvLink, code: Int) {
+        val press = FireTvCommands.forKey(code) ?: return
+        link.send(press)
+        if (code == TvKey.FAST_FORWARD || code == TvKey.REWIND) {
+            try {
+                FireTvCommands.hold(code, down = false)?.let { link.send(it) }
+            } catch (e: FireTvHttpException) {
+                // This TV takes no key up; the press itself already went through.
+            }
+        }
+    }
+
+    /**
+     * [code] held down, like a hold on the real remote (Home opens the quick menu, OK on an app shows its options). With ADB this is one command; on a
      * Fire TV it is key down, a pause, then key up. A TV that doesn't take key down/up gets an ordinary press instead.
      */
     fun longPress(code: Int) {
@@ -503,7 +519,7 @@ object TvRemote {
                     try {
                         link.send(down)
                     } catch (e: FireTvHttpException) {
-                        FireTvCommands.forKey(code)?.let { link.send(it) } // the best this TV allows
+                        sendPress(link, code) // the best this TV allows
                         return@enqueue
                     }
                     Thread.sleep(LONG_PRESS_MS) // the sender runs on its own IO thread; later buttons wait this one second
@@ -543,7 +559,7 @@ object TvRemote {
                 // (A TV that doesn't answer at all is a lost connection and is handled as one.)
                 holdWorks = false
                 holding.remove(code, id)
-                FireTvCommands.forKey(code)?.let { link.send(it) }
+                sendPress(link, code)
             }
         }
         val mine = generation

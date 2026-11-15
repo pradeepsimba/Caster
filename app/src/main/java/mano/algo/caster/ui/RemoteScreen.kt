@@ -250,7 +250,7 @@ private fun RemotePad(
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 PadButton("Left", TvKey.LEFT, onKey, repeat = true) { Text("◀", style = MaterialTheme.typography.titleLarge) }
-                PadButton("OK", TvKey.OK, onKey, accent = true) { Text("OK", fontWeight = FontWeight.Bold) }
+                PadButton("OK", TvKey.OK, onKey, accent = true, onLongPress = { TvRemote.longPress(TvKey.OK) }) { Text("OK", fontWeight = FontWeight.Bold) }
                 PadButton("Right", TvKey.RIGHT, onKey, repeat = true) { Text("▶", style = MaterialTheme.typography.titleLarge) }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -259,14 +259,14 @@ private fun RemotePad(
                 Spacer72()
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                PadButton("Back", TvKey.BACK, onKey) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null) }
+                PadButton("Back", TvKey.BACK, onKey, onLongPress = { TvRemote.longPress(TvKey.BACK) }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null) }
                 PadButton("Home", TvKey.HOME, onKey, onLongPress = { TvRemote.longPress(TvKey.HOME) }) { Icon(Icons.Filled.Home, contentDescription = null) }
-                PadButton("Menu", TvKey.MENU, onKey) { Text("≡", style = MaterialTheme.typography.titleLarge) }
+                PadButton("Menu", TvKey.MENU, onKey, onLongPress = { TvRemote.longPress(TvKey.MENU) }) { Text("≡", style = MaterialTheme.typography.titleLarge) }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                PadButton("Rewind", TvKey.REWIND, onKey, repeat = true) { Text("⏪") }
+                PadButton("Rewind", TvKey.REWIND, onKey, repeat = true, deferTap = true) { Text("⏪") }
                 PadButton("Play or pause", TvKey.PLAY_PAUSE, onKey) { Text("⏯") }
-                PadButton("Fast forward", TvKey.FAST_FORWARD, onKey, repeat = true) { Text("⏩") }
+                PadButton("Fast forward", TvKey.FAST_FORWARD, onKey, repeat = true, deferTap = true) { Text("⏩") }
             }
             if (adb || volume is TvRemote.VolumeState.Ready) { // on a Fire TV volume goes through ADB, once it is turned on
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -277,7 +277,7 @@ private fun RemotePad(
             }
             if (!adb && volume !is TvRemote.VolumeState.Ready) VolumeSetup(volume, onEnableVolume)
             Text(
-                "Tip: hold Home to open the TV's quick menu, like on the real remote.",
+                "Tip: like the real remote, you can hold Home, OK, Back and Menu, and hold the rewind and fast-forward buttons.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -410,6 +410,7 @@ private fun PadButton(
     repeat: Boolean = false,
     accent: Boolean = false,
     onLongPress: (() -> Unit)? = null,
+    deferTap: Boolean = false, // send a tap only when the finger lifts, so a hold doesn't also count as a tap
     content: @Composable () -> Unit,
 ) {
     val haptic = LocalHapticFeedback.current
@@ -447,11 +448,15 @@ private fun PadButton(
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             onLongPress()
                         } else null
-                        if (onLongPress == null) onKey(keyCode, false)
+                        if (onLongPress == null && !deferTap) onKey(keyCode, false)
+                        var holdStarted = false
                         val held = if (repeat) scope.launch {
                             delay(350)
+                            holdStarted = true
                             // A Fire TV can hold a direction by itself, which is far smoother; otherwise repeat single presses.
                             if (!TvRemote.holdStart(keyCode)) {
+                                // No native hold here: the press that was waiting for the finger to lift goes out now.
+                                if (deferTap) onKey(keyCode, false)
                                 while (true) {
                                     onKey(keyCode, true)
                                     delay(130)
@@ -470,7 +475,7 @@ private fun PadButton(
                                 TvRemote.holdEnd(keyCode)
                             }
                         }
-                        if (onLongPress != null && lifted && !longFired) onKey(keyCode, false)
+                        if (lifted && ((onLongPress != null && !longFired) || (deferTap && !holdStarted))) onKey(keyCode, false)
                     },
                 )
             },

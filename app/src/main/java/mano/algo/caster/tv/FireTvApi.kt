@@ -31,8 +31,8 @@ object FireTvCommands {
 
     private fun nav(action: String) = Request("/v1/FireTV?action=$action")
 
-    private fun scan(direction: String) =
-        Request("/v1/media?action=scan", """{"direction":"$direction","keyAction":{"keyActionType":"keyDown"}}""")
+    private fun scan(direction: String, down: Boolean = true) =
+        Request("/v1/media?action=scan", """{"direction":"$direction","keyAction":{"keyActionType":"${if (down) "keyDown" else "keyUp"}"}}""")
 
     /** The request for an Android key code, or null for a button the Fire TV service has no command for. */
     fun forKey(code: Int): Request? = when (code) {
@@ -53,10 +53,13 @@ object FireTvCommands {
     fun supports(code: Int) = forKey(code) != null
 
     /**
-     * Key down or key up for a direction. Holding a direction between the two makes the TV repeat it by itself, which is
-     * far smoother than sending one press after another over the network. Only the four directions have it.
+     * Key down or key up for a direction, fast-forward or rewind. Holding a direction between the two makes the TV repeat
+     * it by itself, which is far smoother than sending one press after another over the network; holding fast-forward
+     * or rewind keeps scanning, like on the real remote.
      */
     fun hold(code: Int, down: Boolean): Request? {
+        if (code == TvKey.FAST_FORWARD) return scan("forward", down)
+        if (code == TvKey.REWIND) return scan("back", down)
         val action = when (code) {
             TvKey.UP -> "dpad_up"
             TvKey.DOWN -> "dpad_down"
@@ -68,11 +71,19 @@ object FireTvCommands {
     }
 
     /**
-     * Key down or key up for Home. Kept down for a moment between the two, the TV sees a long press, the same as a hold
-     * on the real remote (it shows the quick menu). Only Home has it.
+     * Key down or key up for Home, OK, Back or Menu. Kept down for a moment between the two, the TV sees a long press,
+     * the same as a hold on the real remote (Home shows the quick menu, OK on an app shows its options).
      */
-    fun longPress(code: Int, down: Boolean): Request? =
-        if (code == TvKey.HOME) Request("/v1/FireTV?action=home", """{"keyActionType":"${if (down) "keyDown" else "keyUp"}"}""") else null
+    fun longPress(code: Int, down: Boolean): Request? {
+        val action = when (code) {
+            TvKey.HOME -> "home"
+            TvKey.OK -> "select"
+            TvKey.BACK -> "back"
+            TvKey.MENU -> "menu"
+            else -> return null
+        }
+        return Request("/v1/FireTV?action=$action", """{"keyActionType":"${if (down) "keyDown" else "keyUp"}"}""")
+    }
 
     /** Puts [text] into the text field that has focus on the TV (the whole text, so it can be sent again safely). */
     fun text(text: String) = Request("/v1/FireTV/keyboard", """{"text":${jsonString(text)}}""")
