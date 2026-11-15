@@ -380,7 +380,7 @@ fun CasterApp() {
                 found = tvFound,
                 scanning = tvScanning,
                 shareUrl = (state as? ServerState.Running)?.baseUrl,
-                onConnect = { host -> withLocalNetwork(runIfDenied = false) { TvRemote.connectFire(context, host) } },
+                onConnect = { host -> withLocalNetwork(runIfDenied = false) { TvRemote.connect(context, host) } },
                 onConnectAdb = { host -> withLocalNetwork(runIfDenied = false) { TvRemote.connectAdb(context, host) } },
                 onSubmitPin = { pin -> TvRemote.submitPin(context, pin) },
                 onDisconnect = TvRemote::disconnect,

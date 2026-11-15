@@ -82,7 +82,7 @@ val RemoteIcon: ImageVector by lazy {
     }.build()
 }
 
-/** Phone-as-remote for a Fire TV: connect once, then use the buttons like the real remote. */
+/** Phone-as-remote for a Fire TV or Android TV: connect once, then use the buttons like the real remote. */
 @Composable
 fun RemoteScreen(
     state: TvRemote.State,
@@ -107,7 +107,7 @@ fun RemoteScreen(
         modifier = modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        SectionTitle("TV remote", "Control a Fire TV from this phone.")
+        SectionTitle("TV remote", "Control a Fire TV or Android TV from this phone.")
         if (!TvRemote.supported) {
             EmptyState("Needs Android 8 or newer", "The TV remote can't run on this version of Android.")
             return@Column
@@ -133,6 +133,8 @@ private fun ConnectionCard(
 ) {
     var host by rememberSaveable(savedHost) { mutableStateOf(savedHost) }
     val needsPin = state as? TvRemote.State.NeedsPin
+    val androidTvCode = needsPin?.androidTv == true // an Android TV shows 6 letters and digits, a Fire TV 4 digits
+    val pinLength = if (androidTvCode) 6 else 4
     var pin by rememberSaveable(needsPin != null) { mutableStateOf("") } // a fresh box for every pairing
     val connected = state is TvRemote.State.Connected
     val connecting = state is TvRemote.State.Connecting
@@ -158,25 +160,37 @@ private fun ConnectionCard(
             )
             if (needsPin != null) {
                 Text(
-                    "Look at the TV: it shows a 4-digit code. Type it here.",
+                    if (androidTvCode) "Look at the TV: it shows a 6-character code (numbers and the letters A to F). Type it here."
+                    else "Look at the TV: it shows a 4-digit code. Type it here.",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
                 )
                 OutlinedTextField(
                     value = pin,
-                    onValueChange = { pin = it.filter(Char::isDigit).take(4) },
+                    onValueChange = { typed ->
+                        pin = if (androidTvCode) {
+                            typed.filter { c -> c in '0'..'9' || c in 'a'..'f' || c in 'A'..'F' }.take(pinLength).uppercase()
+                        } else {
+                            typed.filter(Char::isDigit).take(pinLength)
+                        }
+                    },
                     label = { Text("Code from the TV") },
                     singleLine = true,
                     isError = needsPin.error != null,
                     supportingText = needsPin.error?.let { message -> { Text(message) } },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction = ImeAction.Done),
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = if (androidTvCode) KeyboardType.Ascii else KeyboardType.NumberPassword,
+                        capitalization = if (androidTvCode) KeyboardCapitalization.Characters else KeyboardCapitalization.None,
+                        autoCorrectEnabled = false,
+                        imeAction = ImeAction.Done,
+                    ),
                     keyboardActions = KeyboardActions(onDone = { onSubmitPin(pin) }),
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (needsPin != null) {
-                    Button(onClick = { onSubmitPin(pin) }, enabled = pin.length == 4, shape = RoundedCornerShape(14.dp)) { Text("Pair") }
+                    Button(onClick = { onSubmitPin(pin) }, enabled = pin.length == pinLength, shape = RoundedCornerShape(14.dp)) { Text("Pair") }
                     OutlinedButton(onClick = onDisconnect, shape = RoundedCornerShape(14.dp)) { Text("Cancel") }
                 } else if (connected || connecting) {
                     OutlinedButton(onClick = onDisconnect, shape = RoundedCornerShape(14.dp)) {
@@ -196,7 +210,8 @@ private fun ConnectionCard(
                 if (found.isEmpty() && !scanning) {
                     // Shown after a search that found nothing, and as the first-time help.
                     Text(
-                        "Turn the TV on and tap Connect. The first time, the TV shows a 4-digit code: type it here. " +
+                        "Turn the TV on and tap Connect. Fire TV and Android TV both work. The first time, the TV shows a code " +
+                            "(4 digits on a Fire TV, 6 letters and numbers on an Android TV): type it here. " +
                             "Nothing needs to be switched on in the TV's settings.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -208,7 +223,7 @@ private fun ConnectionCard(
             }
             if (state is TvRemote.State.Connecting) {
                 Text(
-                    if (!state.viaAdb) "Waking the TV…" else "Look at the TV and choose Allow (tick \"Always allow\" so it doesn't ask again).",
+                    if (!state.viaAdb) "Connecting to the TV…" else "Look at the TV and choose Allow (tick \"Always allow\" so it doesn't ask again).",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
                 )
@@ -231,7 +246,7 @@ private fun RemotePad(
     onOpenCaster: (String) -> Unit,
     onOpenBrowser: () -> Unit,
 ) {
-    val adb = link == TvRemote.Link.Adb
+    val fullRemote = link != TvRemote.Link.FireTv // ADB and Android TV have volume, the keyboard keys and link sending
     var typed by rememberSaveable { mutableStateOf("") }
     // When the keyboard opens the page shrinks; this scrolls the typing box into the part that is still visible.
     val typingBox = remember { BringIntoViewRequester() }
@@ -268,14 +283,14 @@ private fun RemotePad(
                 PadButton("Play or pause", TvKey.PLAY_PAUSE, onKey) { Text("⏯") }
                 PadButton("Fast forward", TvKey.FAST_FORWARD, onKey, repeat = true, deferTap = true) { Text("⏩") }
             }
-            if (adb || volume is TvRemote.VolumeState.Ready) { // on a Fire TV volume goes through ADB, once it is turned on
+            if (fullRemote || volume is TvRemote.VolumeState.Ready) { // on a Fire TV volume goes through ADB, once it is turned on
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     PadButton("Volume down", TvKey.VOLUME_DOWN, onKey, repeat = true) { Text("Vol −") }
                     PadButton("Mute", TvKey.MUTE, onKey) { Text("Mute") }
                     PadButton("Volume up", TvKey.VOLUME_UP, onKey, repeat = true) { Text("Vol +") }
                 }
             }
-            if (!adb && volume !is TvRemote.VolumeState.Ready) VolumeSetup(volume, onEnableVolume)
+            if (!fullRemote && volume !is TvRemote.VolumeState.Ready) VolumeSetup(volume, onEnableVolume)
             Text(
                 "Tip: like the real remote, you can hold Home, OK, Back and Menu, and hold the rewind and fast-forward buttons.",
                 style = MaterialTheme.typography.bodySmall,
@@ -287,9 +302,9 @@ private fun RemotePad(
     CasterCard(high = true) {
         Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Open Caster on the TV", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            if (shareUrl != null && adb) {
+            if (shareUrl != null && fullRemote) {
                 Text(
-                    "Opens $shareUrl in the TV's browser, so nobody has to type the address.",
+                    "Opens $shareUrl on the TV, so nobody has to type the address. The TV needs a web browser installed.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -314,7 +329,7 @@ private fun RemotePad(
             }
             Text("Keyboard", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             Text(
-                if (adb) {
+                if (fullRemote) {
                     "Select a search box on the TV, then type here: each letter goes to the TV as you type it. " +
                         "Letters the TV can't take (accents, emoji) are skipped."
                 } else {
@@ -334,7 +349,7 @@ private fun RemotePad(
                 keyboardOptions = KeyboardOptions(
                     capitalization = KeyboardCapitalization.None,
                     autoCorrectEnabled = false, // a correction would rewrite letters already sent to the TV
-                    imeAction = if (adb) ImeAction.Send else ImeAction.Done,
+                    imeAction = if (fullRemote) ImeAction.Send else ImeAction.Done,
                 ),
                 keyboardActions = KeyboardActions(onSend = {
                     onKey(TvKey.ENTER, false)
@@ -350,7 +365,7 @@ private fun RemotePad(
                         }
                     },
             )
-            if (adb) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (fullRemote) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = {
                     // Keep the box and the TV in step: remove the last letter in both, or just the TV's if the box is empty.
                     if (typed.isEmpty()) onKey(TvKey.DELETE, false) else {

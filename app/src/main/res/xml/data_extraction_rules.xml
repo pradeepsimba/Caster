@@ -2,14 +2,18 @@
 <!-- Android 12 and newer. -->
 <data-extraction-rules>
     <cloud-backup>
-        <!-- The keys that prove this phone to a TV (ADB key, Fire TV pairing token) must never leave the phone. -->
+        <!-- The keys that prove this phone to a TV (ADB key, Android TV certificate, Fire TV pairing token) must never leave the phone. -->
         <exclude domain="file" path="adb_key" />
         <exclude domain="file" path="adb_key.pub" />
+        <exclude domain="file" path="atv_key" />
+        <exclude domain="file" path="atv_cert" />
         <exclude domain="sharedpref" path="caster_tv.xml" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="file" path="adb_key" />
         <exclude domain="file" path="adb_key.pub" />
+        <exclude domain="file" path="atv_key" />
+        <exclude domain="file" path="atv_cert" />
         <exclude domain="sharedpref" path="caster_tv.xml" />
     </device-transfer>
 </data-extraction-rules>
