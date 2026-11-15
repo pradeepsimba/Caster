@@ -83,6 +83,7 @@ dependencies {
     implementation(libs.zxing.core)
     implementation(libs.androidx.profileinstaller)
     implementation(libs.play.services.cast.framework)
+    implementation(libs.dadb)
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)

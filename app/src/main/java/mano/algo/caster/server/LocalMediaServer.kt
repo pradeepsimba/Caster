@@ -60,6 +60,12 @@ class LocalMediaServer(
 
     override fun serve(session: IHTTPSession): Response = try {
         withCors(route(session))
+    } catch (e: OutOfMemoryError) {
+        // A request that needs more memory than is free must not take the whole app (and every stream) down with it.
+        thumbCache.evictAll()
+        infoCache.evictAll()
+        Log.e(TAG, "Out of memory serving ${session.uri}", e)
+        withCors(error(Response.Status.INTERNAL_ERROR, "out_of_memory"))
     } catch (e: Exception) {
         Log.e(TAG, "Request failed: ${session.uri}", e)
         withCors(error(Response.Status.INTERNAL_ERROR, "server_error"))
@@ -293,13 +299,26 @@ class LocalMediaServer(
         val key = ContentUris.parseId(uri) + when (kind) { "a" -> 1L shl 60; "i" -> 1L shl 61; else -> 0L }
         // Decoding a frame is the slowest thing the server does, so each encoded thumbnail is made once.
         val bytes = thumbCache.get(key) ?: run {
-            val bitmap = try {
-                appContext.contentResolver.loadThumbnail(uri, Size(320, 180), null)
-            } catch (e: Exception) {
-                return error(Response.Status.NOT_FOUND, "not_found")
+            // A page full of thumbnails asks for dozens at once while a video is also playing; decoding them all
+            // together is what exhausts memory and the media provider, so only a few run at a time.
+            decodeGate.acquire()
+            try {
+                thumbCache.get(key) ?: run {
+                    val bitmap = try {
+                        appContext.contentResolver.loadThumbnail(uri, Size(320, 180), null)
+                    } catch (e: Exception) {
+                        return error(Response.Status.NOT_FOUND, "not_found")
+                    }
+                    try {
+                        ByteArrayOutputStream(24 * 1024).also { bitmap.compress(Bitmap.CompressFormat.JPEG, 78, it) }
+                            .toByteArray().also { thumbCache.put(key, it) }
+                    } finally {
+                        bitmap.recycle()
+                    }
+                }
+            } finally {
+                decodeGate.release()
             }
-            ByteArrayOutputStream(24 * 1024).also { bitmap.compress(Bitmap.CompressFormat.JPEG, 78, it) }
-                .toByteArray().also { thumbCache.put(key, it) }
         }
         return newFixedLengthResponse(Response.Status.OK, "image/jpeg", ByteArrayInputStream(bytes), bytes.size.toLong())
             .apply { addHeader("Cache-Control", "private, max-age=86400") }
@@ -548,7 +567,14 @@ class LocalMediaServer(
 
         override fun exec(clientHandler: NanoHTTPD.ClientHandler) {
             running.add(clientHandler)
-            pool.execute(clientHandler)
+            try {
+                pool.execute(clientHandler)
+            } catch (e: java.util.concurrent.RejectedExecutionException) {
+                // Raced with stop(): the pool is already shut down. Drop this connection instead of throwing on the
+                // accept thread, which has no handler and would end the whole app.
+                running.remove(clientHandler)
+                clientHandler.close()
+            }
         }
     }
 
@@ -563,6 +589,8 @@ class LocalMediaServer(
         val thumbCache = object : LruCache<Long, ByteArray>(6 * 1024 * 1024) {
             override fun sizeOf(key: Long, value: ByteArray) = value.size
         }
+        /** How many thumbnails may be decoded at the same time. */
+        val decodeGate = java.util.concurrent.Semaphore(3)
         val infoCache = LruCache<Long, String>(512)
         val nameCache = LruCache<Long, String>(256)
 

@@ -197,6 +197,8 @@ fun SettingsScreen(
                 )
             }
         }
+
+        DiagnosticsCard()
     }
 }
 

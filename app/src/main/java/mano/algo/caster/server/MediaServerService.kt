@@ -22,6 +22,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import fi.iki.elonen.NanoHTTPD
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -75,7 +76,11 @@ sealed interface ServerState {
  */
 class MediaServerService : Service() {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    // No job in here may take the app down: the network check, the notification and the timers just log and carry on.
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Main.immediate +
+            CoroutineExceptionHandler { _, e -> Log.e(TAG, "Background job failed", e) },
+    )
     private val serverLock = Mutex()
 
     // Only touched while holding serverLock.
@@ -156,7 +161,18 @@ class MediaServerService : Service() {
     }
 
     /** Brings the server in line with the current network: (re)binds, or stops if no LAN is available. */
-    private suspend fun reconcile() = withContext(Dispatchers.IO) {
+    private suspend fun reconcile() {
+        try {
+            reconcileOnce()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Keep sharing (and the 30-second check that calls this) alive; the next pass tries again.
+            Log.e(TAG, "Couldn't update the network connection", e)
+        }
+    }
+
+    private suspend fun reconcileOnce() = withContext(Dispatchers.IO) {
         serverLock.withLock {
             val ip = NetworkUtils.resolveLocalIpv4(this@MediaServerService)
             val host = ip?.hostAddress

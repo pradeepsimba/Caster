@@ -57,6 +57,7 @@ import mano.algo.caster.server.RemoteControl
 import mano.algo.caster.server.ShareMode
 import mano.algo.caster.server.ServerState
 import mano.algo.caster.server.ShareSettings
+import mano.algo.caster.tv.TvRemote
 
 private val STORAGE_PERMISSION =
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) Manifest.permission.READ_MEDIA_VIDEO
@@ -121,6 +122,7 @@ private fun copyToClipboard(context: Context, text: String) {
 private enum class Tab(val label: String, val icon: ImageVector) {
     Home("Home", Icons.Filled.Home),
     Library("Library", Icons.AutoMirrored.Filled.List),
+    Remote("Remote", RemoteIcon),
     Devices("Devices", Icons.Filled.Phone),
     Settings("Settings", Icons.Filled.Settings),
 }
@@ -134,6 +136,11 @@ fun CasterApp() {
     val selection by ShareSettings.state.collectAsStateWithLifecycle()
     val watching by ActivityTracker.watching.collectAsStateWithLifecycle()
     val remotes by RemoteControl.all.collectAsStateWithLifecycle()
+    val tvState by TvRemote.state.collectAsStateWithLifecycle()
+    val tvHost by TvRemote.savedHost.collectAsStateWithLifecycle()
+    val tvFound by TvRemote.found.collectAsStateWithLifecycle()
+    val tvScanning by TvRemote.scanning.collectAsStateWithLifecycle()
+    remember(context) { TvRemote.init(context); true }
     remember(context) { ShareSettings.init(context); true }   // returns a value, because remember must not return Unit
 
     var tab by rememberSaveable { mutableIntStateOf(Tab.Home.ordinal) }
@@ -268,6 +275,20 @@ fun CasterApp() {
                     if (selection.ids.isEmpty()) openPicker()
                 },
                 onChoose = { openPicker() },
+                modifier = screenModifier,
+            )
+            Tab.Remote -> RemoteScreen(
+                state = tvState,
+                savedHost = tvHost,
+                found = tvFound,
+                scanning = tvScanning,
+                shareUrl = (state as? ServerState.Running)?.baseUrl,
+                onConnect = { TvRemote.connect(context, it) },
+                onDisconnect = TvRemote::disconnect,
+                onScan = { TvRemote.scan(context) },
+                onKey = TvRemote::key,
+                onTyped = TvRemote::typed,
+                onOpenCaster = TvRemote::openUrl,
                 modifier = screenModifier,
             )
             Tab.Devices -> DevicesScreen(
