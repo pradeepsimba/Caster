@@ -22,6 +22,17 @@ class FireTvCommandsTest {
     }
 
     @Test
+    fun onlyDirectionsCanBeHeld() {
+        val down = FireTvCommands.hold(TvKey.LEFT, down = true)
+        val up = FireTvCommands.hold(TvKey.LEFT, down = false)
+        assertEquals("/v1/FireTV?action=dpad_left", down?.path)
+        assertEquals("{${q}keyActionType$q:${q}keyDown$q}", down?.body)
+        assertEquals("{${q}keyActionType$q:${q}keyUp$q}", up?.body)
+        assertNull(FireTvCommands.hold(TvKey.OK, down = true))
+        assertNull(FireTvCommands.hold(TvKey.FAST_FORWARD, down = true))
+    }
+
+    @Test
     fun buttonsTheServiceLacksAreNotSent() {
         assertNull(FireTvCommands.forKey(TvKey.VOLUME_UP))
         assertNull(FireTvCommands.forKey(TvKey.ENTER))

@@ -52,6 +52,21 @@ object FireTvCommands {
 
     fun supports(code: Int) = forKey(code) != null
 
+    /**
+     * Key down or key up for a direction. Holding a direction between the two makes the TV repeat it by itself, which is
+     * far smoother than sending one press after another over the network. Only the four directions have it.
+     */
+    fun hold(code: Int, down: Boolean): Request? {
+        val action = when (code) {
+            TvKey.UP -> "dpad_up"
+            TvKey.DOWN -> "dpad_down"
+            TvKey.LEFT -> "dpad_left"
+            TvKey.RIGHT -> "dpad_right"
+            else -> return null
+        }
+        return Request("/v1/FireTV?action=$action", """{"keyActionType":"${if (down) "keyDown" else "keyUp"}"}""")
+    }
+
     /** Puts [text] into the text field that has focus on the TV (the whole text, so it can be sent again safely). */
     fun text(text: String) = Request("/v1/FireTV/keyboard", """{"text":${jsonString(text)}}""")
 
@@ -84,6 +99,9 @@ object FireTvCommands {
         append('"')
     }
 }
+
+/** The TV answered, but with an error status (as opposed to not answering at all). */
+class FireTvHttpException(val status: Int) : IOException("The Fire TV answered $status")
 
 /** The TV refused the token (it was reset, or this phone was removed): the owner has to pair again. */
 class FireTvAuthException : IOException("The Fire TV no longer accepts this phone")
@@ -137,7 +155,7 @@ class FireTvLink(val host: String, var token: String?) {
             val stream = if (code in 200..299) c.inputStream else c.errorStream
             val answer = stream?.use { it.readBytes().toString(Charsets.UTF_8) }.orEmpty()
             if (code == 401 || code == 403) throw FireTvAuthException()
-            if (code !in 200..299) throw IOException("The Fire TV answered $code")
+            if (code !in 200..299) throw FireTvHttpException(code)
             return answer
         } catch (e: Exception) {
             c.disconnect() // after a failure drop the connection; after a success it stays open for the next press

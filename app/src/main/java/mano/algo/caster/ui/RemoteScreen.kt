@@ -55,7 +55,10 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import mano.algo.caster.tv.TvKey
 import mano.algo.caster.tv.TvRemote
@@ -427,14 +430,24 @@ private fun PadButton(
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                         onKey(keyCode, false)
                         val held = if (repeat) scope.launch {
-                            delay(450)
-                            while (true) {
-                                onKey(keyCode, true)
-                                delay(130)
+                            delay(350)
+                            // A Fire TV can hold a direction by itself, which is far smoother; otherwise repeat single presses.
+                            if (!TvRemote.holdStart(keyCode)) {
+                                while (true) {
+                                    onKey(keyCode, true)
+                                    delay(130)
+                                }
                             }
                         } else null
-                        tryAwaitRelease()
-                        held?.cancel()
+                        try {
+                            tryAwaitRelease()
+                        } finally {
+                            // Always let go, even if the screen is left while the button is down.
+                            withContext(NonCancellable) {
+                                held?.cancelAndJoin()
+                                TvRemote.holdEnd(keyCode)
+                            }
+                        }
                     },
                 )
             },

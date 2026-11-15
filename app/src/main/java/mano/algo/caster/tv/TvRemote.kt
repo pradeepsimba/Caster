@@ -72,6 +72,9 @@ object TvRemote {
     private const val KEY_HOST = "host"
     private const val KEY_TOKEN_PREFIX = "fire_token_"
     private const val KEY_VOLUME_PREFIX = "volume_on_"
+
+    /** A held direction is released by itself after this long, so a lost "key up" can't leave the TV scrolling for ever. */
+    private const val HOLD_LIMIT_MS = 8_000L
     private const val APPROVAL_WAIT_MS = 60_000L
 
     /** An ADB command that takes longer than this is treated as a dead connection (a sleeping TV never answers). */
@@ -107,6 +110,14 @@ object TvRemote {
     @Volatile private var fire: FireTvLink? = null
     @Volatile private var pairing: FireTvLink? = null
     @Volatile private var volumeAdb: Dadb? = null
+
+    /**
+     * The directions currently held down on a Fire TV (key code to the number of that hold; two fingers can hold two
+     * directions), and whether this TV has shown it understands held keys.
+     */
+    private val holding = java.util.concurrent.ConcurrentHashMap<Int, Int>()
+    private val holdIds = AtomicInteger(0)
+    @Volatile private var holdWorks = true
     private var volumeJob: Job? = null
 
     /** Bumped by every disconnect, so a job that was running for an older connection can tell and stay quiet. */
@@ -302,6 +313,7 @@ object TvRemote {
         connection = null
         fire = null
         pairing = null
+        holding.clear()
         closeVolume()
         while (commands.tryReceive().isSuccess) { /* drop anything still queued for the old connection */ }
         pending.set(0)
@@ -453,7 +465,7 @@ object TvRemote {
 
     /** One press of [code]. With [repeating] (a held button) a press is skipped while the TV is still catching up. */
     fun key(code: Int, repeating: Boolean = false) {
-        if (repeating && pending.get() >= 3) return
+        if (repeating && pending.get() >= 1) return // one at a time: an even pace instead of bursts and gaps
         val link = fire
         // A held fast-forward would keep asking the Fire TV to speed up; only a single press is sent there.
         if (repeating && link != null && (code == TvKey.FAST_FORWARD || code == TvKey.REWIND)) return
@@ -465,6 +477,51 @@ object TvRemote {
         when {
             link != null -> FireTvCommands.forKey(code)?.let { request -> enqueue { link.send(request) } }
             adb != null -> enqueue { shellGuarded(adb, TvCommands.key(code)) }
+        }
+    }
+
+    /**
+     * A direction pressed and kept down, on a Fire TV: sends "key down" now and "key up" from [holdEnd], and the TV repeats
+     * the move by itself. Returns false when that isn't possible (not a Fire TV, not a direction, or this TV didn't take
+     * it), and the caller then repeats single presses instead.
+     */
+    fun holdStart(code: Int): Boolean {
+        val link = fire ?: return false
+        if (!holdWorks) return false
+        val down = FireTvCommands.hold(code, down = true) ?: return false
+        val id = holdIds.incrementAndGet()
+        holding[code] = id
+        enqueue {
+            try {
+                link.send(down)
+            } catch (e: FireTvHttpException) {
+                // The TV answered but doesn't take held keys: remember it, and move once the ordinary way.
+                // (A TV that doesn't answer at all is a lost connection and is handled as one.)
+                holdWorks = false
+                holding.remove(code, id)
+                FireTvCommands.forKey(code)?.let { link.send(it) }
+            }
+        }
+        val mine = generation
+        scope.launch {
+            delay(HOLD_LIMIT_MS)
+            // Only this very hold: a newer press of the same direction has its own timer.
+            if (mine == generation && holding[code] == id) holdEnd(code)
+        }
+        return true
+    }
+
+    /** The held direction was let go: tells the TV to stop. Does nothing if [code] isn't the one held. */
+    fun holdEnd(code: Int) {
+        if (holding.remove(code) == null) return
+        val link = fire ?: return
+        val up = FireTvCommands.hold(code, down = false) ?: return
+        enqueue {
+            try {
+                link.send(up)
+            } catch (e: FireTvHttpException) {
+                // The TV answered with an error to the stop only; nothing more to do.
+            }
         }
     }
 
