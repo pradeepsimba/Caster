@@ -537,7 +537,10 @@ class LocalMediaServer(
                 sinceCheck += n
                 if (sinceCheck >= CHECK_EVERY_BYTES) {
                     sinceCheck = 0
-                    if (!stillAllowed()) throw IOException("No longer shared")
+                    if (!stillAllowed()) {
+                        close() // the file is let go now, not whenever the response happens to be cleaned up
+                        throw IOException("No longer shared")
+                    }
                 }
             }
             return n

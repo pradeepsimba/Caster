@@ -37,10 +37,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateSetOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.snapshots.SnapshotStateSet
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -103,7 +107,17 @@ fun VideoPickerScreen(
     val videos by produceState<List<PickerVideo>?>(initialValue = null) {
         value = withContext(Dispatchers.IO) { queryVideos(context) }
     }
-    val selected = remember { mutableStateSetOf<Long>().apply { addAll(initialSelection) } }
+    // Saved with the screen, so turning the phone doesn't bring back the old selection.
+    val selected = rememberSaveable(
+        saver = listSaver<SnapshotStateSet<Long>, Long>(
+            save = { it.toList() },
+            restore = { mutableStateSetOf<Long>().apply { addAll(it) } },
+        ),
+    ) { mutableStateSetOf<Long>().apply { addAll(initialSelection) } }
+    // Videos that were deleted since they were chosen are no longer counted (an empty list means "couldn't read", not "all deleted").
+    LaunchedEffect(videos) {
+        videos?.takeIf { it.isNotEmpty() }?.let { list -> selected.retainAll(list.map { it.id }.toSet()) }
+    }
     BackHandler(onBack = onCancel)
 
     Column(modifier = modifier.fillMaxSize()) {

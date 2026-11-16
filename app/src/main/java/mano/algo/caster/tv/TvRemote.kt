@@ -106,6 +106,7 @@ object TvRemote {
     private const val ATV_PROBE_MS = 1_500
     private const val ATV_READY_MS = 8_000L
     private const val ALLOW_HINT_MS = 2_500L
+    private const val HINT_CHECKS = 20
 
     /** An ADB command that takes longer than this is treated as a dead connection (a sleeping TV never answers). */
     private const val SHELL_DEADLINE_MS = 10_000L
@@ -504,10 +505,16 @@ object TvRemote {
      */
     private fun hintAllowSoon(host: String, mine: Int): Job = scope.launch {
         delay(ALLOW_HINT_MS)
-        // Only a TV that has taken the connection can be asking its owner; one that is off or away hasn't.
-        val socket = openingSocket as? java.net.Socket
-        if (socket != null && socket.isConnected && !socket.isClosed) {
-            _state.compareAndSet(State.Connecting(host), State.Connecting(host, needsAllow = true)) // only if still just connecting
+        // Only a TV that has taken the connection can be asking its owner; one that is off or away hasn't. (The connection
+        // may only be taken after the first port timed out, so it is looked at again for a while.)
+        repeat(HINT_CHECKS) {
+            if (mine != generation || _state.value != State.Connecting(host)) return@launch
+            val socket = openingSocket as? java.net.Socket
+            if (socket != null && socket.isConnected && !socket.isClosed) {
+                _state.compareAndSet(State.Connecting(host), State.Connecting(host, needsAllow = true)) // only if still just connecting
+                return@launch
+            }
+            delay(500)
         }
     }
 

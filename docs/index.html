@@ -153,7 +153,8 @@
   .player-ui { position:absolute; top:0; right:0; bottom:0; left:0; display:flex; flex-direction:column; justify-content:space-between; transition:opacity .25s; }
   .player-ui { pointer-events:none; }  /* the picture behind it gets the clicks and taps (pause, double-tap, next photo) */
   .player-top, .player-bottom { pointer-events:auto; }
-  .player-ui.idle, .player-ui.idle .player-top, .player-ui.idle .player-bottom { opacity:0; pointer-events:none; }
+  .player-ui.idle { opacity:0; }
+  .player-ui.idle .player-top, .player-ui.idle .player-bottom { pointer-events:none; }
   .player-top { display:flex; align-items:center; gap:16px; padding:18px 24px; background:linear-gradient(rgba(0,0,0,.8), transparent); }
   .player-top span { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; font-size:1.1rem; }
   .player-bottom { padding:56px 28px 24px; background:linear-gradient(transparent, rgba(0,0,0,.88)); }
@@ -407,11 +408,12 @@
   const memory = {};
   const store = {
     get(k, d) {
+      if (Object.prototype.hasOwnProperty.call(memory, k)) return memory[k]; // saved by this page: the newest
       try {
         const raw = localStorage.getItem(k);
         if (raw !== null) { const v = JSON.parse(raw); return v === null || v === undefined ? d : v; }
-      } catch (_e) { /* fall back to memory */ }
-      return Object.prototype.hasOwnProperty.call(memory, k) ? memory[k] : d;
+      } catch (_e) { /* unreadable: the default */ }
+      return d;
     },
     set(k, v) { memory[k] = v; try { localStorage.setItem(k, JSON.stringify(v)); } catch (_e) { /* memory has it */ } },
     del(k) { delete memory[k]; try { localStorage.removeItem(k); } catch (_e) { /* nothing to remove */ } },
@@ -805,6 +807,7 @@
       if (r.status === 403) {
         const e = await r.json().catch(() => ({}));
         if (e.error === 'extras_off' && kind !== 'v') { kind = 'v'; loadVideos(); return; }
+        setChildren($('grid'));
         $('videoStatus').textContent = 'The app has no permission to read ' + KIND_NAMES[kind] + '. Allow it on the phone and try again.';
         return;
       }

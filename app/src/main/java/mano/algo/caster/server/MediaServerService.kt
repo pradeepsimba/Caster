@@ -228,6 +228,11 @@ class MediaServerService : Service() {
                 mdns = null
                 val running = _state.value as? ServerState.Running ?: return@withLock
                 val announced = startMdns(ip!!, wantedName)
+                if (destroyed) { // the service ended while the new name was being checked
+                    mdns?.stop()
+                    mdns = null
+                    return@withLock
+                }
                 boundRequestedName = wantedName
                 publish(
                     running.copy(announcedName = announced, requestedName = wantedName),
@@ -484,6 +489,8 @@ class MediaServerService : Service() {
 
         fun stop(context: Context) {
             context.stopService(Intent(context, MediaServerService::class.java))
+            // A start that failed leaves its error on screen and no service to stop: Stop then clears the error.
+            if (_state.value is ServerState.Error) _state.value = ServerState.Stopped
         }
     }
 }

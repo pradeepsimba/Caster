@@ -262,7 +262,13 @@ fun CasterApp() {
         if (ok) picking = true else storageDenied()
     }
     // Photos and music need their own permissions on Android 13+ (older versions use the one storage permission).
-    val extrasPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
+    val extrasPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
+        if (results.values.any { !it }) {
+            // Refused: the switch must not stay on while nothing can be listed.
+            ShareSettings.setShareExtras(false)
+            Toast.makeText(context, "Photos and music need access to them. Allow it in the app's permissions to share them.", Toast.LENGTH_LONG).show()
+        }
+    }
     fun openPicker() {
         if (granted(STORAGE_PERMISSION)) picking = true else pickerPermission.launch(STORAGE_PERMISSION)
     }
@@ -376,8 +382,9 @@ fun CasterApp() {
                 hasStorageAccess = hasStorage,
                 onAll = { ShareSettings.setMode(ShareMode.ALL) },
                 onSelected = {
-                    ShareSettings.setMode(ShareMode.SELECTED)
-                    if (selection.ids.isEmpty()) openPicker()
+                    // With nothing chosen yet the picker opens first, and "selected" starts when videos are confirmed:
+                    // cancelling it must not leave the phone sharing nothing.
+                    if (selection.ids.isEmpty()) openPicker() else ShareSettings.setMode(ShareMode.SELECTED)
                 },
                 onChoose = { openPicker() },
                 modifier = screenModifier,
