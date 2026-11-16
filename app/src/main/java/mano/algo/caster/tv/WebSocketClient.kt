@@ -54,6 +54,9 @@ internal class WebSocketClient private constructor(
     private val output = socket.getOutputStream()
     private val writeLock = Any()
 
+    /** Set once the TV has answered a ping. A TV that never does isn't given up on for being quiet. */
+    @Volatile private var answersPings = false
+
     /** Sends one text message. */
     fun sendText(text: String) = sendFrame(OP_TEXT, text.toByteArray(Charsets.UTF_8))
 
@@ -88,8 +91,9 @@ internal class WebSocketClient private constructor(
     fun readText(timeoutMs: Int): String = nextText(timeoutMs, keepAlive = false)
 
     /**
-     * The next text message, for a connection that sits idle between button presses: after [pingMs] of silence it pings the TV,
-     * and a TV that stays silent for two such periods (no answer to the ping either) is treated as gone.
+     * The next text message, for a connection that sits idle between button presses: after [pingMs] of silence it pings the TV.
+     * A TV that has shown it answers pings, and then stays silent for two such periods, is treated as gone. (One that never
+     * answers a ping is kept: it can't be told apart from a quiet one, and a lost connection shows on the next button.)
      */
     fun readTextKeepingAlive(pingMs: Int): String = nextText(pingMs, keepAlive = true)
 
@@ -101,7 +105,11 @@ internal class WebSocketClient private constructor(
             val first = try {
                 input.read()
             } catch (e: SocketTimeoutException) {
-                if (!keepAlive || ++quiet >= 2) throw e
+                if (!keepAlive) throw e
+                if (++quiet >= 2) {
+                    if (answersPings) throw e
+                    quiet = 1
+                }
                 sendPing()
                 continue
             }
@@ -130,12 +138,13 @@ internal class WebSocketClient private constructor(
             when (opcode) {
                 OP_CLOSE -> throw EOFException("The TV closed the connection")
                 OP_PING -> sendFrame(OP_PONG, payload)
+                OP_PONG -> answersPings = true
                 OP_TEXT, OP_CONTINUATION -> {
                     message.write(payload)
                     if (message.size() > MAX_MESSAGE) throw IOException("Message too long")
                     if (fin) return message.toString(Charsets.UTF_8.name())
                 }
-                else -> Unit // pongs, and binary messages (not used by these TVs)
+                else -> Unit // binary messages (not used by these TVs)
             }
         }
     }

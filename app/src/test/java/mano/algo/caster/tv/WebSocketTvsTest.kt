@@ -79,6 +79,8 @@ class WebSocketTvsTest {
 
         fun ping() = write(9, ByteArray(0))
 
+        fun pong() = write(10, ByteArray(0))
+
         private fun write(opcode: Int, payload: ByteArray) {
             val out = ByteArrayOutputStream()
             out.write(0x80 or opcode)
@@ -193,12 +195,14 @@ class WebSocketTvsTest {
     }
 
     @Test
-    fun aQuietTvIsPingedAndThenGivenUp() {
+    fun aTvThatAnswersPingsButThenGoesQuietIsGivenUp() {
         var pinged = false
         val fake = FakeTv { peer ->
             val (opcode, _) = peer.frame()
             pinged = opcode == 9
-            Thread.sleep(1_000) // never answers
+            peer.pong() // it answers the first ping ...
+            peer.frame() // ... and the next one
+            Thread.sleep(1_000) // ... and then nothing
         }
         val ws = WebSocketClient.connect("127.0.0.1", fake.port, "/", secure = false, pinned = null)
         try {
@@ -209,6 +213,23 @@ class WebSocketTvsTest {
                 // after two quiet periods
             }
             assertTrue(pinged)
+        } finally {
+            ws.close()
+            fake.close()
+        }
+    }
+
+    @Test
+    fun aTvThatNeverAnswersPingsIsNotGivenUpOn() {
+        val fake = FakeTv { peer ->
+            peer.frame() // pings come, no pong goes back
+            peer.frame()
+            peer.frame()
+            peer.send("still here")
+        }
+        val ws = WebSocketClient.connect("127.0.0.1", fake.port, "/", secure = false, pinned = null)
+        try {
+            assertEquals("still here", ws.readTextKeepingAlive(100)) // well past two quiet periods
         } finally {
             ws.close()
             fake.close()

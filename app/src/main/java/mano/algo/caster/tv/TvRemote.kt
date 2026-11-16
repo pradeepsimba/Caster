@@ -93,6 +93,7 @@ object TvRemote {
     private const val KEY_SAMSUNG_PIN = "samsung_pin_" // the fingerprint of a Samsung TV's certificate
     private const val KEY_LG_KEY = "lg_key_"
     private const val KEY_LG_PIN = "lg_pin_"
+    private const val KEY_KIND_PREFIX = "kind_" // which kind of TV answered at an address last time
 
     /** A held direction is released by itself after this long, so a lost "key up" can't leave the TV scrolling for ever. */
     private const val HOLD_LIMIT_MS = 8_000L
@@ -104,6 +105,7 @@ object TvRemote {
     /** How long to ask an address whether it is an Android TV (its remote port answers), and how long it may take to get ready. */
     private const val ATV_PROBE_MS = 1_500
     private const val ATV_READY_MS = 8_000L
+    private const val ALLOW_HINT_MS = 2_500L
 
     /** An ADB command that takes longer than this is treated as a dead connection (a sleeping TV never answers). */
     private const val SHELL_DEADLINE_MS = 10_000L
@@ -196,6 +198,11 @@ object TvRemote {
 
     private enum class Kind { Fire, AndroidTv, Samsung, Lg }
 
+    /** Remembers which kind of TV is at [host], for the next time (a TV in standby doesn't answer on its remote port). */
+    private fun rememberKind(host: String, kind: Kind) {
+        appContext?.let { prefs(it).edit().putString(KEY_KIND_PREFIX + host, kind.name).apply() }
+    }
+
     /** Which kind of TV is at [host]: each kind has its own remote port that answers; a Fire TV is what is left. */
     private suspend fun detect(host: String): Kind = coroutineScope {
         val androidTv = async { reachable(host, AndroidTvCommands.PAIR_PORT, ATV_PROBE_MS) }
@@ -224,7 +231,10 @@ object TvRemote {
         connectJob = scope.launch {
             try {
                 val pairedFire = store.getString(KEY_TOKEN_PREFIX + host, null) != null
-                when (if (pairedFire) Kind.Fire else detect(host)) {
+                val before = store.getString(KEY_KIND_PREFIX + host, null)?.let { runCatching { Kind.valueOf(it) }.getOrNull() }
+                // Nothing answering usually means a TV in standby: it is then treated as the kind it was last time.
+                val kind = if (pairedFire) Kind.Fire else detect(host).let { if (it == Kind.Fire && before != null) before else it }
+                when (kind) {
                     Kind.AndroidTv -> androidTvFlow(app, host, mine)
                     Kind.Samsung -> samsungFlow(app, host, mine)
                     Kind.Lg -> lgFlow(app, host, mine)
@@ -246,6 +256,7 @@ object TvRemote {
             // Paired before: the first button press will tell if the TV has since forgotten this phone.
             if (currentCoroutineContext().isActive && mine == generation) {
                 fire = link
+                rememberKind(host, Kind.Fire)
                 _state.value = State.Connected(host, Link.FireTv)
                 startSender(mine)
                 autoEnableVolume(host)
@@ -304,6 +315,7 @@ object TvRemote {
                 store.edit().putString(KEY_TOKEN_PREFIX + host, token).apply()
                 pairing = null
                 fire = link
+                rememberKind(host, Kind.Fire)
                 _state.value = State.Connected(host, Link.FireTv)
                 startSender(mine)
                 autoEnableVolume(host)
@@ -428,6 +440,7 @@ object TvRemote {
             }
             if (!currentCoroutineContext().isActive || mine != generation) return
             atv = link
+            rememberKind(host, Kind.AndroidTv)
             _state.value = State.Connected(host, Link.AndroidTv)
             startSender(mine)
             done = true
@@ -454,6 +467,7 @@ object TvRemote {
             return
         }
         socketRemote = link
+        rememberKind(host, if (kind == Link.Samsung) Kind.Samsung else Kind.Lg)
         _state.value = State.Connected(host, kind)
         startSender(mine)
     }
@@ -467,12 +481,22 @@ object TvRemote {
             },
         )
 
+    /**
+     * A TV that already knows this phone connects at once. One that takes longer is most likely asking its owner (it forgot
+     * the phone), so the screen then says what to do on the TV.
+     */
+    private fun hintAllowSoon(host: String, mine: Int): Job = scope.launch {
+        delay(ALLOW_HINT_MS)
+        if (mine == generation && _state.value is State.Connecting) _state.value = State.Connecting(host, needsAllow = true)
+    }
+
     private suspend fun samsungFlow(app: Context, host: String, mine: Int) {
         val store = prefs(app)
         for (attempt in 0..1) {
             val token = store.getString(KEY_SAMSUNG_TOKEN + host, null)
             val pinned = store.getString(KEY_SAMSUNG_PIN + host, null)
             if (token == null) _state.value = State.Connecting(host, needsAllow = true)
+            val hint = if (token != null) hintAllowSoon(host, mine) else null
             try {
                 val opened = SamsungTvLink.open(host, DEVICE_NAME, token, pinned, SamsungTvLink.ENDPOINTS, track(mine)) { e -> linkClosed(mine, e) }
                 store.edit().apply {
@@ -499,6 +523,8 @@ object TvRemote {
                 }
                 _state.value = failedToConnect(e)
                 return
+            } finally {
+                hint?.cancel()
             }
         }
     }
@@ -509,6 +535,7 @@ object TvRemote {
             val key = store.getString(KEY_LG_KEY + host, null)
             val pinned = store.getString(KEY_LG_PIN + host, null)
             if (key == null) _state.value = State.Connecting(host, needsAllow = true)
+            val hint = if (key != null) hintAllowSoon(host, mine) else null
             try {
                 val opened = LgTvLink.open(host, key, pinned, LgTvLink.ENDPOINTS, track(mine)) { e -> linkClosed(mine, e) }
                 store.edit().apply {
@@ -535,6 +562,8 @@ object TvRemote {
                 }
                 _state.value = failedToConnect(e)
                 return
+            } finally {
+                hint?.cancel()
             }
         }
     }
