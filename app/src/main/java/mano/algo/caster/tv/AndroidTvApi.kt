@@ -15,6 +15,7 @@ import java.security.SecureRandom
 import java.security.Signature
 import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
+import java.security.interfaces.RSAPrivateKey
 import java.security.interfaces.RSAPublicKey
 import java.security.spec.PKCS8EncodedKeySpec
 import java.text.SimpleDateFormat
@@ -303,21 +304,28 @@ class AndroidTvIdentity(val privateKey: PrivateKey, val certificate: X509Certifi
         private const val CERT_FILE = "atv_cert"
         private const val DAY_MS = 24L * 60 * 60 * 1000
 
-        /** The saved identity from [dir], or a new one (saved there) when there is none or it can't be read. */
-        fun loadOrCreate(dir: File): AndroidTvIdentity {
+        private val lock = Any()
+
+        /**
+         * The saved identity from [dir], or a new one (saved there) when there is none, it can't be read, or the key and the
+         * certificate don't belong together (a save that was interrupted). One at a time, so two quick connects can't each make one.
+         */
+        fun loadOrCreate(dir: File): AndroidTvIdentity = synchronized(lock) {
             val keyFile = File(dir, KEY_FILE)
             val certFile = File(dir, CERT_FILE)
             if (keyFile.exists() && certFile.exists()) {
                 runCatching {
                     val key = KeyFactory.getInstance("RSA").generatePrivate(PKCS8EncodedKeySpec(keyFile.readBytes()))
                     val cert = CertificateFactory.getInstance("X.509").generateCertificate(ByteArrayInputStream(certFile.readBytes())) as X509Certificate
-                    return AndroidTvIdentity(key, cert)
+                    val sameKey = (key as? RSAPrivateKey)?.modulus == (cert.publicKey as? RSAPublicKey)?.modulus
+                    if (sameKey) return@synchronized AndroidTvIdentity(key, cert)
                 }
             }
             val made = create()
+            certFile.delete() // never leave an old certificate next to a new key
             keyFile.writeBytes(made.privateKey.encoded)
             certFile.writeBytes(made.certificate.encoded)
-            return made
+            made
         }
 
         /** A new RSA key with a self-signed certificate (valid for 10 years), written out by hand in DER. */

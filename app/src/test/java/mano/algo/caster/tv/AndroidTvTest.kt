@@ -135,6 +135,26 @@ class AndroidTvTest {
         }
     }
 
+    @Test
+    fun aKeyAndACertificateThatDontMatchAreReplaced() {
+        val dir = File.createTempFile("caster", "").apply { delete(); mkdirs() }
+        try {
+            val first = AndroidTvIdentity.loadOrCreate(dir)
+            // As after an interrupted save: the key of one identity next to the certificate of another.
+            File(dir, "atv_cert").writeBytes(AndroidTvIdentity.create().certificate.encoded)
+            val repaired = AndroidTvIdentity.loadOrCreate(dir)
+            assertEquals(
+                (repaired.privateKey as java.security.interfaces.RSAPrivateKey).modulus,
+                (repaired.certificate.publicKey as RSAPublicKey).modulus,
+            )
+            assertFalse(first.certificate.encoded.contentEquals(repaired.certificate.encoded))
+            // And what was saved now works the next time.
+            assertArrayEquals(repaired.certificate.encoded, AndroidTvIdentity.loadOrCreate(dir).certificate.encoded)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
     // --- The secret ---------------------------------------------------------------------------------------------
 
     @Test
