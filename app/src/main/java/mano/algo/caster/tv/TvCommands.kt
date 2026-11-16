@@ -1,7 +1,5 @@
 package mano.algo.caster.tv
 
-import java.net.InetAddress
-
 /** Android key codes the remote sends. */
 object TvKey {
     const val UP = 19
@@ -45,7 +43,12 @@ object TvCommands {
         val commands = ArrayList<String>(2)
         // Only letters that were really typed on the TV are deleted there: the others never arrived.
         val removed = old.substring(same).count(::typeable)
-        if (removed > 0) commands += keys(TvKey.DELETE, removed)
+        var left = removed
+        while (left > 0) { // one command takes at most 200 presses, so a long text is deleted in several
+            val now = minOf(left, 200)
+            commands += keys(TvKey.DELETE, now)
+            left -= now
+        }
         val added = new.substring(same)
         if (added.any(::typeable)) commands += text(added)
         return commands
@@ -78,10 +81,14 @@ object TvCommands {
      * Returns null unless it is a home-network address, so Caster never sends commands to something on the internet.
      */
     fun parseTarget(input: String): Target? {
-        val match = Regex("""(\d{1,3}(?:\.\d{1,3}){3})(?::(\d{1,5}))?""").matchEntire(input.trim()) ?: return null
-        val port = match.groupValues[2].ifEmpty { DEFAULT_PORT.toString() }.toInt()
-        if (port !in 1..65535 || !isLocalIpv4(match.groupValues[1])) return null
-        return Target(match.groupValues[1], port)
+        val match = Regex("""(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?::(\d{1,5}))?""").matchEntire(input.trim()) ?: return null
+        val octets = (1..4).map { match.groupValues[it].toInt() }
+        if (octets.any { it > 255 }) return null
+        // The plain a.b.c.d form (so 192.168.01.050 and 192.168.1.50 are the same TV, and are saved under one name).
+        val host = octets.joinToString(".")
+        val port = match.groupValues[5].ifEmpty { DEFAULT_PORT.toString() }.toInt()
+        if (port !in 1..65535 || !isLocalIpv4(host)) return null
+        return Target(host, port)
     }
 
     /**
@@ -89,9 +96,10 @@ object TvCommands {
      * ever talks to such addresses: it never sends commands to something on the internet.
      */
     fun isLocalIpv4(host: String): Boolean {
-        if (!Regex("""\d{1,3}(\.\d{1,3}){3}""").matches(host)) return false
-        if (host.split('.').any { it.toInt() > 255 }) return false
-        val address = InetAddress.getByName(host) // a numeric address: no lookup happens
-        return address.isSiteLocalAddress || address.isLinkLocalAddress
+        val match = Regex("""(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})""").matchEntire(host) ?: return false
+        val o = (1..4).map { match.groupValues[it].toInt() }
+        if (o.any { it > 255 }) return false
+        // Worked out from the numbers, never by asking the system to resolve it (that can look the text up as a name).
+        return o[0] == 10 || (o[0] == 172 && o[1] in 16..31) || (o[0] == 192 && o[1] == 168) || (o[0] == 169 && o[1] == 254)
     }
 }

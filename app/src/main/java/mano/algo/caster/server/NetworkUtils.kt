@@ -40,6 +40,8 @@ object NetworkUtils {
         val networks = cm.allNetworks
         for (network in networks) {
             val caps = cm.getNetworkCapabilities(network) ?: continue
+            // A VPN that runs over Wi-Fi reports Wi-Fi too, but its address isn't one a TV on the Wi-Fi can reach.
+            if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) continue
             if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
                 !caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
             ) continue

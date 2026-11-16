@@ -85,6 +85,8 @@ class MediaServerService : Service() {
 
     /** Set when starting failed, so the reason stays on screen after the service closes (other stops show "stopped"). */
     private var startFailed = false
+    @Volatile private var started = false // sharing really started (not just a stray notification button)
+    @Volatile private var destroyed = false
 
     // Only touched while holding serverLock.
     private var server: LocalMediaServer? = null
@@ -123,6 +125,24 @@ class MediaServerService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // The notification's buttons start this with a plain startService(): nothing to promote, and a button tapped after
+        // sharing ended must not bring up a service that has nothing to do.
+        when (intent?.action) {
+            ACTION_STOP -> {
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            ACTION_APPROVE, ACTION_DENY -> {
+                if (!started) {
+                    stopSelf()
+                } else if (intent?.action == ACTION_APPROVE) {
+                    PairingManager.approve()
+                } else {
+                    PairingManager.deny()
+                }
+                return START_NOT_STICKY
+            }
+        }
         // Must be promoted within seconds of startForegroundService(), so do it before anything else.
         try {
             promoteToForeground(buildNotification(getString(R.string.app_name), "Starting video sharing…"))
@@ -136,15 +156,7 @@ class MediaServerService : Service() {
             return START_NOT_STICKY
         }
 
-        when (intent?.action) {
-            ACTION_STOP -> {
-                stopSelf()
-                return START_NOT_STICKY
-            }
-            ACTION_APPROVE -> { PairingManager.approve(); return START_NOT_STICKY }
-            ACTION_DENY -> { PairingManager.deny(); return START_NOT_STICKY }
-        }
-
+        started = true
         mano.algo.caster.CrashLog.note(this, "Sharing started")
         try {
             acquireLocks()
@@ -162,6 +174,7 @@ class MediaServerService : Service() {
     }
 
     override fun onDestroy() {
+        destroyed = true // a reconcile that is still binding a port sees this and stops what it just made
         mano.algo.caster.CrashLog.note(this, "Sharing stopped")
         networkCallback?.let { cb ->
             runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(cb) }
@@ -197,6 +210,7 @@ class MediaServerService : Service() {
 
     private suspend fun reconcileOnce() = withContext(Dispatchers.IO) {
         serverLock.withLock {
+            if (destroyed) return@withLock
             val ip = NetworkUtils.resolveLocalIpv4(this@MediaServerService)
             val host = ip?.hostAddress
 
@@ -239,6 +253,10 @@ class MediaServerService : Service() {
                 boundRequestedPort = wanted
                 boundRequestedName = wantedName
                 val name = startMdns(ip!!, wantedName)
+                if (destroyed) { // the service ended while this was binding
+                    stopServerLocked()
+                    return@withLock
+                }
                 publish(
                     ServerState.Running(
                         host, port, name, requestedPort = wanted, requestedName = wantedName,
@@ -277,6 +295,7 @@ class MediaServerService : Service() {
     }
 
     private fun publish(state: ServerState, notificationText: String) {
+        if (destroyed) return
         _state.value = state
         getSystemService(NotificationManager::class.java)
             .notify(NOTIFICATION_ID, buildNotification(getString(R.string.app_name), notificationText))

@@ -30,6 +30,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -203,6 +204,10 @@ fun HomeScreen(
                         Icon(Icons.Filled.PlayArrow, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
                         Text("Start sharing", style = MaterialTheme.typography.titleSmall)
+                    }
+                    // After an error (Wi-Fi lost, say) the service may still be alive and holding the phone awake: it can be stopped here.
+                    if (state is ServerState.Error) {
+                        TextButton(onClick = onStop, modifier = Modifier.fillMaxWidth()) { Text("Stop sharing") }
                     }
                 } else if (state is ServerState.Running) {
                     GlassButton("Stop sharing", onStop, Modifier.fillMaxWidth(), icon = Icons.Filled.Close)

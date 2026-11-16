@@ -368,6 +368,8 @@ internal class LgTvLink private constructor(
         ): Opened {
             var last: IOException? = null
             for (endpoint in endpoints) {
+                // A TV that was paired over TLS is never talked to without it: the key would go out in the clear.
+                if (pinned != null && !endpoint.secure) continue
                 val main = try {
                     WebSocketClient.connect(host, endpoint.port, "/", endpoint.secure, if (endpoint.secure) pinned else null, onSocket)
                 } catch (e: IOException) {
@@ -439,7 +441,8 @@ internal class LgTvLink private constructor(
             val match = Regex("""^(wss?)://[^/:]+(?::(\d+))?(/.*)$""").matchEntire(path ?: throw IOException("The TV gave no button socket"))
                 ?: throw IOException("The TV's button socket address wasn't understood")
             val secure = match.groupValues[1] == "wss"
-            val port = match.groupValues[2].toIntOrNull() ?: endpoint.port
+            if (secure != endpoint.secure) throw IOException("The TV's button socket used another kind of connection") // never a downgrade
+            val port = match.groupValues[2].toIntOrNull()?.takeIf { it in 1..65_535 } ?: endpoint.port
             return WebSocketClient.connect(host, port, match.groupValues[3], secure, if (secure) main.serverFingerprint ?: pinned else null, onSocket)
         }
     }

@@ -474,6 +474,19 @@ class WebSocketTvsTest {
     }
 
     @Test
+    fun aPairedLgTvIsNeverTalkedToWithoutTls() {
+        val fake = FakeTv { peer -> peer.read() }
+        try {
+            LgTvLink.open("127.0.0.1", "secret-key", "00".repeat(32), plain(fake.port), {}, {})
+            fail("the saved key must not go out over a plain connection")
+        } catch (e: IOException) {
+            // refused before anything was sent
+        } finally {
+            fake.close()
+        }
+    }
+
+    @Test
     fun lgSaysNoWhenTheOwnerDoes() {
         val main = FakeTv { peer ->
             peer.read(); peer.send("""{"type":"hello","payload":{}}""")

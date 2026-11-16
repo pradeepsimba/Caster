@@ -111,7 +111,12 @@ class LocalMediaServer(
             path.startsWith("/video/") -> {
                 val uri = mediaUri(path.removePrefix("/video/"), kind) ?: return error(Response.Status.NOT_FOUND, "not_found")
                 if (method == Method.GET && kind == "v") recordWatching(session.parameters["t"]?.firstOrNull(), uri)
-                serveVideo(uri, session.headers["range"], head = method == Method.HEAD)
+                val token = session.parameters["t"]?.firstOrNull()
+                val id = path.removePrefix("/video/").substringBefore('/').toLongOrNull() ?: -1L
+                val stillAllowed = {
+                    PairingManager.isValid(token) && (if (kind == "v") ShareSettings.isAllowed(id) else ShareSettings.state.value.shareExtras)
+                }
+                serveVideo(uri, session.headers["range"], head = method == Method.HEAD, stillAllowed)
             }
             else -> error(Response.Status.NOT_FOUND, "not_found")
         }
@@ -120,6 +125,9 @@ class LocalMediaServer(
     // ---- pairing -------------------------------------------------------------------------------------
 
     private fun pairRequest(session: IHTTPSession): Response {
+        // This needs no token, so anyone on the network can send it: a big body is refused, never read.
+        val declared = session.headers["content-length"]?.trim()?.toLongOrNull() ?: 0L
+        if (declared > MAX_PAIR_BODY) return error(PAYLOAD_TOO_LARGE, "too_large").also { it.closeConnection(true) }
         runCatching { session.parseBody(HashMap()) } // drain any body so a kept-alive connection stays in sync
         return when (val result = PairingManager.request(describeClient(session.headers["user-agent"]))) {
             is RequestResult.Created -> json(
@@ -368,7 +376,7 @@ class LocalMediaServer(
 
     // ---- streaming (RFC 7233 single range) -----------------------------------------------------------
 
-    private fun serveVideo(uri: Uri, rangeHeader: String?, head: Boolean): Response {
+    private fun serveVideo(uri: Uri, rangeHeader: String?, head: Boolean, stillAllowed: () -> Boolean): Response {
         val afd = try {
             appContext.contentResolver.openAssetFileDescriptor(uri, "r")
         } catch (e: SecurityException) {
@@ -390,8 +398,8 @@ class LocalMediaServer(
                 mediaHeaders(error(Response.Status.RANGE_NOT_SATISFIABLE, "range_not_satisfiable"))
                     .apply { addHeader("Content-Range", "bytes */$length") }
             }
-            RangeResult.Full -> buildBody(afd, mime, Response.Status.OK, 0, length - 1, length, head)
-            is RangeResult.Partial -> buildBody(afd, mime, Response.Status.PARTIAL_CONTENT, range.start, range.end, length, head)
+            RangeResult.Full -> buildBody(afd, mime, Response.Status.OK, 0, length - 1, length, head, stillAllowed)
+            is RangeResult.Partial -> buildBody(afd, mime, Response.Status.PARTIAL_CONTENT, range.start, range.end, length, head, stillAllowed)
         }
     }
 
@@ -403,13 +411,14 @@ class LocalMediaServer(
         end: Long,
         totalLength: Long,
         head: Boolean,
+        stillAllowed: () -> Boolean,
     ): Response {
         val count = if (totalLength == 0L) 0 else end - start + 1
         val response = if (head) {
             afd.closeQuietly()
             newFixedLengthResponse(status, mime, "").apply { addHeader("Content-Length", count.toString()) }
         } else {
-            newFixedLengthResponse(status, mime, RangeInputStream(afd, start, count), count)
+            newFixedLengthResponse(status, mime, RangeInputStream(afd, start, count, stillAllowed), count)
         }
         if (status == Response.Status.PARTIAL_CONTENT) {
             response.addHeader("Content-Range", "bytes $start-$end/$totalLength")
@@ -479,8 +488,15 @@ class LocalMediaServer(
         private val afd: AssetFileDescriptor,
         start: Long,
         private var remaining: Long,
+        private val stillAllowed: () -> Boolean,
     ) : InputStream() {
-        private val input: InputStream = afd.createInputStream()
+        private val input: InputStream = try {
+            afd.createInputStream()
+        } catch (e: IOException) {
+            afd.closeQuietly()
+            throw e
+        }
+        private var sinceCheck = 0L
 
         init {
             try {
@@ -514,7 +530,16 @@ class LocalMediaServer(
         override fun read(buffer: ByteArray, off: Int, len: Int): Int {
             if (remaining <= 0) return -1
             val n = input.read(buffer, off, minOf(len.toLong(), remaining).toInt())
-            if (n > 0) remaining -= n
+            if (n > 0) {
+                remaining -= n
+                // A long request (a whole film in one go) is checked now and then: revoking a device, or un-sharing the
+                // video, ends it instead of letting it run to the end.
+                sinceCheck += n
+                if (sinceCheck >= CHECK_EVERY_BYTES) {
+                    sinceCheck = 0
+                    if (!stillAllowed()) throw IOException("No longer shared")
+                }
+            }
             return n
         }
 
@@ -541,6 +566,10 @@ class LocalMediaServer(
         }
 
         override fun exec(clientHandler: NanoHTTPD.ClientHandler) {
+            if (running.size >= MAX_CONNECTIONS) { // more than any player needs: drop the extra instead of starting another thread
+                clientHandler.close()
+                return
+            }
             running.add(clientHandler)
             try {
                 pool.execute(clientHandler)
@@ -556,6 +585,14 @@ class LocalMediaServer(
     private companion object {
         const val TAG = "LocalMediaServer"
         const val MAX_LISTED = 1000
+        const val MAX_PAIR_BODY = 1024L
+        const val MAX_CONNECTIONS = 128
+        const val CHECK_EVERY_BYTES = 512L * 1024
+
+        val PAYLOAD_TOO_LARGE = object : Response.IStatus {
+            override fun getRequestStatus() = 413
+            override fun getDescription() = "413 Payload Too Large"
+        }
         val SUBTITLE_EXTENSIONS = setOf("srt", "vtt")
         const val MAX_SUBTITLE_BYTES = 2L * 1024 * 1024
         val SRT_TIMESTAMP = Regex("""(\d{2}:\d{2}:\d{2}),(\d{3})""")

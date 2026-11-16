@@ -7,4 +7,9 @@
     <exclude domain="file" path="atv_key" />
     <exclude domain="file" path="atv_cert" />
     <exclude domain="sharedpref" path="caster_tv.xml" />
+    <!-- The choice of shared videos is a list of ids that mean other videos on another phone; the crash records are private. -->
+    <exclude domain="sharedpref" path="caster_share.xml" />
+    <exclude domain="sharedpref" path="caster_crash.xml" />
+    <exclude domain="file" path="crash.log" />
+    <exclude domain="file" path="activity.log" />
 </full-backup-content>

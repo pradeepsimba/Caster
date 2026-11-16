@@ -108,7 +108,7 @@ fun SettingsScreen(
                         shape = RoundedCornerShape(14.dp),
                     ) { Text("Apply") }
                     TextButton(
-                        onClick = { onSavePort(ShareSettings.DEFAULT_PORT); focus.clearFocus() },
+                        onClick = { text = ShareSettings.DEFAULT_PORT.toString(); onSavePort(ShareSettings.DEFAULT_PORT); focus.clearFocus() },
                         enabled = preferredPort != ShareSettings.DEFAULT_PORT || text != ShareSettings.DEFAULT_PORT.toString(),
                     ) { Text("Reset to ${ShareSettings.DEFAULT_PORT}") }
                 }
@@ -243,7 +243,7 @@ private fun NameCard(state: ServerState, preferredName: String, onSaveName: (Str
                     shape = RoundedCornerShape(14.dp),
                 ) { Text("Apply") }
                 TextButton(
-                    onClick = { onSaveName(ShareSettings.DEFAULT_HOSTNAME); focus.clearFocus() },
+                    onClick = { text = ShareSettings.DEFAULT_HOSTNAME; onSaveName(ShareSettings.DEFAULT_HOSTNAME); focus.clearFocus() },
                     enabled = preferredName != ShareSettings.DEFAULT_HOSTNAME || text != ShareSettings.DEFAULT_HOSTNAME,
                 ) { Text("Reset to ${ShareSettings.DEFAULT_HOSTNAME}") }
             }

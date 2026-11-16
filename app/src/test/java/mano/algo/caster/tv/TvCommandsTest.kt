@@ -19,6 +19,23 @@ class TvCommandsTest {
     }
 
     @Test
+    fun leadingZerosAreReadAsTheSameAddress() {
+        assertEquals(TvCommands.Target("192.168.1.50", 5555), TvCommands.parseTarget("192.168.01.050"))
+        assertEquals(TvCommands.Target("10.0.0.7", 5559), TvCommands.parseTarget("010.000.000.007:5559"))
+        assertTrue(TvCommands.isLocalIpv4("192.168.001.050"))
+        assertEquals(null, TvCommands.parseTarget("192.168.256.1"))
+        assertEquals(null, TvCommands.parseTarget("008.8.8.8"))
+    }
+
+    @Test
+    fun aLongTextIsDeletedInSeveralCommands() {
+        val commands = TvCommands.edit("a".repeat(450), "")
+        assertEquals(3, commands.size)
+        assertEquals(TvCommands.keys(TvKey.DELETE, 200), commands[0])
+        assertEquals(TvCommands.keys(TvKey.DELETE, 50), commands[2])
+    }
+
+    @Test
     fun backspaceSendsDeleteKeys() {
         assertEquals(listOf("input keyevent 67"), TvCommands.edit("abc", "ab"))
         assertEquals(listOf("input keyevent 67 67 67"), TvCommands.edit("abc", ""))

@@ -489,8 +489,10 @@ object TvRemote {
 
     private fun failedToConnect(e: IOException): State.Failed =
         State.Failed(
-            if (e is java.net.SocketTimeoutException) {
+            if (e is OwnerWaitTimeout) {
                 "The TV didn't answer in time. If it asked to allow this phone, choose Allow and tap Connect again."
+            } else if (e is java.net.SocketTimeoutException) {
+                "The TV didn't answer. Check that it is on, and on the same Wi-Fi as this phone."
             } else {
                 "Couldn't connect to the TV: ${e.message ?: e.javaClass.simpleName}"
             },
@@ -502,7 +504,11 @@ object TvRemote {
      */
     private fun hintAllowSoon(host: String, mine: Int): Job = scope.launch {
         delay(ALLOW_HINT_MS)
-        _state.compareAndSet(State.Connecting(host), State.Connecting(host, needsAllow = true)) // only if still just connecting
+        // Only a TV that has taken the connection can be asking its owner; one that is off or away hasn't.
+        val socket = openingSocket as? java.net.Socket
+        if (socket != null && socket.isConnected && !socket.isClosed) {
+            _state.compareAndSet(State.Connecting(host), State.Connecting(host, needsAllow = true)) // only if still just connecting
+        }
     }
 
     private suspend fun samsungFlow(app: Context, host: String, mine: Int) {
@@ -1053,7 +1059,7 @@ object TvRemote {
         runCatching { Socket().use { it.connect(InetSocketAddress(host, port), timeoutMs) } }.isSuccess
 
     /** This phone's identity for ADB: made once, then reused so the TV's "Always allow" keeps working. */
-    private fun keyPair(context: Context): AdbKeyPair {
+    private fun keyPair(context: Context): AdbKeyPair = synchronized(keyLock) { // one at a time: two writers could leave a mismatched pair
         val privateKey = File(context.filesDir, "adb_key")
         val publicKey = File(context.filesDir, "adb_key.pub")
         if (privateKey.exists() && publicKey.exists()) {
@@ -1061,6 +1067,8 @@ object TvRemote {
         }
         // Missing or unreadable (half-written, damaged): make a new one. The TV will ask to Allow again.
         AdbKeyPair.generate(privateKey, publicKey)
-        return AdbKeyPair.read(privateKey, publicKey)
+        AdbKeyPair.read(privateKey, publicKey)
     }
+
+    private val keyLock = Any()
 }

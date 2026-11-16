@@ -35,7 +35,7 @@
 
   /* top bar */
   .topbar { position:sticky; top:0; z-index:5; display:flex; align-items:center; gap:12px; padding:14px max(16px,env(safe-area-inset-right)) 14px max(16px,env(safe-area-inset-left));
-    backdrop-filter:blur(14px); background:color-mix(in srgb, var(--bg) 78%, transparent); border-bottom:1px solid var(--line); }
+    backdrop-filter:blur(14px); background:var(--bg); background:color-mix(in srgb, var(--bg) 78%, transparent); border-bottom:1px solid var(--line); }
   .brand { display:flex; align-items:center; gap:10px; font-weight:700; font-size:18px; letter-spacing:.2px; }
   .logo { width:32px; height:32px; border-radius:10px; display:grid; place-items:center; color:#fff; font-size:18px;
     background:linear-gradient(135deg,var(--accent),var(--accent-2)); box-shadow:0 6px 16px color-mix(in srgb, var(--accent) 40%, transparent); }
@@ -90,7 +90,7 @@
   .list { display:grid; gap:10px; }
   .device { display:flex; align-items:center; gap:14px; padding:14px 16px; background:var(--surface); border:1px solid var(--line); border-radius:16px; box-shadow:var(--shadow); }
   .device-icon { width:44px; height:44px; border-radius:13px; font-size:24px; flex:none; color:var(--accent);
-    background:color-mix(in srgb, var(--accent) 14%, var(--surface-2)); }
+    background:var(--surface-2); background:color-mix(in srgb, var(--accent) 14%, var(--surface-2)); }
   .device .grow { flex:1; min-width:0; }
   .device .name { font-weight:600; }
   .device .addr { color:var(--dim); font-size:14px; overflow:hidden; text-overflow:ellipsis; }
@@ -106,7 +106,7 @@
   #retry { margin-top:18px; }
 
   /* videos */
-  .toolbar { position:sticky; top:67px; z-index:4; padding:10px 0; margin:0 -4px; padding-inline:4px; backdrop-filter:blur(10px); background:color-mix(in srgb, var(--bg) 82%, transparent); }
+  .toolbar { position:sticky; top:67px; z-index:4; padding:10px 0; margin:0 -4px; padding-inline:4px; backdrop-filter:blur(10px); background:var(--bg); background:color-mix(in srgb, var(--bg) 82%, transparent); }
   .toolbar { display:flex; gap:10px; align-items:center; }
   .search { position:relative; flex:1; }
   .search .icon { position:absolute; left:14px; top:50%; transform:translateY(-50%); color:var(--dim); font-size:18px; pointer-events:none; }
@@ -151,7 +151,9 @@
   #playerNote button { margin:10px 0 0; }
   #player video { position:absolute; top:0; right:0; bottom:0; left:0; width:100%; height:100%; background:#000; object-fit:contain; }
   .player-ui { position:absolute; top:0; right:0; bottom:0; left:0; display:flex; flex-direction:column; justify-content:space-between; transition:opacity .25s; }
-  .player-ui.idle { opacity:0; pointer-events:none; }
+  .player-ui { pointer-events:none; }  /* the picture behind it gets the clicks and taps (pause, double-tap, next photo) */
+  .player-top, .player-bottom { pointer-events:auto; }
+  .player-ui.idle, .player-ui.idle .player-top, .player-ui.idle .player-bottom { opacity:0; pointer-events:none; }
   .player-top { display:flex; align-items:center; gap:16px; padding:18px 24px; background:linear-gradient(rgba(0,0,0,.8), transparent); }
   .player-top span { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; font-size:1.1rem; }
   .player-bottom { padding:56px 28px 24px; background:linear-gradient(transparent, rgba(0,0,0,.88)); }
@@ -400,15 +402,30 @@
   const TV = TV_FLAG ? TV_FLAG[2] !== '0'
     : /\b(AFT[A-Z0-9]*|SMART-?TV|Tizen|Web0S|WebOS|Android TV|GoogleTV|CrKey|HbbTV|Roku|BRAVIA|NetCast)\b/i.test(navigator.userAgent);
   if (TV) document.documentElement.classList.add('tv');
+  // localStorage can be missing or refuse writes (private mode, some TV browsers): then what is saved lives in memory for
+  // this visit, so at least a pairing isn't asked for again and again.
+  const memory = {};
   const store = {
-    get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
-    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
-    del(k) { try { localStorage.removeItem(k); } catch {} },
+    get(k, d) {
+      try {
+        const raw = localStorage.getItem(k);
+        if (raw !== null) { const v = JSON.parse(raw); return v === null || v === undefined ? d : v; }
+      } catch (_e) { /* fall back to memory */ }
+      return Object.prototype.hasOwnProperty.call(memory, k) ? memory[k] : d;
+    },
+    set(k, v) { memory[k] = v; try { localStorage.setItem(k, JSON.stringify(v)); } catch (_e) { /* memory has it */ } },
+    del(k) { delete memory[k]; try { localStorage.removeItem(k); } catch (_e) { /* nothing to remove */ } },
   };
+  // Replaces what is inside a node. (replaceChildren() does this too, but many TV browsers don't have it yet.)
+  function setChildren(node) {
+    while (node.firstChild) node.removeChild(node.firstChild);
+    for (let i = 1; i < arguments.length; i++) node.appendChild(arguments[i]);
+  }
 
   let devices = store.get('caster.devices', []);   // [{host:'192.168.0.159:8080', name}]
   let current = null;                              // selected device
   let videos = [];
+  let loadSeq = 0;                                 // counts list requests, so a late answer to an old one is ignored
   let kind = 'v';                                  // v = videos, a = music, i = photos
   let folder = '';                                 // folder filter ('' = all)
   let playQueue = [];                              // what "Next" walks through; fixed when playback starts
@@ -440,6 +457,7 @@
 
   let currentView = 'devices';
   function show(view) {
+    if (view !== 'videos') loadSeq++; // leaving the list: an answer still on its way is no longer wanted
     if (view !== 'pair') stopPairPoll();
     currentView = view;
     for (const id of ['devices', 'pair', 'videos']) $(id).hidden = id !== view;
@@ -476,13 +494,13 @@
       const r = await fetch('http://' + host + '/api/ping', init);
       const j = await r.json();
       return j && j.app === 'caster' ? { host, name: j.name, id: j.id } : null;
-    } catch { return null; } finally { clearTimeout(timer); }
+    } catch (_e) { return null; } finally { clearTimeout(timer); }
   }
 
   // ---- devices ----------------------------------------------------------------------------------------
   function renderDevices() {
     const list = $('deviceList');
-    list.replaceChildren();
+    setChildren(list);
     $('devicesHeading').hidden = !devices.length;
     for (const d of devices) {
       const row = el('div', 'device');
@@ -509,8 +527,8 @@
   function webrtcPrefix() {
     return new Promise(resolve => {
       let pc;
-      try { pc = new RTCPeerConnection({ iceServers: [] }); } catch { resolve(null); return; }
-      const finish = v => { clearTimeout(timer); try { pc.close(); } catch {} resolve(v); };
+      try { pc = new RTCPeerConnection({ iceServers: [] }); } catch (_e) { resolve(null); return; }
+      const finish = v => { clearTimeout(timer); try { pc.close(); } catch (_e) {} resolve(v); };
       const timer = setTimeout(() => finish(null), 1500);
       pc.createDataChannel('probe');
       pc.onicecandidate = e => {
@@ -696,13 +714,13 @@
 
   function setCode(code) {
     const box = $('pairCode');
-    box.replaceChildren(...[...code].map(ch => el('span', 'digit', ch)));
+    setChildren(box, ...[...code].map(ch => el('span', 'digit', ch)));
     box.setAttribute('aria-label', 'Code ' + [...code].join(' '));
   }
 
   function finishPairing(message) {
     stopPairPoll();
-    $('pairCode').replaceChildren();
+    setChildren($('pairCode'));
     $('pairWait').hidden = true;
     $('pairHint').hidden = true;
     $('pairError').textContent = message;
@@ -716,7 +734,7 @@
     stopPairPoll();
     show('pair');
     $('pairError').textContent = message;
-    $('pairCode').replaceChildren();
+    setChildren($('pairCode'));
     $('pairWait').hidden = true;
     $('pairHint').hidden = true;
     $('retry').hidden = true;
@@ -739,10 +757,10 @@
           if (s.status === 'denied') { finishPairing('The phone declined the request.'); return; }
           if (s.status === 'pending' && Date.now() < deadline + 3000) { pairPoll = setTimeout(poll, 1200); return; }
           finishPairing('The request expired.');
-        } catch { finishPairing('Could not reach the phone.'); }
+        } catch (_e) { finishPairing('Could not reach the phone.'); }
       };
       pairPoll = setTimeout(poll, 1200);
-    } catch { finishPairing('Could not reach the phone.'); }
+    } catch (_e) { finishPairing('Could not reach the phone.'); }
   }
 
   // ---- videos -----------------------------------------------------------------------------------------
@@ -755,7 +773,7 @@
     const names = [...new Set(videos.map(v => v.folder).filter(Boolean))].sort((a, b) => a.localeCompare(b));
     if (!names.includes(folder)) folder = '';
     const box = $('folderTabs');
-    box.replaceChildren();
+    setChildren(box);
     box.hidden = names.length < 2;
     if (box.hidden) return;
     for (const name of ['', ...names]) {
@@ -770,9 +788,10 @@
   }
 
   async function loadVideos() {
+    const seq = ++loadSeq;
     show('videos');
     $('videoStatus').textContent = '';
-    $('grid').replaceChildren(...Array.from({ length: 8 }, () => {
+    setChildren($('grid'), ...Array.from({ length: 8 }, () => {
       const sk = el('div', 'video skeleton');
       sk.append(el('div', 'thumb'), el('div', 'meta'));
       return sk;
@@ -781,6 +800,7 @@
       // Videos use the original endpoint so this page still works with older phone builds.
       const path = kind === 'v' ? '/api/videos?' : '/api/list?k=' + kind + '&';
       const r = await fetch(base(current) + path + 't=' + encodeURIComponent(token(current)), { cache: 'no-store' });
+      if (seq !== loadSeq) return; // another list was asked for (or the user left) while this one was on its way
       if (r.status === 401) { store.del(tokenKey(current)); openPairing('Pairing expired. Approve the connection again.'); return; }
       if (r.status === 403) {
         const e = await r.json().catch(() => ({}));
@@ -788,7 +808,13 @@
         $('videoStatus').textContent = 'The app has no permission to read ' + KIND_NAMES[kind] + '. Allow it on the phone and try again.';
         return;
       }
+      if (!r.ok) {
+        setChildren($('grid'));
+        setStatus('The phone could not list its media (error ' + r.status + ').', loadVideos);
+        return;
+      }
       const data = await r.json();
+      if (seq !== loadSeq) return;
       videos = data.videos || [];
       $('kindTabs').hidden = !data.extras;
       for (const b of $('kindTabs').children) b.classList.toggle('on', b.dataset.k === kind);
@@ -799,7 +825,11 @@
         : 'No videos found on this phone.';
       renderVideos();
       if (TV) focusCard();
-    } catch { $('grid').replaceChildren(); setStatus('Could not reach the phone. Is sharing still on?', loadVideos); }
+    } catch (_e) {
+      if (seq !== loadSeq) return;
+      setChildren($('grid'));
+      setStatus('Could not reach the phone. Is sharing still on?', loadVideos);
+    }
   }
 
   const fmtDuration = ms => {
@@ -872,8 +902,8 @@
     if (thumbObserver) thumbObserver.disconnect();
     const q = $('filter').value.trim().toLowerCase();
     const grid = $('grid'), strip = $('continue');
-    grid.replaceChildren();
-    strip.replaceChildren();
+    setChildren(grid);
+    setChildren(strip);
     const t = encodeURIComponent(token(current));
     const positions = readPositions();
     visible = videos.filter(v => (!folder || v.folder === folder) && (!q || v.name.toLowerCase().includes(q)));
@@ -1118,7 +1148,7 @@
 
   function showNote(text, link) {
     const note = $('playerNote');
-    note.replaceChildren(el('span', null, text + ' Try Chrome or Edge on a computer, or open the link in a player like VLC.'));
+    setChildren(note, el('span', null, text + ' Try Chrome or Edge on a computer, or open the link in a player like VLC.'));
     if (link) note.append(el('small', null, link));
     note.hidden = false;
   }
@@ -1151,8 +1181,11 @@
     const mine = subsToken;
     try {
       const r = await fetch(base(current) + '/api/sub/' + v.id + mediaQuery(), { cache: 'no-store' });
-      if (r.ok && mine === subsToken) attachSubs(await r.text());
-    } catch { /* no subtitles from the phone; the CC button still lets the viewer pick a file */ }
+      if (r.ok && mine === subsToken) {
+        const text = await r.text();
+        if (mine === subsToken) attachSubs(text); // still the same video after the download
+      }
+    } catch (_e) { /* no subtitles from the phone; the CC button still lets the viewer pick a file */ }
   }
   function onSubsButton() {
     if (!subTrack) { $('subsFile').click(); return; }
@@ -1178,7 +1211,7 @@
       if (r.status === 401) { stopRemoteSync(); return; }                       // pairing was revoked
       if (!r.ok) return;
       for (const c of (await r.json()).cmds || []) runRemoteCommand(c);
-    } catch { /* the phone is momentarily unreachable; the next tick tries again */ }
+    } catch (_e) { /* the phone is momentarily unreachable; the next tick tries again */ }
   }
   function startRemoteSync() {
     if (!remoteOk || syncTimer) return;
@@ -1205,7 +1238,7 @@
       if (!r.ok || mine !== inspectToken) return;
       const problem = describeProblem(await r.json());
       if (problem && mine === inspectToken) showNote(problem, base(current) + '/video/' + v.id + '?t=' + token(current));
-    } catch { /* an older phone build has no info endpoint; the runtime check below still applies */ }
+    } catch (_e) { /* an older phone build has no info endpoint; the runtime check below still applies */ }
   }
 
   // Backup for when the codec info is unavailable: playing for a while but never decoding a frame is a black screen.
@@ -1361,7 +1394,7 @@
     try {
       if (fsEl()) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
       else (playerEl.requestFullscreen || playerEl.webkitRequestFullscreen).call(playerEl);
-    } catch { /* not allowed here (for example inside a frame); the player already fills the window */ }
+    } catch (_e) { /* not allowed here (for example inside a frame); the player already fills the window */ }
   }
   if (!document.fullscreenEnabled && !document.webkitFullscreenEnabled) $('fs').hidden = true;
 
@@ -1395,9 +1428,9 @@
       if (!('wakeLock' in navigator) || wake || !isOpen()) return;
       wake = await navigator.wakeLock.request('screen');
       wake.addEventListener('release', () => { wake = null; });
-    } catch { wake = null; }
+    } catch (_e) { wake = null; }
   }
-  function releaseWake() { try { if (wake) wake.release(); } catch { /* already released */ } wake = null; }
+  function releaseWake() { try { if (wake) wake.release(); } catch (_e) { /* already released */ } wake = null; }
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && isOpen() && !video.paused) acquireWake();
   });
@@ -1410,13 +1443,13 @@
         title: v.name, artist: 'Caster',
         artwork: [{ src: base(current) + '/api/thumb/' + v.id + mediaQuery(), sizes: '320x180', type: 'image/jpeg' }],
       });
-    } catch { /* artwork is optional */ }
+    } catch (_e) { /* artwork is optional */ }
   }
   if ('mediaSession' in navigator) {
     for (const [action, handler] of [['play', () => video.play()], ['pause', () => video.pause()],
       ['seekbackward', () => seekBy(-10)], ['seekforward', () => seekBy(10)],
       ['nexttrack', () => nextVideo()], ['previoustrack', () => prevVideo()]]) {
-      try { navigator.mediaSession.setActionHandler(action, handler); } catch { /* action not supported here */ }
+      try { navigator.mediaSession.setActionHandler(action, handler); } catch (_e) { /* action not supported here */ }
     }
   }
 

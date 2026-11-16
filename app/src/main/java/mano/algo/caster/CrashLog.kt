@@ -68,7 +68,9 @@ object CrashLog {
     @Synchronized
     private fun append(context: Context, entry: String) {
         val header = "--- ${stamp(System.currentTimeMillis())} · Android ${Build.VERSION.RELEASE} · ${Build.MODEL}\n"
-        val all = read(context) + header + entry.trimEnd() + "\n\n"
+        // The saved record as it is (not read(), which adds the activity trail for showing): the trail would be copied in again.
+        val saved = runCatching { file(context).takeIf { it.exists() }?.readText().orEmpty() }.getOrDefault("")
+        val all = saved + header + entry.trimEnd() + "\n\n"
         // Keep the newest part only, so the record can't grow without limit.
         file(context).writeText(if (all.length > MAX_BYTES) all.takeLast(MAX_BYTES) else all)
     }

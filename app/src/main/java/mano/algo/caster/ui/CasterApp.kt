@@ -190,6 +190,14 @@ fun CasterApp() {
 
     var hasStorage by remember { mutableStateOf(granted(STORAGE_PERMISSION)) }
 
+    /** Said when access to the videos is refused. Once Android stops asking, the only way back is the app's settings, so they open. */
+    fun storageDenied() {
+        Toast.makeText(context, "Caster needs access to your videos to share them. Allow it in the app's permissions.", Toast.LENGTH_LONG).show()
+        val activity = context as? android.app.Activity
+        val stoppedAsking = activity != null && !androidx.core.app.ActivityCompat.shouldShowRequestPermissionRationale(activity, STORAGE_PERMISSION)
+        if (stoppedAsking) openAppSettings(context)
+    }
+
     // Android 17+ keeps every app away from other devices on the home network until the user allows it: without this
     // the web page can't reach the phone and the TV and Chromecast can't be found.
     fun needsLocalNetwork() = Build.VERSION.SDK_INT >= LOCAL_NETWORK_SDK && !granted(LOCAL_NETWORK_PERMISSION)
@@ -246,12 +254,12 @@ fun CasterApp() {
     // Without storage access the page would pair fine and then show an empty gallery, so ask first.
     val storagePermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         hasStorage = ok
-        if (ok) startAfterStorage()
+        if (ok) startAfterStorage() else storageDenied()
     }
     // The picker lists the gallery, so it needs the same storage permission as sharing does.
     val pickerPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         hasStorage = ok
-        if (ok) picking = true
+        if (ok) picking = true else storageDenied()
     }
     // Photos and music need their own permissions on Android 13+ (older versions use the one storage permission).
     val extrasPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
