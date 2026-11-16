@@ -232,7 +232,9 @@ object TvRemote {
 
         connectJob = scope.launch {
             try {
-                val pairedFire = store.getString(KEY_TOKEN_PREFIX + host, null) != null
+                // (A TV that was replaced by another kind at the same address doesn't answer like a Fire TV.)
+                val pairedFire = store.getString(KEY_TOKEN_PREFIX + host, null) != null &&
+                    (reachable(host, FireTvCommands.PORT, ATV_PROBE_MS) || reachable(host, FireTvCommands.WAKE_PORT, ATV_PROBE_MS))
                 val before = store.getString(KEY_KIND_PREFIX + host, null)?.let { runCatching { Kind.valueOf(it) }.getOrNull() }
                 // Nothing answering usually means a TV in standby: it is then treated as the kind it was last time.
                 val detected = if (pairedFire) Kind.Fire else detect(host)
@@ -261,7 +263,7 @@ object TvRemote {
         if (link.token != null) {
             // Paired before: the first button press will tell if the TV has since forgotten this phone.
             if (currentCoroutineContext().isActive) {
-                connectedIf(mine) {
+                ifCurrent(mine) {
                     fire = link
                     rememberKind(host, Kind.Fire)
                     _state.value = State.Connected(host, Link.FireTv)
@@ -279,7 +281,7 @@ object TvRemote {
         repeat(PIN_TRIES) {
             try {
                 link.send(FireTvCommands.requestPin(DEVICE_NAME))
-                if (mine == generation) {
+                ifCurrent(mine) {
                     pairing = link
                     _state.value = State.NeedsPin(link.host)
                 }
@@ -323,7 +325,7 @@ object TvRemote {
                 }
                 link.token = token
                 store.edit().putString(KEY_TOKEN_PREFIX + host, token).apply()
-                connectedIf(mine) {
+                ifCurrent(mine) {
                     pairing = null
                     fire = link
                     rememberKind(host, Kind.Fire)
@@ -373,12 +375,11 @@ object TvRemote {
             }
             return
         }
-        if (mine != generation) {
-            session.close()
-            return
+        val current = ifCurrent(mine) {
+            pairingAtv = session
+            _state.value = State.NeedsPin(host, note, androidTv = true)
         }
-        pairingAtv = session
-        _state.value = State.NeedsPin(host, note, androidTv = true)
+        if (!current) session.close()
     }
 
     /** The owner typed the 6-character code the Android TV shows. */
@@ -443,7 +444,7 @@ object TvRemote {
         try {
             atvOpening = link // so Cancel can close it and end the wait
             val ready = link.awaitReady(ATV_READY_MS)
-            atvOpening = null
+            if (mine == generation) atvOpening = null
             if (!ready) {
                 val why = link.failure
                 // Hung up on right after connecting (not just silent): the TV doesn't accept this phone.
@@ -451,7 +452,7 @@ object TvRemote {
                 throw IOException("The TV didn't get ready")
             }
             if (!currentCoroutineContext().isActive) return
-            val current = connectedIf(mine) {
+            val current = ifCurrent(mine) {
                 atv = link
                 rememberKind(host, Kind.AndroidTv)
                 _state.value = State.Connected(host, Link.AndroidTv)
@@ -459,6 +460,7 @@ object TvRemote {
             }
             if (!current) return
             done = true
+            link.failure?.let { linkClosed(mine, it) } // it may have dropped just before it became the current one
         } finally {
             if (!done) link.close()
         }
@@ -466,8 +468,7 @@ object TvRemote {
 
     /** The reader thread saw the connection end (the TV went off, left the network, or forgot this phone). */
     private fun linkClosed(mine: Int, error: Throwable) {
-        if (mine != generation || _state.value !is State.Connected) return
-        lost(error)
+        lost(mine, error)
     }
 
     // --- Samsung and LG: the TV asks on its screen to allow this phone ---------------------------------------
@@ -476,14 +477,14 @@ object TvRemote {
     private fun track(mine: Int): (Closeable) -> Unit = { socket -> if (mine != generation) socket.close() else openingSocket = socket }
 
     private suspend fun becomeConnected(link: TvSocketRemote, host: String, kind: Link, mine: Int) {
-        openingSocket = null
-        val current = currentCoroutineContext().isActive && connectedIf(mine) {
+        val current = currentCoroutineContext().isActive && ifCurrent(mine) {
+            openingSocket = null
             socketRemote = link
             rememberKind(host, if (kind == Link.Samsung) Kind.Samsung else Kind.Lg)
             _state.value = State.Connected(host, kind)
             startSender(mine)
         }
-        if (!current) link.close()
+        if (!current) link.close() else link.failure?.let { linkClosed(mine, it) }
     }
 
     private fun failedToConnect(e: IOException): State.Failed =
@@ -520,8 +521,8 @@ object TvRemote {
                 becomeConnected(opened.link, host, Link.Samsung, mine)
                 return
             } catch (e: TvRefusedException) {
-                openingSocket = null
                 if (mine != generation) return
+                openingSocket = null
                 if (token != null && attempt == 0) { // the TV no longer knows this token: ask again
                     store.edit().remove(KEY_SAMSUNG_TOKEN + host).apply()
                     continue
@@ -529,8 +530,8 @@ object TvRemote {
                 _state.value = State.Failed("The TV didn't allow this phone. When it asks, choose Allow, then tap Connect again.")
                 return
             } catch (e: IOException) {
-                openingSocket = null
                 if (mine != generation) return
+                openingSocket = null
                 if (isPinMismatch(e) && attempt == 0) { // a different TV than the one paired (or it was reset): start over
                     store.edit().remove(KEY_SAMSUNG_TOKEN + host).remove(KEY_SAMSUNG_PIN + host).apply()
                     continue
@@ -559,8 +560,8 @@ object TvRemote {
                 becomeConnected(opened.link, host, Link.Lg, mine)
                 return
             } catch (e: TvRefusedException) {
-                openingSocket = null
                 if (mine != generation) return
+                openingSocket = null
                 if (key != null && attempt == 0) { // the TV no longer knows this key: ask again
                     store.edit().remove(KEY_LG_KEY + host).apply()
                     continue
@@ -568,8 +569,8 @@ object TvRemote {
                 _state.value = State.Failed("The TV didn't accept this phone. When it asks, choose Yes or Allow, then tap Connect again.")
                 return
             } catch (e: IOException) {
-                openingSocket = null
                 if (mine != generation) return
+                openingSocket = null
                 if (isPinMismatch(e) && attempt == 0) {
                     store.edit().remove(KEY_LG_KEY + host).remove(KEY_LG_PIN + host).apply()
                     continue
@@ -611,16 +612,17 @@ object TvRemote {
                 }
                 opened.shell("echo caster")
                 patience.cancel()
-                opening = null
-                connection = opened
-                if (!isActive || mine != generation) {
+                val current = isActive && ifCurrent(mine) {
+                    opening = null
+                    connection = opened
+                    _state.value = State.Connected(host, Link.Adb)
+                    startSender(mine)
+                }
+                if (!current) {
                     // Cancelled while the answer was arriving: don't come back to life after the owner pressed Cancel.
-                    connection = null
                     opened.close()
                     return@launch
                 }
-                _state.value = State.Connected(host, Link.Adb)
-                startSender(mine)
             } catch (e: Throwable) {
                 runCatching { adb?.close() }
                 if (opening === adb) opening = null
@@ -645,6 +647,7 @@ object TvRemote {
 
     private fun disconnectLocked() {
         generation++
+        holdWorks = true
         connectJob?.cancel()
         sender?.cancel()
         runCatching { opening?.close() }
@@ -755,26 +758,35 @@ object TvRemote {
 
     private fun startSender(mine: Int) {
         sender?.cancel()
+        pending.set(0)
         val queue = commands
         sender = scope.launch {
             for (task in queue) {
                 try {
                     task()
-                    if (mine == generation) pending.decrementAndGet() // a finished task of an old connection isn't counted
+                    if (mine == generation) donePending() // a finished task of an old connection isn't counted
                 } catch (e: FireTvHttpException) {
                     // The Fire TV answered, just not with a yes (typing with no text box, play with nothing to play): it is still there.
-                    if (mine == generation) pending.decrementAndGet()
+                    if (mine == generation) donePending()
                 } catch (e: Throwable) {
                     // The TV went to sleep, left the network, turned ADB off or forgot this phone. (If the owner pressed
                     // Disconnect, this job was cancelled first and the screen already says so.)
-                    if (isActive && mine == generation) lost(e)
+                    if (isActive) lost(mine, e)
                     break
                 }
             }
         }
     }
 
-    private fun lost(error: Throwable) {
+    /** The connection ended by itself. Does nothing if it isn't the current one any more, or was already reported. */
+    private fun lost(mine: Int, error: Throwable) {
+        synchronized(transition) {
+            if (mine != generation || _state.value !is State.Connected) return
+            lostLocked(error)
+        }
+    }
+
+    private fun lostLocked(error: Throwable) {
         val link = fire
         // A TV that refuses the token has forgotten this phone: drop the saved pairing so the next connect asks for a code.
         if (error is FireTvAuthException && link != null) {
@@ -816,7 +828,11 @@ object TvRemote {
 
     private fun enqueue(task: () -> Unit) {
         pending.incrementAndGet()
-        if (!commands.trySend(task).isSuccess) pending.decrementAndGet() // the connection just ended
+        if (!commands.trySend(task).isSuccess) donePending() // the connection just ended
+    }
+
+    private fun donePending() {
+        pending.updateAndGet { if (it > 0) it - 1 else 0 }
     }
 
     /** Throws away what is still queued and starts a fresh queue for the next connection. */
@@ -826,7 +842,7 @@ object TvRemote {
     }
 
     /** Runs [block] (the moment a connection becomes the current one) unless it was cancelled meanwhile. Returns whether it ran. */
-    private inline fun connectedIf(mine: Int, block: () -> Unit): Boolean = synchronized(transition) {
+    private inline fun ifCurrent(mine: Int, block: () -> Unit): Boolean = synchronized(transition) {
         if (mine != generation) return false
         block()
         true

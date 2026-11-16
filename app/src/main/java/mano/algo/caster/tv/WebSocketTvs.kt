@@ -21,6 +21,9 @@ internal interface TvSocketRemote : Closeable {
     fun typed(old: String, new: String)
 
     fun openUrl(url: String)
+
+    /** Why the connection ended, if it did. */
+    val failure: Throwable?
 }
 
 /** One port of a TV's remote service, and whether it is TLS. */
@@ -108,6 +111,8 @@ internal class SamsungTvLink private constructor(
     class Opened(val link: SamsungTvLink, val token: String?, val fingerprint: String?)
 
     @Volatile private var closed = false
+    @Volatile override var failure: Throwable? = null
+        private set
     private var playing = true // there is no play/pause toggle key: pause first, then play, and so on
     private var textStarted = false
 
@@ -152,6 +157,7 @@ internal class SamsungTvLink private constructor(
     private fun ended(error: Throwable) {
         if (closed) return
         closed = true
+        failure = error
         socket.close()
         onClosed(error)
     }
@@ -292,6 +298,8 @@ internal class LgTvLink private constructor(
     class Opened(val link: LgTvLink, val clientKey: String, val fingerprint: String?)
 
     @Volatile private var closed = false
+    @Volatile override var failure: Throwable? = null
+        private set
     private val ids = AtomicInteger(1)
     private var playing = true // the pause and play buttons are separate: pause first, then play, and so on
 
@@ -335,6 +343,7 @@ internal class LgTvLink private constructor(
     private fun ended(error: Throwable) {
         if (closed) return
         closed = true
+        failure = error
         main.close()
         input.close()
         onClosed(error)
