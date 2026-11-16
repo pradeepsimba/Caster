@@ -368,6 +368,24 @@ class WebSocketTvsTest {
         fake.close()
     }
 
+    @Test
+    fun samsungTriesThePlainPortWhenTheSecureOneHangsUp() {
+        val hangsUp = FakeTv { } // takes the connection and drops it
+        val works = FakeTv { peer -> peer.send("""{"event":"ms.channel.connect","data":{}}""") }
+        val opened = SamsungTvLink.open("127.0.0.1", "Caster", null, null, listOf(Endpoint(hangsUp.port, false), Endpoint(works.port, false)), {}, {})
+        opened.link.close()
+        hangsUp.close()
+        works.close()
+    }
+
+    @Test
+    fun aWaitForTheOwnerThatRunsOutDoesNotTryAnotherPort() {
+        assertFalse(canTryNextPort(OwnerWaitTimeout()))
+        assertFalse(canTryNextPort(TvRefusedException("no")))
+        assertTrue(canTryNextPort(java.io.EOFException()))
+        assertTrue(canTryNextPort(SocketTimeoutException()))
+    }
+
     // --- LG -----------------------------------------------------------------------------------------------------------
 
     @Test
@@ -434,6 +452,25 @@ class WebSocketTvsTest {
             input.close()
         }
         assertEquals(listOf("type:button\nname:UP\n\n", "type:button\nname:PAUSE\n\n", "type:button\nname:PLAY\n\n"), buttons)
+    }
+
+    @Test
+    fun lgTriesThePlainPortWhenTheSecureOneHangsUpAfterConnecting() {
+        val hangsUp = FakeTv { peer -> peer.read() } // answers the handshake, then drops the connection on the first message
+        val input = FakeTv { Thread.sleep(1_500) }
+        val works = FakeTv { peer ->
+            peer.read(); peer.send("""{"type":"hello","payload":{}}""")
+            peer.read(); peer.send("""{"type":"response","payload":{}}""")
+            peer.read(); peer.send("""{"type":"registered","id":"register_0","payload":{"client-key":"k"}}""")
+            peer.read(); peer.send("""{"type":"response","id":0,"payload":{"socketPath":"ws://192.168.0.9:${input.port}/p"}}""")
+            Thread.sleep(1_500)
+        }
+        val opened = LgTvLink.open("127.0.0.1", null, null, listOf(Endpoint(hangsUp.port, false), Endpoint(works.port, false)), {}, {})
+        assertEquals("k", opened.clientKey)
+        opened.link.close()
+        hangsUp.close()
+        works.close()
+        input.close()
     }
 
     @Test

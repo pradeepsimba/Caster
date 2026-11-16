@@ -18,6 +18,9 @@ import javax.net.ssl.TrustManager
 /** The TV was reached, but turned this phone down (it wasn't allowed, or the answer to "Allow?" was No or too late). */
 class TvRefusedException(message: String) : IOException(message)
 
+/** The TV asked its owner to allow this phone and got no answer in time. (Unlike a TV that is slow, trying another port won't help.) */
+class OwnerWaitTimeout : SocketTimeoutException("The TV wasn't answered in time")
+
 /** Base64 without the platform classes (they need a newer Android, or aren't there in a plain unit test). */
 internal object Base64Lite {
     private const val TABLE = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"

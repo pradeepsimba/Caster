@@ -2,6 +2,7 @@ package mano.algo.caster.tv
 
 import java.io.Closeable
 import java.io.IOException
+import java.net.SocketTimeoutException
 import java.net.URLEncoder
 import java.security.cert.CertificateException
 import java.util.concurrent.atomic.AtomicInteger
@@ -24,6 +25,13 @@ internal interface TvSocketRemote : Closeable {
 
 /** One port of a TV's remote service, and whether it is TLS. */
 internal class Endpoint(val port: Int, val secure: Boolean)
+
+/**
+ * True when a connection that failed with [e] is worth another try on the next port: an ordinary failure, not a "No" from the
+ * TV's owner, not a wait for its owner that ran out, and not a certificate that isn't the one remembered.
+ */
+internal fun canTryNextPort(e: Throwable): Boolean =
+    e is IOException && e !is TvRefusedException && e !is OwnerWaitTimeout && !isPinMismatch(e)
 
 /** True when [e] failed because the TV's certificate isn't the one remembered from pairing. */
 internal fun isPinMismatch(e: Throwable): Boolean = generateSequence(e) { it.cause }.any { it is CertificateException }
@@ -179,7 +187,11 @@ internal class SamsungTvLink private constructor(
                 }
                 try {
                     while (true) {
-                        val message = ws.readText(ALLOW_WAIT_MS)
+                        val message = try {
+                            ws.readText(ALLOW_WAIT_MS)
+                        } catch (e: SocketTimeoutException) {
+                            throw OwnerWaitTimeout() // the TV is waiting for its owner
+                        }
                         when (SamsungTvCommands.event(message)) {
                             "ms.channel.connect" -> {
                                 val link = SamsungTvLink(ws, onClosed)
@@ -191,6 +203,10 @@ internal class SamsungTvLink private constructor(
                     }
                 } catch (e: Throwable) {
                     ws.close()
+                    if (canTryNextPort(e)) { // e.g. the secure port took the connection but then hung up: try the plain one
+                        last = e as IOException
+                        continue
+                    }
                     throw e
                 }
             }
@@ -361,6 +377,10 @@ internal class LgTvLink private constructor(
                 } catch (e: Throwable) {
                     main.close()
                     input?.close()
+                    if (canTryNextPort(e)) { // older webOS only has the plain port, and a TV may take the secure one and then hang up
+                        last = e as IOException
+                        continue
+                    }
                     throw e
                 }
             }
@@ -390,7 +410,11 @@ internal class LgTvLink private constructor(
                 answer = await(main, STEP_MS, "response", "registered", "error")
             }
             if (LgTvCommands.type(answer) == "response" && LgTvCommands.isPrompt(answer)) {
-                answer = await(main, ACCEPT_WAIT_MS, "registered", "error") // the TV is asking its owner
+                answer = try {
+                    await(main, ACCEPT_WAIT_MS, "registered", "error") // the TV is asking its owner
+                } catch (e: SocketTimeoutException) {
+                    throw OwnerWaitTimeout()
+                }
             }
             if (LgTvCommands.type(answer) != "registered") throw TvRefusedException("The TV didn't accept this phone")
             return LgTvCommands.clientKey(answer) ?: clientKey ?: throw TvRefusedException("The TV gave no key")

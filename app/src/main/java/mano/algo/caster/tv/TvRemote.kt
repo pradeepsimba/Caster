@@ -983,7 +983,7 @@ object TvRemote {
                 // Every address is asked on each kind of TV's remote port; one that answers on any of them is listed.
                 val ports = listOf(
                     AndroidTvCommands.PAIR_PORT, FireTvCommands.WAKE_PORT, SamsungTvCommands.SECURE_PORT,
-                    LgTvCommands.SECURE_PORT, TvCommands.DEFAULT_PORT,
+                    LgTvCommands.SECURE_PORT, LgTvCommands.PLAIN_PORT, TvCommands.DEFAULT_PORT,
                 )
                 val hits = (1..254).flatMap { n ->
                     val host = "$prefix.$n"
