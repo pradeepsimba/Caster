@@ -233,13 +233,17 @@ object TvRemote {
                 val pairedFire = store.getString(KEY_TOKEN_PREFIX + host, null) != null
                 val before = store.getString(KEY_KIND_PREFIX + host, null)?.let { runCatching { Kind.valueOf(it) }.getOrNull() }
                 // Nothing answering usually means a TV in standby: it is then treated as the kind it was last time.
-                val kind = if (pairedFire) Kind.Fire else detect(host).let { if (it == Kind.Fire && before != null) before else it }
+                val detected = if (pairedFire) Kind.Fire else detect(host)
+                val guessed = detected == Kind.Fire && before != null && before != Kind.Fire
+                val kind = if (guessed) before!! else detected
                 when (kind) {
                     Kind.AndroidTv -> androidTvFlow(app, host, mine)
                     Kind.Samsung -> samsungFlow(app, host, mine)
                     Kind.Lg -> lgFlow(app, host, mine)
                     Kind.Fire -> fireFlow(store, host, mine)
                 }
+                // A guess that didn't work (the TV is off, or it is another TV now): forget it, so the next try looks at the TV again.
+                if (guessed && mine == generation && _state.value is State.Failed) store.edit().remove(KEY_KIND_PREFIX + host).apply()
             } catch (e: Throwable) {
                 if (isActive && mine == generation) _state.value = State.Failed("Couldn't connect to the TV: ${e.message ?: e.javaClass.simpleName}")
             }
