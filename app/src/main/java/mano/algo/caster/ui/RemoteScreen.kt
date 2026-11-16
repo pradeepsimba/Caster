@@ -82,7 +82,7 @@ val RemoteIcon: ImageVector by lazy {
     }.build()
 }
 
-/** Phone-as-remote for a Fire TV or Android TV: connect once, then use the buttons like the real remote. */
+/** Phone-as-remote for a Fire TV, Android TV, Samsung or LG TV: connect once, then use the buttons like the real remote. */
 @Composable
 fun RemoteScreen(
     state: TvRemote.State,
@@ -107,7 +107,7 @@ fun RemoteScreen(
         modifier = modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        SectionTitle("TV remote", "Control a Fire TV or Android TV from this phone.")
+        SectionTitle("TV remote", "Control a Fire TV, Android TV, Samsung or LG TV from this phone.")
         if (!TvRemote.supported) {
             EmptyState("Needs Android 8 or newer", "The TV remote can't run on this version of Android.")
             return@Column
@@ -210,9 +210,9 @@ private fun ConnectionCard(
                 if (found.isEmpty() && !scanning) {
                     // Shown after a search that found nothing, and as the first-time help.
                     Text(
-                        "Turn the TV on and tap Connect. Fire TV and Android TV both work. The first time, the TV shows a code " +
-                            "(4 digits on a Fire TV, 6 letters and numbers on an Android TV): type it here. " +
-                            "Nothing needs to be switched on in the TV's settings.",
+                        "Turn the TV on and tap Connect. Fire TV, Android TV, Samsung and LG TVs work. The first time, a Fire TV " +
+                            "shows a 4-digit code and an Android TV a 6-character one: type it here. A Samsung or LG TV asks on its " +
+                            "screen to allow this phone: choose Allow. Nothing needs to be switched on in the TV's settings.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -223,7 +223,11 @@ private fun ConnectionCard(
             }
             if (state is TvRemote.State.Connecting) {
                 Text(
-                    if (!state.viaAdb) "Connecting to the TV…" else "Look at the TV and choose Allow (tick \"Always allow\" so it doesn't ask again).",
+                    when {
+                        state.viaAdb -> "Look at the TV and choose Allow (tick \"Always allow\" so it doesn't ask again)."
+                        state.needsAllow -> "Look at the TV and choose Allow (or Yes) when it asks to connect this phone."
+                        else -> "Connecting to the TV…"
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
                 )

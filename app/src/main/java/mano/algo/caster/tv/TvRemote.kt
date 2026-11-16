@@ -14,6 +14,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -23,6 +24,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import mano.algo.caster.server.NetworkUtils
+import java.io.Closeable
 import java.io.EOFException
 import java.io.File
 import java.io.IOException
@@ -33,13 +35,16 @@ import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.SSLException
 
 /**
- * Uses the phone as a remote for a Fire TV or an Android TV / Google TV.
+ * Uses the phone as a remote for a Fire TV, an Android TV / Google TV, a Samsung TV or an LG TV.
  *
  * Fire TV: like the official remote app. The TV shows a 4-digit code, you type it once, and the phone remembers it.
  * Nothing has to be switched on in the TV's settings.
  *
  * Android TV / Google TV: like the Google TV app. The TV shows a 6-character code, you type it once, and the phone
  * remembers it. Nothing has to be switched on in the TV's settings either.
+ *
+ * Samsung (2016 and newer) and LG (webOS): the TV asks on its screen to allow this phone, once; the phone then keeps
+ * the key the TV hands out.
  *
  * ADB (advanced, any Android TV): needs ADB debugging turned on in the TV's developer options; the TV asks once to
  * "Allow" this phone, which proves itself with its own key (made on first use, private to the app, left out of backups).
@@ -49,13 +54,13 @@ private class AndroidTvDroppedUsException(cause: Throwable) : IOException("The T
 
 object TvRemote {
     /** How the phone talks to the TV. */
-    enum class Link { FireTv, Adb, AndroidTv }
+    enum class Link { FireTv, Adb, AndroidTv, Samsung, Lg }
 
     sealed interface State {
         data object Idle : State
 
-        /** Includes waiting for the owner to tap Allow on the TV (ADB). */
-        data class Connecting(val host: String, val viaAdb: Boolean = false) : State
+        /** Includes waiting for the owner to tap Allow on the TV (ADB, or [needsAllow] on a Samsung or LG TV). */
+        data class Connecting(val host: String, val viaAdb: Boolean = false, val needsAllow: Boolean = false) : State
 
         /** The TV is showing a code (4 digits; 6 letters and digits on an [androidTv]); the owner types it on the phone. [error] is set after a wrong code. */
         data class NeedsPin(val host: String, val error: String? = null, val androidTv: Boolean = false) : State
@@ -84,6 +89,10 @@ object TvRemote {
     private const val KEY_TOKEN_PREFIX = "fire_token_"
     private const val KEY_VOLUME_PREFIX = "volume_on_"
     private const val KEY_ATV_PREFIX = "atv_tv_" // the fingerprint of an Android TV this phone is paired with
+    private const val KEY_SAMSUNG_TOKEN = "samsung_token_"
+    private const val KEY_SAMSUNG_PIN = "samsung_pin_" // the fingerprint of a Samsung TV's certificate
+    private const val KEY_LG_KEY = "lg_key_"
+    private const val KEY_LG_PIN = "lg_pin_"
 
     /** A held direction is released by itself after this long, so a lost "key up" can't leave the TV scrolling for ever. */
     private const val HOLD_LIMIT_MS = 8_000L
@@ -132,6 +141,8 @@ object TvRemote {
     @Volatile private var atv: AndroidTvLink? = null
     @Volatile private var atvOpening: AndroidTvLink? = null
     @Volatile private var pairingAtv: AndroidTvPairing? = null
+    @Volatile private var socketRemote: TvSocketRemote? = null // a Samsung or LG TV
+    @Volatile private var openingSocket: Closeable? = null // the connection being made to one, so Cancel can close it
 
     /**
      * The directions currently held down on a Fire TV (key code to the number of that hold; two fingers can hold two
@@ -183,9 +194,24 @@ object TvRemote {
 
     // --- The Connect button: Android TV or Fire TV --------------------------------------------------------------
 
+    private enum class Kind { Fire, AndroidTv, Samsung, Lg }
+
+    /** Which kind of TV is at [host]: each kind has its own remote port that answers; a Fire TV is what is left. */
+    private suspend fun detect(host: String): Kind = coroutineScope {
+        val androidTv = async { reachable(host, AndroidTvCommands.PAIR_PORT, ATV_PROBE_MS) }
+        val samsung = async { reachable(host, SamsungTvCommands.SECURE_PORT, ATV_PROBE_MS) || reachable(host, SamsungTvCommands.PLAIN_PORT, ATV_PROBE_MS) }
+        val lg = async { reachable(host, LgTvCommands.SECURE_PORT, ATV_PROBE_MS) || reachable(host, LgTvCommands.PLAIN_PORT, ATV_PROBE_MS) }
+        when {
+            androidTv.await() -> Kind.AndroidTv
+            samsung.await() -> Kind.Samsung
+            lg.await() -> Kind.Lg
+            else -> Kind.Fire
+        }
+    }
+
     /**
-     * Connects to the TV at [rawHost]. An Android TV / Google TV answers on its own remote port; anything else is tried
-     * as a Fire TV (and a Fire TV that was paired before goes straight there).
+     * Connects to the TV at [rawHost], whatever kind it is: an Android TV / Google TV, a Samsung or an LG TV answer on their
+     * own remote ports; anything else is tried as a Fire TV (and a Fire TV that was paired before goes straight there).
      */
     fun connect(context: Context, rawHost: String) {
         val target = begin(context, rawHost) ?: return
@@ -198,10 +224,11 @@ object TvRemote {
         connectJob = scope.launch {
             try {
                 val pairedFire = store.getString(KEY_TOKEN_PREFIX + host, null) != null
-                if (!pairedFire && reachable(host, AndroidTvCommands.PAIR_PORT, ATV_PROBE_MS)) {
-                    androidTvFlow(app, host, mine)
-                } else {
-                    fireFlow(store, host, mine)
+                when (if (pairedFire) Kind.Fire else detect(host)) {
+                    Kind.AndroidTv -> androidTvFlow(app, host, mine)
+                    Kind.Samsung -> samsungFlow(app, host, mine)
+                    Kind.Lg -> lgFlow(app, host, mine)
+                    Kind.Fire -> fireFlow(store, host, mine)
                 }
             } catch (e: Throwable) {
                 if (isActive && mine == generation) _state.value = State.Failed("Couldn't connect to the TV: ${e.message ?: e.javaClass.simpleName}")
@@ -387,7 +414,7 @@ object TvRemote {
 
     /** Opens the remote connection to a paired Android TV and waits until the TV is ready for keys. Throws if it can't. */
     private suspend fun openAndroidTv(host: String, identity: AndroidTvIdentity, pinned: String, mine: Int) {
-        val link = AndroidTvLink.open(host, identity, pinned, { error -> androidTvClosed(mine, error) })
+        val link = AndroidTvLink.open(host, identity, pinned, { error -> linkClosed(mine, error) })
         var done = false
         try {
             atvOpening = link // so Cancel can close it and end the wait
@@ -409,10 +436,107 @@ object TvRemote {
         }
     }
 
-    /** The reader thread saw the Android TV connection end (the TV went off, left the network, or forgot this phone). */
-    private fun androidTvClosed(mine: Int, error: Throwable) {
+    /** The reader thread saw the connection end (the TV went off, left the network, or forgot this phone). */
+    private fun linkClosed(mine: Int, error: Throwable) {
         if (mine != generation || _state.value !is State.Connected) return
         lost(error)
+    }
+
+    // --- Samsung and LG: the TV asks on its screen to allow this phone ---------------------------------------
+
+    /** Keeps hold of a connection being made so Cancel can close it; one made after Cancel is closed at once. */
+    private fun track(mine: Int): (Closeable) -> Unit = { socket -> if (mine != generation) socket.close() else openingSocket = socket }
+
+    private suspend fun becomeConnected(link: TvSocketRemote, host: String, kind: Link, mine: Int) {
+        openingSocket = null
+        if (!currentCoroutineContext().isActive || mine != generation) {
+            link.close()
+            return
+        }
+        socketRemote = link
+        _state.value = State.Connected(host, kind)
+        startSender(mine)
+    }
+
+    private fun failedToConnect(e: IOException): State.Failed =
+        State.Failed(
+            if (e is java.net.SocketTimeoutException) {
+                "The TV didn't answer in time. If it asked to allow this phone, choose Allow and tap Connect again."
+            } else {
+                "Couldn't connect to the TV: ${e.message ?: e.javaClass.simpleName}"
+            },
+        )
+
+    private suspend fun samsungFlow(app: Context, host: String, mine: Int) {
+        val store = prefs(app)
+        for (attempt in 0..1) {
+            val token = store.getString(KEY_SAMSUNG_TOKEN + host, null)
+            val pinned = store.getString(KEY_SAMSUNG_PIN + host, null)
+            if (token == null) _state.value = State.Connecting(host, needsAllow = true)
+            try {
+                val opened = SamsungTvLink.open(host, DEVICE_NAME, token, pinned, SamsungTvLink.ENDPOINTS, track(mine)) { e -> linkClosed(mine, e) }
+                store.edit().apply {
+                    opened.token?.let { putString(KEY_SAMSUNG_TOKEN + host, it) }
+                    opened.fingerprint?.let { putString(KEY_SAMSUNG_PIN + host, it) }
+                }.apply()
+                becomeConnected(opened.link, host, Link.Samsung, mine)
+                return
+            } catch (e: TvRefusedException) {
+                openingSocket = null
+                if (mine != generation) return
+                if (token != null && attempt == 0) { // the TV no longer knows this token: ask again
+                    store.edit().remove(KEY_SAMSUNG_TOKEN + host).apply()
+                    continue
+                }
+                _state.value = State.Failed("The TV didn't allow this phone. When it asks, choose Allow, then tap Connect again.")
+                return
+            } catch (e: IOException) {
+                openingSocket = null
+                if (mine != generation) return
+                if (isPinMismatch(e) && attempt == 0) { // a different TV than the one paired (or it was reset): start over
+                    store.edit().remove(KEY_SAMSUNG_TOKEN + host).remove(KEY_SAMSUNG_PIN + host).apply()
+                    continue
+                }
+                _state.value = failedToConnect(e)
+                return
+            }
+        }
+    }
+
+    private suspend fun lgFlow(app: Context, host: String, mine: Int) {
+        val store = prefs(app)
+        for (attempt in 0..1) {
+            val key = store.getString(KEY_LG_KEY + host, null)
+            val pinned = store.getString(KEY_LG_PIN + host, null)
+            if (key == null) _state.value = State.Connecting(host, needsAllow = true)
+            try {
+                val opened = LgTvLink.open(host, key, pinned, LgTvLink.ENDPOINTS, track(mine)) { e -> linkClosed(mine, e) }
+                store.edit().apply {
+                    putString(KEY_LG_KEY + host, opened.clientKey)
+                    opened.fingerprint?.let { putString(KEY_LG_PIN + host, it) }
+                }.apply()
+                becomeConnected(opened.link, host, Link.Lg, mine)
+                return
+            } catch (e: TvRefusedException) {
+                openingSocket = null
+                if (mine != generation) return
+                if (key != null && attempt == 0) { // the TV no longer knows this key: ask again
+                    store.edit().remove(KEY_LG_KEY + host).apply()
+                    continue
+                }
+                _state.value = State.Failed("The TV didn't accept this phone. When it asks, choose Yes or Allow, then tap Connect again.")
+                return
+            } catch (e: IOException) {
+                openingSocket = null
+                if (mine != generation) return
+                if (isPinMismatch(e) && attempt == 0) {
+                    store.edit().remove(KEY_LG_KEY + host).remove(KEY_LG_PIN + host).apply()
+                    continue
+                }
+                _state.value = failedToConnect(e)
+                return
+            }
+        }
     }
 
     // --- ADB -------------------------------------------------------------------------------------------------
@@ -488,6 +612,10 @@ object TvRemote {
         atvOpening = null
         runCatching { atv?.close() }
         atv = null
+        runCatching { openingSocket?.close() }
+        openingSocket = null
+        runCatching { socketRemote?.close() }
+        socketRemote = null
         holding.clear()
         closeVolume()
         while (commands.tryReceive().isSuccess) { /* drop anything still queued for the old connection */ }
@@ -606,6 +734,8 @@ object TvRemote {
         fire = null
         runCatching { atv?.close() }
         atv = null
+        runCatching { socketRemote?.close() }
+        socketRemote = null
         sender?.cancel() // when the connection ended on the reader's side, the sender is still waiting for buttons
         closeVolume()
         while (commands.tryReceive().isSuccess) { /* nothing more can be sent */ }
@@ -646,8 +776,9 @@ object TvRemote {
         if (repeating && pending.get() >= 1) return // one at a time: an even pace instead of bursts and gaps
         val link = fire
         val androidTv = atv
+        val remote = socketRemote
         // A held fast-forward would keep asking the TV to speed up; only a single press is sent there.
-        if (repeating && (link != null || androidTv != null) && (code == TvKey.FAST_FORWARD || code == TvKey.REWIND)) return
+        if (repeating && (link != null || androidTv != null || remote != null) && (code == TvKey.FAST_FORWARD || code == TvKey.REWIND)) return
         val adb = connection
         if (link != null && (code == TvKey.VOLUME_UP || code == TvKey.VOLUME_DOWN || code == TvKey.MUTE)) {
             sendVolume(code)
@@ -656,6 +787,7 @@ object TvRemote {
         when {
             link != null -> if (FireTvCommands.supports(code)) enqueue { sendPress(link, code) }
             androidTv != null -> enqueue { androidTv.key(code) }
+            remote != null -> if (remote.supports(code)) enqueue { remote.press(code) }
             adb != null -> enqueue { shellGuarded(adb, TvCommands.key(code)) }
         }
     }
@@ -683,8 +815,10 @@ object TvRemote {
     fun longPress(code: Int) {
         val link = fire
         val androidTv = atv
+        val remote = socketRemote
         val adb = connection
         when {
+            remote != null -> if (remote.supports(code)) enqueue { remote.longPress(code) }
             androidTv != null -> enqueue {
                 androidTv.key(code, AndroidTvCommands.START_LONG)
                 Thread.sleep(LONG_PRESS_MS) // the sender runs on its own IO thread; later buttons wait this one second
@@ -771,8 +905,10 @@ object TvRemote {
     fun typed(old: String, new: String) {
         val link = fire
         val androidTv = atv
+        val remote = socketRemote
         val adb = connection
         when {
+            remote != null -> enqueue { remote.typed(old, new) }
             androidTv != null -> AndroidTvKeys.edit(old, new).forEach { code -> enqueue { androidTv.key(code) } }
             // The Fire TV takes the whole text, so what is sent is always the full box (and a backspace is just a shorter text).
             link != null -> enqueue { link.send(FireTvCommands.text(new)) }
@@ -780,8 +916,13 @@ object TvRemote {
         }
     }
 
-    /** Opens [url] on the TV (ADB or Android TV). */
+    /** Opens [url] on the TV (ADB, Android TV, Samsung or LG). */
     fun openUrl(url: String) {
+        val remote = socketRemote
+        if (remote != null) {
+            enqueue { remote.openUrl(url) }
+            return
+        }
         val androidTv = atv
         if (androidTv != null) {
             enqueue { androidTv.openLink(url) }
@@ -809,19 +950,18 @@ object TvRemote {
         scope.launch {
             try {
                 val prefix = own.substringBeforeLast('.')
-                val gate = Semaphore(64)
-                val hits = (1..254).map { n ->
-                    async {
-                        val host = "$prefix.$n"
-                        if (host != own) {
-                            gate.withPermit {
-                                if (reachable(host, AndroidTvCommands.PAIR_PORT, 500) || reachable(host, FireTvCommands.WAKE_PORT, 500) ||
-                                    reachable(host, TvCommands.DEFAULT_PORT, 500)
-                                ) host else null
-                            }
-                        } else null
+                val gate = Semaphore(128)
+                // Every address is asked on each kind of TV's remote port; one that answers on any of them is listed.
+                val ports = listOf(
+                    AndroidTvCommands.PAIR_PORT, FireTvCommands.WAKE_PORT, SamsungTvCommands.SECURE_PORT,
+                    LgTvCommands.SECURE_PORT, TvCommands.DEFAULT_PORT,
+                )
+                val hits = (1..254).flatMap { n ->
+                    val host = "$prefix.$n"
+                    if (host == own) emptyList() else ports.map { port ->
+                        async { if (gate.withPermit { reachable(host, port, 500) }) host else null }
                     }
-                }.awaitAll().filterNotNull()
+                }.awaitAll().filterNotNull().distinct()
                 _found.value = hits
             } finally {
                 _scanning.value = false

@@ -48,19 +48,6 @@ internal object AndroidTvTls {
         }
     }
 
-    // The TV's certificate is self-signed; see the note above for why it is accepted, and when it is checked.
-    @SuppressLint("CustomX509TrustManager", "TrustAllX509TrustManager")
-    private class PinnedTrust(private val pinned: String?) : X509TrustManager {
-        override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) = Unit
-
-        override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {
-            if (pinned != null && AndroidTvCommands.fingerprint(chain[0].encoded) != pinned) {
-                throw CertificateException("This isn't the TV that was paired")
-            }
-        }
-
-        override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
-    }
 }
 
 /**
@@ -216,4 +203,21 @@ class AndroidTvLink private constructor(
             return link
         }
     }
+}
+
+/**
+ * Accepts a TV's self-signed certificate: while pairing (no [pinned] fingerprint yet) any one, afterwards only the one that
+ * was seen at pairing. Used for the one connection it is made for, never installed globally.
+ */
+@SuppressLint("CustomX509TrustManager", "TrustAllX509TrustManager")
+internal class PinnedTrust(private val pinned: String?) : X509TrustManager {
+    override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) = Unit
+
+    override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {
+        if (pinned != null && AndroidTvCommands.fingerprint(chain[0].encoded) != pinned) {
+            throw CertificateException("This isn't the TV that was paired")
+        }
+    }
+
+    override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
 }
