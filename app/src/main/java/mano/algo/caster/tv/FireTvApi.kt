@@ -137,7 +137,7 @@ class FireTvLink(val host: String, var token: String?) {
     /** Starts the TV's remote service. Best effort: it also works as a no-op when the service is already up. */
     fun wake() {
         runCatching {
-            val c = URL("http://$host:${FireTvCommands.WAKE_PORT}${FireTvCommands.WAKE_PATH}").openConnection() as HttpURLConnection
+            val c = LanNetwork.open(URL("http://$host:${FireTvCommands.WAKE_PORT}${FireTvCommands.WAKE_PATH}")) as HttpURLConnection
             try {
                 c.requestMethod = "POST"
                 c.connectTimeout = CONNECT_MS
@@ -154,7 +154,7 @@ class FireTvLink(val host: String, var token: String?) {
 
     /** Sends [request] and returns the TV's answer. Throws [FireTvAuthException] when the TV doesn't accept the token. */
     fun send(request: FireTvCommands.Request): String {
-        val c = URL("https://$host:${FireTvCommands.PORT}${request.path}").openConnection() as HttpsURLConnection
+        val c = LanNetwork.open(URL("https://$host:${FireTvCommands.PORT}${request.path}")) as HttpsURLConnection
         try {
             c.sslSocketFactory = trustingContext.socketFactory
             c.hostnameVerifier = javax.net.ssl.HostnameVerifier { _, _ -> true }

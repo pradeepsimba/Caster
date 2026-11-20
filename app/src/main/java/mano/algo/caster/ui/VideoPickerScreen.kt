@@ -202,18 +202,23 @@ private val thumbnailCache = object : LruCache<Long, Bitmap>(8 * 1024 * 1024) {
     override fun sizeOf(key: Long, value: Bitmap) = value.byteCount
 }
 
+@Suppress("DEPRECATION")
 @Composable
 private fun Thumbnail(id: Long) {
     val context = LocalContext.current
     // Loaded lazily per visible row; older Android has no cheap thumbnail API, so it shows the placeholder.
     val bitmap by produceState<ImageBitmap?>(initialValue = thumbnailCache.get(id)?.asImageBitmap(), id) {
-        if (value == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        if (value == null) {
             value = withContext(Dispatchers.IO) {
                 runCatching {
-                    val uri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
-                    context.contentResolver.loadThumbnail(uri, Size(192, 108), null)
-                        .also { thumbnailCache.put(id, it) }
-                        .asImageBitmap()
+                    val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        val uri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
+                        context.contentResolver.loadThumbnail(uri, Size(192, 108), null)
+                    } else {
+                        // Android 9 and older: the old thumbnail store.
+                        MediaStore.Video.Thumbnails.getThumbnail(context.contentResolver, id, MediaStore.Video.Thumbnails.MINI_KIND, null)
+                    }
+                    bitmap?.also { thumbnailCache.put(id, it) }?.asImageBitmap()
                 }.getOrNull()
             }
         }

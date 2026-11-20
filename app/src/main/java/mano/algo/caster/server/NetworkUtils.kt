@@ -2,6 +2,7 @@ package mano.algo.caster.server
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.Build
 import java.net.Inet4Address
@@ -9,7 +10,8 @@ import java.net.NetworkInterface
 
 object NetworkUtils {
 
-    private val LAN_INTERFACE_PREFIXES = listOf("wlan", "swlan", "ap", "eth", "p2p")
+    // (Not "p2p": a Wi-Fi Direct group of Smart View or Quick Share would be taken for the home network.)
+    private val LAN_INTERFACE_PREFIXES = listOf("wlan", "swlan", "ap", "eth")
 
     /**
      * Resolves the phone's IPv4 address on the local network (Wi-Fi, Ethernet, or its own hotspot).
@@ -33,8 +35,11 @@ object NetworkUtils {
 
     private fun fromConnectivityManager(context: Context): Inet4Address? = lanNetworkAddress(context)?.first
 
+    /** The home network itself (not only its address), for connections that must go out through it. Null on a phone's own hotspot. */
+    fun lanNetwork(context: Context): Network? = lanNetworkAddress(context)?.third
+
     /** The first LAN IPv4 address and whether it sits on a hotspot (local-only) network. */
-    private fun lanNetworkAddress(context: Context): Pair<Inet4Address, Boolean>? {
+    private fun lanNetworkAddress(context: Context): Triple<Inet4Address, Boolean, Network>? {
         val cm = context.getSystemService(ConnectivityManager::class.java) ?: return null
         @Suppress("DEPRECATION")
         val networks = cm.allNetworks
@@ -51,7 +56,7 @@ object NetworkUtils {
                 .firstOrNull { !it.isLoopbackAddress && it.isSiteLocalAddress } ?: continue
             val local = Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA &&
                 caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_LOCAL_NETWORK)
-            return address to local
+            return Triple(address, local, network)
         }
         return null
     }

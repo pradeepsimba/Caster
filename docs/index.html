@@ -34,8 +34,8 @@
   :focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
 
   /* top bar */
-  .topbar { position:sticky; top:0; z-index:5; display:flex; align-items:center; gap:12px; padding:14px max(16px,env(safe-area-inset-right)) 14px max(16px,env(safe-area-inset-left));
-    backdrop-filter:blur(14px); background:var(--bg); background:color-mix(in srgb, var(--bg) 78%, transparent); border-bottom:1px solid var(--line); }
+  .topbar { position:sticky; top:0; z-index:5; display:flex; align-items:center; gap:12px; padding:14px 16px; padding:14px max(16px,env(safe-area-inset-right)) 14px max(16px,env(safe-area-inset-left));
+    -webkit-backdrop-filter:blur(14px); backdrop-filter:blur(14px); background:var(--bg); background:color-mix(in srgb, var(--bg) 78%, transparent); border-bottom:1px solid var(--line); }
   .brand { display:flex; align-items:center; gap:10px; font-weight:700; font-size:18px; letter-spacing:.2px; }
   .logo { width:32px; height:32px; border-radius:10px; display:grid; place-items:center; color:#fff; font-size:18px;
     background:linear-gradient(135deg,var(--accent),var(--accent-2)); box-shadow:0 6px 16px color-mix(in srgb, var(--accent) 40%, transparent); }
@@ -67,7 +67,7 @@
   .note { color:var(--dim); font-size:14px; margin:12px 0 0; min-height:1.4em; }
   .err { color:var(--bad); margin:12px 0 0; }
   .row { display:flex; gap:8px; margin-top:12px; }
-  .spin { width:18px; height:18px; border-radius:50%; border:2.5px solid color-mix(in srgb, var(--on-accent) 35%, transparent); border-top-color:var(--on-accent); animation:spin .8s linear infinite; }
+  .spin { width:18px; height:18px; border-radius:50%; border:2.5px solid rgba(255,255,255,.35); border:2.5px solid color-mix(in srgb, var(--on-accent) 35%, transparent); border-top-color:var(--on-accent); animation:spin .8s linear infinite; }
   .spin.dark { border-color:var(--line); border-top-color:var(--accent); }
   @keyframes spin { to { transform:rotate(360deg); } }
 
@@ -106,7 +106,7 @@
   #retry { margin-top:18px; }
 
   /* videos */
-  .toolbar { position:sticky; top:67px; z-index:4; padding:10px 0; margin:0 -4px; padding-inline:4px; backdrop-filter:blur(10px); background:var(--bg); background:color-mix(in srgb, var(--bg) 82%, transparent); }
+  .toolbar { position:sticky; top:67px; z-index:4; padding:10px 0; margin:0 -4px; padding-inline:4px; -webkit-backdrop-filter:blur(10px); backdrop-filter:blur(10px); background:var(--bg); background:color-mix(in srgb, var(--bg) 82%, transparent); }
   .toolbar { display:flex; gap:10px; align-items:center; }
   .search { position:relative; flex:1; }
   .search .icon { position:absolute; left:14px; top:50%; transform:translateY(-50%); color:var(--dim); font-size:18px; pointer-events:none; }
@@ -119,7 +119,7 @@
   @supports not (aspect-ratio:16/9) { .thumb { height:0; padding-top:56.25%; } }
   .thumb::after { content:""; position:absolute; top:0; right:0; bottom:0; left:0; background:linear-gradient(transparent 55%, rgba(0,0,0,.55)); opacity:.9; }
   .play-badge { position:absolute; left:50%; top:50%; z-index:1; width:48px; height:48px; margin:-24px 0 0 -24px; border-radius:50%; font-size:22px; color:#fff;
-    background:rgba(0,0,0,.5); backdrop-filter:blur(6px); opacity:0; transform:scale(.85); transition:opacity .15s, transform .15s; }
+    background:rgba(0,0,0,.5); -webkit-backdrop-filter:blur(6px); backdrop-filter:blur(6px); opacity:0; transform:scale(.85); transition:opacity .15s, transform .15s; }
   .video:hover .play-badge, .video:focus-visible .play-badge { opacity:1; transform:none; }
   .thumb:not(.has-img) .play-badge { opacity:.6; transform:none; }
   .duration { position:absolute; right:8px; bottom:8px; z-index:1; font-size:12px; font-weight:600; color:#fff; padding:2px 7px; border-radius:7px; background:rgba(0,0,0,.6); }
@@ -176,7 +176,7 @@
   #playerToast.on { opacity:1; }
   .buffering { position:absolute; left:50%; top:50%; width:56px; height:56px; margin:-28px 0 0 -28px; border-radius:50%;
     border:5px solid rgba(255,255,255,.25); border-top-color:#fff; animation:spin .8s linear infinite; pointer-events:none; }
-  #playerNote { position:absolute; left:50%; top:110px; z-index:3; transform:translateX(-50%); width:min(900px, 86vw); padding:14px 20px; border-radius:16px;
+  #playerNote { position:absolute; left:50%; top:110px; z-index:3; transform:translateX(-50%); width:86vw; width:min(900px, 86vw); padding:14px 20px; border-radius:16px;
     background:rgba(20,23,31,.92); border:1px solid rgba(255,255,255,.22); font-size:1.05rem; line-height:1.45; text-align:center; }
   #playerNote small { display:block; margin-top:8px; opacity:.7; word-break:break-all; }
   #playerError { position:absolute; left:0; right:0; top:40%; padding:0 8vw; text-align:center; font-size:1.4rem; font-weight:600; }
@@ -195,7 +195,7 @@
   .search { min-width:180px; }
   select { font:inherit; color:inherit; background:var(--surface-2); border:1px solid var(--line); border-radius:12px; padding:10px 12px; cursor:pointer; }
   .strip { display:flex; gap:16px; overflow-x:auto; padding:4px 2px 14px; margin-top:2px; scroll-snap-type:x proximity; }
-  .strip .video { flex:0 0 min(250px,70vw); scroll-snap-align:start; box-shadow:none; }
+  .strip .video { flex:0 0 250px; flex:0 0 min(250px,70vw); scroll-snap-align:start; box-shadow:none; }
   .strip + h3.section { margin-top:10px; }
 
   /* player extras */
@@ -276,6 +276,8 @@
     .video, .btn, .pbtn, .play-badge, .chipbtn { transition:none; }
     .video:hover, .video:focus-visible, .btn:active { transform:none; }
   }
+  /* Browsers without flexbox gap (see the script): a margin between neighbours instead. */
+  html.no-gap .row > * + *, html.no-gap .transport > * + *, html.no-gap .extras > * + *, html.no-gap .code > * + *, html.no-gap .toolbar > * + *, html.no-gap .topbar > * + *, html.no-gap .brand > * + *, html.no-gap .player-row > * + *, html.no-gap .device > * + *, html.no-gap .tabs > * + *, html.no-gap .strip > * + *, html.no-gap .waiting > * + * { margin-left:10px; }
 </style>
 </head>
 <body>
@@ -306,14 +308,14 @@
       <details class="more">
         <summary>Other ways to connect</summary>
         <label class="field-label" for="scanNet">Network to search (leave empty to detect)</label>
-        <div class="row"><input id="scanNet" placeholder="e.g. 192.168.0" inputmode="decimal" autocomplete="off"></div>
+        <div class="row"><input id="scanNet" placeholder="e.g. 192.168.0" autocomplete="off"></div>
         <label class="field-label" for="scanName">Phone name (leave empty to try caster, caster-2, caster-3 and names seen before)</label>
         <div class="row"><input id="scanName" placeholder="e.g. kitchen or kitchen.local" autocomplete="off" autocapitalize="none" spellcheck="false"></div>
         <label class="field-label" for="scanPort">Port (leave empty to try 8080 to 8099)</label>
         <div class="row"><input id="scanPort" placeholder="e.g. 9090" inputmode="numeric" autocomplete="off"></div>
         <label class="field-label" for="addInput">Add the phone by address (shown in the app)</label>
         <form class="row" id="addForm">
-          <input id="addInput" placeholder="192.168.0.159" inputmode="decimal" autocomplete="off">
+          <input id="addInput" placeholder="192.168.0.159" autocomplete="off">
           <button class="btn" type="submit">Add</button>
         </form>
       </details>
@@ -401,7 +403,7 @@
   // TV browsers get a 10-foot layout and arrow-key navigation; ?tv forces it on, ?tv=0 forces it off.
   const TV_FLAG = /[?&]tv(=([^&]*))?/.exec(location.search);
   const TV = TV_FLAG ? TV_FLAG[2] !== '0'
-    : /\b(AFT[A-Z0-9]*|SMART-?TV|Tizen|Web0S|WebOS|Android TV|GoogleTV|CrKey|HbbTV|Roku|BRAVIA|NetCast)\b/i.test(navigator.userAgent);
+    : /\b(AFT[A-Z0-9]*|SMART-?TV|Tizen|Web0S|WebOS|Android TV|GoogleTV|CrKey|HbbTV|Roku|BRAVIA|NetCast|VIDAA|Hisense|Viera|NETTV|Opera TV|MiTV|SonyCE)\b/i.test(navigator.userAgent);
   if (TV) document.documentElement.classList.add('tv');
   // localStorage can be missing or refuse writes (private mode, some TV browsers): then what is saved lives in memory for
   // this visit, so at least a pairing isn't asked for again and again.
@@ -418,6 +420,29 @@
     set(k, v) { memory[k] = v; try { localStorage.setItem(k, JSON.stringify(v)); } catch (_e) { /* memory has it */ } },
     del(k) { delete memory[k]; try { localStorage.removeItem(k); } catch (_e) { /* nothing to remove */ } },
   };
+  const pad2 = n => (n < 10 ? '0' : '') + n; // String.padStart() is newer than some TV browsers
+  // play() gives a promise only in newer browsers; either way a refused autoplay must not throw.
+  function safePlay(v) {
+    try { const p = v.play(); if (p && typeof p.catch === 'function') p.catch(() => {}); } catch (_e) { /* not allowed right now */ }
+  }
+  // Blob.text() is newer than some TV browsers.
+  const readFileText = f => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsText(f);
+  });
+  // Flexbox "gap" is newer than many TV browsers: without it the buttons of a row would touch, so a margin takes over.
+  try {
+    const probe = document.createElement('div');
+    probe.style.cssText = 'display:flex;flex-direction:column;row-gap:1px;position:absolute;visibility:hidden';
+    probe.appendChild(document.createElement('div'));
+    probe.appendChild(document.createElement('div'));
+    document.body.appendChild(probe);
+    const hasGap = probe.scrollHeight === 1;
+    document.body.removeChild(probe);
+    if (!hasGap) document.documentElement.classList.add('no-gap');
+  } catch (_e) { /* keep the layout as it is */ }
   // Replaces what is inside a node. (replaceChildren() does this too, but many TV browsers don't have it yet.)
   function setChildren(node) {
     while (node.firstChild) node.removeChild(node.firstChild);
@@ -481,15 +506,16 @@
   function saveDevice(d) {
     // The same phone can be reached by IP, by name, or by an old name: keep one entry per phone id.
     const i = devices.findIndex(x => x.host === d.host || (d.id && x.id === d.id));
-    if (i >= 0) devices[i] = { ...devices[i], ...d }; else devices.push(d);
+    if (i >= 0) devices[i] = Object.assign({}, devices[i], d); else devices.push(d);
     store.set('caster.devices', devices);
   }
 
   async function ping(host, timeoutMs = 2500) {
-    const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), timeoutMs);
+    const ctl = typeof AbortController === 'function' ? new AbortController() : null; // older TV browsers have none
+    const timer = setTimeout(() => { if (ctl) ctl.abort(); }, timeoutMs);
     try {
-      const init = { signal: ctl.signal, cache: 'no-store' };
+      const init = { cache: 'no-store' };
+      if (ctl) init.signal = ctl.signal;
       // Only an HTTPS page needs to declare it is knowingly reaching into the local network. On a plain HTTP
       // page (including one served by the phone itself) declaring it makes Chrome reject the request.
       if (SECURE_PAGE) init.targetAddressSpace = 'local';
@@ -650,7 +676,8 @@
       // 1. The phone announces itself as caster.local (mDNS), which needs no network guessing at all.
       //    The first request also triggers Chrome's "local network access" prompt, so give it time.
       status.textContent = 'Looking for your phone… (if the browser asks to allow "local network access", click Allow)';
-      const hosts = candidateNames().flatMap(n => ports.map(p => n + '.local:' + p));
+      const hosts = [];
+      for (const n of candidateNames()) for (const p of ports) hosts.push(n + '.local:' + p);
       const byName = await pingAll(hosts, 20000, 4000);
       if (byName.length) {
         store.set('caster.port', portOf(byName[0].host));
@@ -705,7 +732,7 @@
     if (SECURE_PAGE) { location.href = base(d) + '/'; return; } // top-level navigation to HTTP is allowed
     const found = await ping(d.host);
     if (!found) { $('scanStatus').textContent = d.host + ' is not reachable.'; return; }
-    current = { ...d, name: found.name };
+    current = Object.assign({}, d, { name: found.name });
     saveDevice(current);
     if (token(current)) loadVideos(); else openPairing();
   }
@@ -822,7 +849,7 @@
       $('kindTabs').hidden = !data.extras;
       for (const b of $('kindTabs').children) b.classList.toggle('on', b.dataset.k === kind);
       renderFolders();
-      $('videoStatus').textContent = videos.length ? ''
+      $('videoStatus').textContent = videos.length ? (data.truncated ? 'Showing the newest ' + videos.length + '. Older ones are not listed here.' : '')
         : kind !== 'v' ? 'No ' + KIND_NAMES[kind] + ' found on this phone.'
         : data.scope === 'selected' ? 'Nothing is shared yet. Choose videos in the Caster app, then refresh.'
         : 'No videos found on this phone.';
@@ -837,7 +864,7 @@
 
   const fmtDuration = ms => {
     const s = Math.round(ms / 1000), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
-    return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(sec).padStart(2, '0');
+    return (h ? h + ':' + pad2(m) : m) + ':' + pad2(sec);
   };
   const fmtSize = b => b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : Math.max(1, Math.round(b / 1e6)) + ' MB';
 
@@ -941,7 +968,7 @@
   const fmtClock = sec => {
     if (!isFinite(sec) || sec < 0) sec = 0;
     const s = Math.floor(sec), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), r = s % 60;
-    return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(r).padStart(2, '0');
+    return (h ? h + ':' + pad2(m) : m) + ':' + pad2(r);
   };
 
   function toast(text) {
@@ -1027,7 +1054,7 @@
     $('subs').hidden = kind !== 'v';
     if (kind === 'a') video.poster = base(current) + '/api/thumb/' + v.id + mediaQuery(); else video.removeAttribute('poster');
     video.src = url;
-    video.play().catch(() => {});
+    safePlay(video);
     showUi();
     document.title = v.name + ' · Caster';
     setSession(v);
@@ -1082,7 +1109,7 @@
     toast((seconds > 0 ? '+' : '−') + Math.abs(seconds) + 's');
     showUi();
   }
-  const togglePlay = () => { if (video.paused) video.play().catch(() => {}); else video.pause(); showUi(); };
+  const togglePlay = () => { if (video.paused) safePlay(video); else video.pause(); showUi(); };
   const nextVideo = () => { if (queueIndex < playQueue.length - 1) openVideo(queueIndex + 1); };
   const prevVideo = () => { if (queueIndex > 0) openVideo(queueIndex - 1); };
 
@@ -1104,9 +1131,11 @@
   video.addEventListener('error', () => {
     $('buffering').hidden = true;
     if (!video.getAttribute('src')) return;      // cleared on purpose (a photo, or the player closing)
-    $('playerError').textContent = 'This device can\'t play this file.';
+    // MEDIA_ERR_NETWORK (2): the phone went away or stopped sharing; the format is not the problem.
+    const lost = !!(video.error && video.error.code === 2);
+    $('playerError').textContent = lost ? 'The connection to the phone was lost. Go back and open the video again.' : 'This device can\'t play this file.';
     $('playerError').hidden = false;
-    if (kind === 'v' && playQueue[queueIndex]) showNote('This device can\'t play this video format.', mediaUrl(playQueue[queueIndex]));
+    if (!lost && kind === 'v' && playQueue[queueIndex]) showNote('This device can\'t play this video format.', mediaUrl(playQueue[queueIndex]));
     showUi();
   });
 
@@ -1224,6 +1253,7 @@
     if (syncTimer) { clearInterval(syncTimer); syncTimer = null; syncRemote(true); }
   }
   function runRemoteCommand(c) {
+    if (!isOpen()) return; // the player was closed while this command was on its way
     if (c === 'toggle') togglePlay();
     else if (c === 'next') nextVideo();
     else if (c === 'prev') prevVideo();
@@ -1486,10 +1516,11 @@
   $('vol').oninput = () => { video.muted = false; video.volume = Number($('vol').value); };
   $('sort').onchange = () => { store.set('caster.sort', $('sort').value); renderVideos(); };
   $('photo').onclick = nextVideo;
+  $('photo').onerror = () => toast("This browser can't show this picture (its format isn't supported).");
   $('subsFile').onchange = async e => {
     const f = e.target.files && e.target.files[0];
     e.target.value = '';
-    if (f) attachSubs(srtToVtt(await f.text()));
+    if (f) attachSubs(srtToVtt(await readFileText(f)));
   };
   $('shuffle').onclick = () => {
     if (!visible.length) return;

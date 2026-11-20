@@ -33,6 +33,8 @@ import java.net.Socket
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import javax.net.ssl.SSLException
+import java.net.HttpURLConnection
+import java.net.URL
 
 /**
  * Uses the phone as a remote for a Fire TV, an Android TV / Google TV, a Samsung TV or an LG TV.
@@ -81,8 +83,11 @@ object TvRemote {
         data class Failed(val message: String) : VolumeState
     }
 
+    /** The remote itself (Fire TV, Android TV, Samsung, LG) runs on every Android version the app does. */
+    val supported: Boolean get() = true
+
     /** The ADB library needs Android 8 or newer (it uses file and Base64 classes added in that version). */
-    val supported: Boolean get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+    val adbSupported: Boolean get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
 
     private const val PREFS = "caster_tv"
     private const val KEY_HOST = "host"
@@ -106,6 +111,7 @@ object TvRemote {
     private const val ATV_PROBE_MS = 1_500
     private const val ATV_READY_MS = 8_000L
     private const val ALLOW_HINT_MS = 2_500L
+    private const val VOICE_BEGIN_MS = 3_000L
     private const val HINT_CHECKS = 20
 
     /** An ADB command that takes longer than this is treated as a dead connection (a sleeping TV never answers). */
@@ -154,6 +160,16 @@ object TvRemote {
     private val holding = java.util.concurrent.ConcurrentHashMap<Int, Int>()
     private val holdIds = AtomicInteger(0)
     @Volatile private var holdWorks = true
+
+    // Voice on an Android TV: held while the owner holds the microphone button.
+    @Volatile private var voiceHeld = false
+    @Volatile private var voiceEnding = false // the last session is being closed: a new press starts a new one
+    @Volatile private var voiceSerial = 0
+    private var voiceJob: Job? = null
+    private val _voiceError = MutableStateFlow<String?>(null)
+
+    /** Why the last voice try didn't work, for the screen; null when it did (or none was tried). */
+    val voiceError: StateFlow<String?> = _voiceError.asStateFlow()
     private var volumeJob: Job? = null
 
     /** Bumped by every disconnect, so a job that was running for an older connection can tell and stay quiet. */
@@ -181,11 +197,8 @@ object TvRemote {
 
     /** Common start of both connect methods; returns the parsed address, or null after showing why it can't go on. */
     private fun begin(context: Context, rawHost: String): TvCommands.Target? {
-        if (!supported) {
-            _state.value = State.Failed("The TV remote needs Android 8 or newer.")
-            return null
-        }
         appContext = context.applicationContext
+        LanNetwork.refresh(context)
         val target = TvCommands.parseTarget(rawHost)
         if (target == null) {
             _state.value = State.Failed("Enter the TV's address on your Wi-Fi, like 192.168.0.50.")
@@ -235,7 +248,7 @@ object TvRemote {
             try {
                 // (A TV that was replaced by another kind at the same address doesn't answer like a Fire TV.)
                 val pairedFire = store.getString(KEY_TOKEN_PREFIX + host, null) != null &&
-                    (reachable(host, FireTvCommands.PORT, ATV_PROBE_MS) || reachable(host, FireTvCommands.WAKE_PORT, ATV_PROBE_MS))
+                    (reachable(host, FireTvCommands.PORT, ATV_PROBE_MS) || looksLikeFireTv(host))
                 val before = store.getString(KEY_KIND_PREFIX + host, null)?.let { runCatching { Kind.valueOf(it) }.getOrNull() }
                 // Nothing answering usually means a TV in standby: it is then treated as the kind it was last time.
                 val detected = if (pairedFire) Kind.Fire else detect(host)
@@ -443,6 +456,7 @@ object TvRemote {
         val link = AndroidTvLink.open(host, identity, pinned, { error -> linkClosed(mine, error) })
         var done = false
         try {
+            if (mine != generation) throw IOException("Cancelled") // another Connect (or Cancel) came while this one was opening
             atvOpening = link // so Cancel can close it and end the wait
             val ready = link.awaitReady(ATV_READY_MS)
             if (mine == generation) atvOpening = null
@@ -599,6 +613,10 @@ object TvRemote {
     // --- ADB -------------------------------------------------------------------------------------------------
 
     fun connectAdb(context: Context, rawHost: String) {
+        if (!adbSupported) {
+            _state.value = State.Failed("ADB needs Android 8 or newer. The normal Connect works on this phone.")
+            return
+        }
         val target = begin(context, rawHost) ?: return
         val host = rawHost.trim()
         val app = context.applicationContext
@@ -622,10 +640,17 @@ object TvRemote {
                     delay(APPROVAL_WAIT_MS)
                     gaveUp.set(true)
                     opened.close()
+                    // The library connects lazily and can't be interrupted while it waits for Allow, so the screen gives up
+                    // here; if the TV is allowed after all, the blocked call finds this out and is ignored.
+                    ifCurrent(mine) {
+                        if (_state.value is State.Connecting) {
+                            _state.value = State.Failed("The TV didn't answer the \"Allow\" prompt in time. Try again and choose Allow on the TV.")
+                        }
+                    }
                 }
                 opened.shell("echo caster")
                 patience.cancel()
-                val current = isActive && ifCurrent(mine) {
+                val current = isActive && !gaveUp.get() && ifCurrent(mine) {
                     opening = null
                     connection = opened
                     _state.value = State.Connected(host, Link.Adb)
@@ -660,6 +685,10 @@ object TvRemote {
 
     private fun disconnectLocked() {
         generation++
+        voiceHeld = false
+        voiceJob?.cancel()
+        voiceJob = null
+        _voiceError.value = null
         holdWorks = true
         connectJob?.cancel()
         sender?.cancel()
@@ -702,7 +731,7 @@ object TvRemote {
     /** Fire TV: turns on volume by opening ADB to the same TV. The TV asks once to Allow this phone. */
     fun enableVolume(context: Context) {
         val link = fire ?: return
-        if (!supported) {
+        if (!adbSupported) {
             _volume.value = VolumeState.Failed("Volume needs Android 8 or newer.")
             return
         }
@@ -729,10 +758,15 @@ object TvRemote {
                     delay(APPROVAL_WAIT_MS)
                     gaveUp.set(true)
                     opened.close()
+                    ifCurrent(mine) { // see connectAdb: the wait can't be interrupted, so the screen gives up here
+                        if (_volume.value == VolumeState.Waiting) {
+                            _volume.value = VolumeState.Failed("The TV didn't answer the \"Allow\" prompt in time. Try again and choose Allow on the TV.")
+                        }
+                    }
                 }
                 opened.shell("echo caster")
                 patience.cancel()
-                if (!isActive || mine != generation) {
+                if (!isActive || mine != generation || gaveUp.get()) {
                     opened.close()
                     if (volumeAdb === opened) volumeAdb = null
                     return@launch
@@ -994,6 +1028,53 @@ object TvRemote {
         }
     }
 
+    /**
+     * Android TV: the owner is holding the microphone button. The TV's voice assistant is opened (the search key) and the
+     * phone's microphone is streamed to it until [voiceEnd]. Returns false when this can't start (not an Android TV, or the
+     * microphone isn't allowed yet).
+     */
+    fun voiceStart(): Boolean {
+        val link = atv ?: return false
+        val app = appContext ?: return false
+        if (androidx.core.content.ContextCompat.checkSelfPermission(app, android.Manifest.permission.RECORD_AUDIO) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) return false
+        voiceHeld = true
+        // The session of the last press is still open and taking sound: this press carries on with it. One that is already
+        // being closed can't be joined, so it gets a session of its own.
+        if (voiceJob?.isActive == true && !voiceEnding) return true
+        _voiceError.value = null
+        voiceEnding = false
+        val serial = ++voiceSerial
+        val mine = generation
+        voiceJob = scope.launch {
+            val latest = { serial == voiceSerial && mine == generation }
+            try {
+                val session = link.startVoice(VOICE_BEGIN_MS)
+                if (session == null) {
+                    if (latest()) _voiceError.value = "This TV didn't open its voice assistant."
+                    return@launch
+                }
+                try {
+                    val keepGoing = { voiceHeld && mine == generation }
+                    if (keepGoing()) VoiceRecorder.record(keepGoing) { link.sendVoice(session, it) }
+                } finally {
+                    if (serial == voiceSerial) voiceEnding = true
+                    runCatching { link.endVoice(session) }
+                }
+            } catch (e: Throwable) {
+                // Only the voice ends: the rest of the remote keeps working.
+                if (latest()) _voiceError.value = "Voice stopped: ${e.message ?: e.javaClass.simpleName}"
+            }
+        }
+        return true
+    }
+
+    /** The microphone button was let go. */
+    fun voiceEnd() {
+        voiceHeld = false
+    }
+
     /** The text box on the phone changed from [old] to [new]: do the same edit on the TV, as it is typed. */
     fun typed(old: String, new: String) {
         val link = fire
@@ -1034,6 +1115,7 @@ object TvRemote {
     /** Looks for other devices on this phone's network that answer like a TV remote service (usually only the TV). */
     fun scan(context: Context) {
         if (_scanning.value) return
+        LanNetwork.refresh(context)
         val own = NetworkUtils.resolveLocalIpv4(context.applicationContext)?.hostAddress ?: run {
             _state.value = State.Failed("Connect the phone to Wi-Fi first.")
             return
@@ -1043,7 +1125,7 @@ object TvRemote {
         scope.launch {
             try {
                 val prefix = own.substringBeforeLast('.')
-                val gate = Semaphore(128)
+                val gate = Semaphore(48) // (the IO threads are 64: this leaves room for everything else the app does)
                 // Every address is asked on each kind of TV's remote port; one that answers on any of them is listed.
                 val ports = listOf(
                     AndroidTvCommands.PAIR_PORT, FireTvCommands.WAKE_PORT, SamsungTvCommands.SECURE_PORT,
@@ -1052,7 +1134,12 @@ object TvRemote {
                 val hits = (1..254).flatMap { n ->
                     val host = "$prefix.$n"
                     if (host == own) emptyList() else ports.map { port ->
-                        async { if (gate.withPermit { reachable(host, port, 500) }) host else null }
+                        async {
+                            val found = gate.withPermit {
+                                reachable(host, port, 300) && (port != FireTvCommands.WAKE_PORT || answersPlainHttp(host, port))
+                            }
+                            if (found) host else null
+                        }
                     }
                 }.awaitAll().filterNotNull().distinct()
                 _found.value = hits
@@ -1062,8 +1149,26 @@ object TvRemote {
         }
     }
 
+    /** A Fire TV answers plain HTTP on its wake-up port; a Chromecast has the same port open but speaks TLS there. */
+    private fun answersPlainHttp(host: String, port: Int): Boolean = try {
+        val connection = LanNetwork.open(URL("http://$host:$port/")) as HttpURLConnection
+        try {
+            connection.connectTimeout = 1_000
+            connection.readTimeout = 1_000
+            connection.responseCode // any answer will do, even an error page
+            true
+        } finally {
+            connection.disconnect()
+        }
+    } catch (e: IOException) {
+        false
+    }
+
+    private fun looksLikeFireTv(host: String): Boolean =
+        reachable(host, FireTvCommands.WAKE_PORT, ATV_PROBE_MS) && answersPlainHttp(host, FireTvCommands.WAKE_PORT)
+
     private fun reachable(host: String, port: Int, timeoutMs: Int = 2_000): Boolean =
-        runCatching { Socket().use { it.connect(InetSocketAddress(host, port), timeoutMs) } }.isSuccess
+        runCatching { Socket().use { LanNetwork.bind(it); it.connect(InetSocketAddress(host, port), timeoutMs) } }.isSuccess
 
     /** This phone's identity for ADB: made once, then reused so the TV's "Always allow" keeps working. */
     private fun keyPair(context: Context): AdbKeyPair = synchronized(keyLock) { // one at a time: two writers could leave a mismatched pair

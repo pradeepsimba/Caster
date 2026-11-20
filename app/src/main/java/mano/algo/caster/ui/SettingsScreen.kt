@@ -1,5 +1,6 @@
 package mano.algo.caster.ui
 
+import android.os.Build
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -215,7 +216,7 @@ private fun NameCard(state: ServerState, preferredName: String, onSaveName: (Str
         Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("Device name", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             Text(
-                "How other screens find this phone: http://$preferredName.local. If two phones on the same Wi-Fi " +
+                "How other screens find this phone: http://$preferredName.local (announced on Android 16 and newer; on older phones use the IP address). If two phones on the same Wi-Fi " +
                     "share, give each its own name. A name that's already taken gets -2, -3 and so on added.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -250,6 +251,8 @@ private fun NameCard(state: ServerState, preferredName: String, onSaveName: (Str
 
             val status = when (state) {
                 is ServerState.Running -> when {
+                    state.announcedName == null && Build.VERSION.SDK_INT < Build.VERSION_CODES.BAKLAVA ->
+                        "Names aren't announced on Android 15 and older (it could stop the Chromecast search from finding devices). Use the IP address."
                     state.announcedName == null -> "Couldn't announce a name on this network. Use the IP address instead."
                     state.nameChanged -> "${state.requestedName}.local is already used on this network, so this phone is ${state.announcedName}."
                     else -> "This phone is reachable as ${state.announcedName}."

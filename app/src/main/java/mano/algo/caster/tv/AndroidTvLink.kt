@@ -37,6 +37,7 @@ internal object AndroidTvTls {
         val context = SSLContext.getInstance("TLS").apply { init(keys.keyManagers, arrayOf<TrustManager>(PinnedTrust(pinned)), SecureRandom()) }
         val socket = context.socketFactory.createSocket() as SSLSocket
         try {
+            LanNetwork.bind(socket)
             socket.tcpNoDelay = true
             socket.connect(InetSocketAddress(host, port), CONNECT_MS)
             socket.soTimeout = readTimeoutMs
@@ -128,6 +129,8 @@ class AndroidTvLink private constructor(
     @Volatile private var ready = false
     @Volatile private var closed = false
     @Volatile private var features = AndroidTvCommands.FEATURES
+    @Volatile private var voiceSession = 0
+    @Volatile private var voiceLatch: CountDownLatch? = null
 
     /** Why the connection ended, if it did. */
     @Volatile var failure: Throwable? = null
@@ -142,6 +145,26 @@ class AndroidTvLink private constructor(
     fun key(code: Int, direction: Int = AndroidTvCommands.SHORT) = send(AndroidTvCommands.key(code, direction))
 
     fun openLink(url: String) = send(AndroidTvCommands.appLink(url))
+
+    /** Presses the search key and waits for the TV to open a voice session. Returns its id, or null when the TV doesn't. */
+    fun startVoice(timeoutMs: Long): Int? {
+        val latch = CountDownLatch(1)
+        voiceSession = 0
+        voiceLatch = latch
+        key(TvKey.SEARCH)
+        val opened = latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+        voiceLatch = null
+        if (!opened || failure != null) return null
+        val id = voiceSession
+        send(AndroidTvCommands.voiceBegin(id))
+        return id
+    }
+
+    fun sendVoice(sessionId: Int, samples: ByteArray) {
+        for (piece in AndroidTvCommands.voiceChunks(samples)) send(AndroidTvCommands.voicePayload(sessionId, piece))
+    }
+
+    fun endVoice(sessionId: Int) = send(AndroidTvCommands.voiceEnd(sessionId))
 
     private fun send(message: ByteArray) {
         val out = socket.outputStream
@@ -166,12 +189,17 @@ class AndroidTvLink private constructor(
                         started.countDown()
                     }
                     is AndroidTvCommands.RemoteEvent.Ping -> send(AndroidTvCommands.pingReply(event.value))
+                    is AndroidTvCommands.RemoteEvent.VoiceBegin -> {
+                        voiceSession = event.sessionId
+                        voiceLatch?.countDown()
+                    }
                     else -> Unit
                 }
             }
         } catch (e: Throwable) {
             failure = e
             started.countDown()
+            voiceLatch?.countDown() // a voice session being waited for will never come
             if (!closed) {
                 closed = true
                 runCatching { socket.close() }

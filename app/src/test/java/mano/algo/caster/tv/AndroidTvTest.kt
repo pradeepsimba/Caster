@@ -155,6 +155,85 @@ class AndroidTvTest {
         }
     }
 
+    // --- Voice ----------------------------------------------------------------------------------------------------
+
+    @Test
+    fun voiceMessagesLookLikeTheOnesTheTvKnows() {
+        assertEquals("f201020805", AndroidTvCommands.voiceBegin(5).hex())
+        assertEquals("8202020805", AndroidTvCommands.voiceEnd(5).hex())
+        assertEquals("fa0106080512020102", AndroidTvCommands.voicePayload(5, byteArrayOf(1, 2)).hex())
+        assertEquals(AndroidTvCommands.RemoteEvent.VoiceBegin(9), AndroidTvCommands.parseRemote(Proto.bytes(30, Proto.int(1, 9))))
+        assertTrue(AndroidTvCommands.FEATURES and 8 != 0) // the phone says it can do voice
+        assertEquals(84, TvKey.SEARCH)
+    }
+
+    @Test
+    fun soundIsCutIntoThePiecesTheTvTakes() {
+        assertEquals(emptyList<Int>(), AndroidTvCommands.voiceChunks(ByteArray(0)).map { it.size })
+        assertEquals(listOf(8192), AndroidTvCommands.voiceChunks(ByteArray(100)).map { it.size }) // padded with silence
+        assertEquals(listOf(8192), AndroidTvCommands.voiceChunks(ByteArray(8192)).map { it.size })
+        assertEquals(listOf(20480), AndroidTvCommands.voiceChunks(ByteArray(20480)).map { it.size })
+        assertEquals(listOf(20480, 8192), AndroidTvCommands.voiceChunks(ByteArray(20580)).map { it.size }) // never bigger than 20 KB
+        val padded = AndroidTvCommands.voiceChunks(ByteArray(3) { 7 }).single()
+        assertEquals(listOf<Byte>(7, 7, 7, 0), padded.take(4))
+    }
+
+    @Test
+    fun aVoiceSessionOpensStreamsAndEnds() {
+        val phone = AndroidTvIdentity.create()
+        val tv = AndroidTvIdentity.create()
+        val tvPrint = AndroidTvCommands.fingerprint(tv.certificate.encoded)
+        val seen = ArrayList<String>()
+        val fake = FakeTv(tv) { socket ->
+            socket.write(Proto.bytes(1, Proto.int(1, 619)))
+            socket.read() // the phone's configure answer
+            socket.write(Proto.bytes(2, Proto.int(1, 619)))
+            socket.read()
+            socket.write(Proto.bytes(40, Proto.int(1, 1))) // started
+            seen += socket.read().hex() // the search key
+            socket.write(Proto.bytes(30, Proto.int(1, 9))) // the TV opens voice session 9
+            seen += socket.read().hex() // the phone's answer
+            seen += socket.read().hex() // one piece of sound
+            seen += socket.read().hex() // the end
+        }
+        val link = AndroidTvLink.open("127.0.0.1", phone, tvPrint, {}, fake.port)
+        try {
+            assertTrue(link.awaitReady(10_000))
+            assertEquals(9, link.startVoice(5_000))
+            link.sendVoice(9, ByteArray(100) { 1 })
+            link.endVoice(9)
+            fake.finish()
+        } finally {
+            link.close()
+        }
+        assertEquals("520408541003", seen[0])
+        assertEquals(AndroidTvCommands.voiceBegin(9).hex(), seen[1])
+        assertEquals(AndroidTvCommands.voicePayload(9, ByteArray(100) { 1 }.copyOf(8192)).hex(), seen[2])
+        assertEquals(AndroidTvCommands.voiceEnd(9).hex(), seen[3])
+    }
+
+    @Test
+    fun aTvWithoutVoiceGivesNoSession() {
+        val phone = AndroidTvIdentity.create()
+        val tv = AndroidTvIdentity.create()
+        val fake = FakeTv(tv) { socket ->
+            socket.write(Proto.bytes(1, Proto.int(1, 619)))
+            socket.read()
+            socket.write(Proto.bytes(2, Proto.int(1, 619)))
+            socket.read()
+            socket.write(Proto.bytes(40, Proto.int(1, 1)))
+            socket.read() // the search key, and no voice session follows
+            Thread.sleep(1_000)
+        }
+        val link = AndroidTvLink.open("127.0.0.1", phone, AndroidTvCommands.fingerprint(tv.certificate.encoded), {}, fake.port)
+        try {
+            assertTrue(link.awaitReady(10_000))
+            assertNull(link.startVoice(300))
+        } finally {
+            link.close()
+        }
+    }
+
     // --- The secret ---------------------------------------------------------------------------------------------
 
     @Test

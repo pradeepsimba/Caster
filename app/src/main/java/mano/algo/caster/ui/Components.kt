@@ -299,6 +299,26 @@ fun PairingCard(request: PairRequest, onApprove: () -> Unit, onDeny: () -> Unit)
     }
 }
 
+/** Something that stops sharing from working properly, and the one button that puts it right. */
+class SetupWarning(val title: String, val text: String, val button: String, val onClick: () -> Unit)
+
+@Composable
+fun SetupWarningCard(warning: SetupWarning) {
+    Card(
+        shape = CardShape,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
+    ) {
+        Row(modifier = Modifier.padding(18.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            Icon(Icons.Filled.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.onTertiaryContainer)
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(warning.title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                Text(warning.text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                Button(onClick = warning.onClick, shape = RoundedCornerShape(14.dp)) { Text(warning.button) }
+            }
+        }
+    }
+}
+
 @Composable
 fun BatteryCard(onAllow: () -> Unit, onSettings: () -> Unit) {
     Card(

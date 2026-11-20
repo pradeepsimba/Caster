@@ -63,6 +63,7 @@ fun HomeScreen(
     state: ServerState,
     request: PairRequest?,
     batteryUnrestricted: Boolean,
+    warnings: List<SetupWarning>,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onCopy: (String) -> Unit,
@@ -230,6 +231,7 @@ fun HomeScreen(
 
         if (running && (watching.isNotEmpty() || remotes.isNotEmpty())) NowWatchingCard(watching, remotes, onRemote)
 
+        warnings.forEach { SetupWarningCard(it) }
         if (!batteryUnrestricted) BatteryCard(onAllowBackground, onAppSettings)
         Spacer(Modifier.height(8.dp))
     }

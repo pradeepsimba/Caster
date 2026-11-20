@@ -66,6 +66,14 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import mano.algo.caster.tv.TvKey
 import mano.algo.caster.tv.TvRemote
+import android.app.Activity
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.speech.RecognizerIntent
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
 
 /** The Material "settings remote" glyph, which the core icon set doesn't include. */
 val RemoteIcon: ImageVector by lazy {
@@ -101,6 +109,9 @@ fun RemoteScreen(
     onKey: (code: Int, repeating: Boolean) -> Unit,
     onTyped: (old: String, new: String) -> Unit,
     onOpenCaster: (String) -> Unit,
+    voiceError: String?,
+    onVoiceStart: () -> Boolean,
+    onVoiceEnd: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -114,7 +125,7 @@ fun RemoteScreen(
         }
         ConnectionCard(state, savedHost, found, scanning, onConnect, onConnectAdb, onSubmitPin, onDisconnect, onScan)
         if (state is TvRemote.State.Connected) {
-            RemotePad(state.link, volume, onEnableVolume, onKey, onTyped, shareUrl, onOpenCaster, onOpenBrowser)
+            RemotePad(state.link, volume, onEnableVolume, onKey, onTyped, shareUrl, onOpenCaster, onOpenBrowser, voiceError, onVoiceStart, onVoiceEnd)
         }
     }
 }
@@ -171,7 +182,7 @@ private fun ConnectionCard(
                         pin = if (androidTvCode) {
                             typed.filter { c -> c in '0'..'9' || c in 'a'..'f' || c in 'A'..'F' }.take(pinLength).uppercase()
                         } else {
-                            typed.filter(Char::isDigit).take(pinLength)
+                            typed.filter { it in '0'..'9' }.take(pinLength) // plain digits only: other scripts' digits are not what the TV shows
                         }
                     },
                     label = { Text("Code from the TV") },
@@ -219,7 +230,7 @@ private fun ConnectionCard(
                 }
             }
             if (!busy) {
-                TextButton(onClick = { onConnectAdb(host) }) { Text("Connect with ADB instead (advanced)") }
+                if (TvRemote.adbSupported) TextButton(onClick = { onConnectAdb(host) }) { Text("Connect with ADB instead (advanced)") }
             }
             if (state is TvRemote.State.Connecting) {
                 Text(
@@ -249,6 +260,9 @@ private fun RemotePad(
     shareUrl: String?,
     onOpenCaster: (String) -> Unit,
     onOpenBrowser: () -> Unit,
+    voiceError: String?,
+    onVoiceStart: () -> Boolean,
+    onVoiceEnd: () -> Unit,
 ) {
     val fullRemote = link != TvRemote.Link.FireTv // ADB and Android TV have volume, the keyboard keys and link sending
     var typed by rememberSaveable { mutableStateOf("") }
@@ -256,12 +270,44 @@ private fun RemotePad(
     val typingBox = remember { BringIntoViewRequester() }
     val scope = rememberCoroutineScope()
 
+    // Voice. An Android TV has its own assistant, which is talked to by holding the button. The others have no way in over the
+    // network, so the phone listens itself (its own speech window) and what it hears is typed on the TV like the keyboard does.
+    val context = LocalContext.current
+    val holdToTalk = link == TvRemote.Link.AndroidTv
+    val dictation = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val said = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.trim()
+        if (result.resultCode == Activity.RESULT_OK && !said.isNullOrEmpty()) {
+            val updated = if (typed.isEmpty()) said else "$typed $said"
+            onTyped(typed, updated)
+            typed = updated
+        }
+    }
+    fun dictate() {
+        try {
+            dictation.launch(
+                Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                    .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    .putExtra(RecognizerIntent.EXTRA_PROMPT, "Say what to type on the TV"),
+            )
+        } catch (e: ActivityNotFoundException) {
+            Toast.makeText(context, "This phone has no speech recognition.", Toast.LENGTH_LONG).show()
+        }
+    }
+
     CasterCard(high = true) {
         Column(
             modifier = Modifier.padding(18.dp).fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(10.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Spacer72()
+                MicButton(holdToTalk, onVoiceStart, onVoiceEnd, ::dictate)
+                Spacer72()
+            }
+            if (holdToTalk && voiceError != null) {
+                Text(voiceError, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Spacer72()
                 PadButton("Up", TvKey.UP, onKey, repeat = true) { Text("▲", style = MaterialTheme.typography.titleLarge) }
@@ -294,7 +340,13 @@ private fun RemotePad(
                     PadButton("Volume up", TvKey.VOLUME_UP, onKey, repeat = true) { Text("Vol +") }
                 }
             }
-            if (!fullRemote && volume !is TvRemote.VolumeState.Ready) VolumeSetup(volume, onEnableVolume)
+            if (!fullRemote && TvRemote.adbSupported && volume !is TvRemote.VolumeState.Ready) VolumeSetup(volume, onEnableVolume)
+            Text(
+                if (holdToTalk) "Voice: hold the microphone and speak, like on the real remote. It talks to the TV's assistant."
+                else "Voice: tap the microphone and speak. What you say is typed on the TV, so open its search box first.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Text(
                 "Tip: like the real remote, you can hold Home, OK, Back and Menu, and hold the rewind and fast-forward buttons.",
                 style = MaterialTheme.typography.bodySmall,
@@ -416,6 +468,50 @@ private fun VolumeSetup(volume: TvRemote.VolumeState, onEnable: () -> Unit) {
 
 @Composable
 private fun Spacer72() = Box(Modifier.size(width = 72.dp, height = 56.dp))
+
+/**
+ * The microphone button. On an Android TV it is held while speaking (it turns red while the phone's microphone is going to
+ * the TV); elsewhere a tap opens the phone's speech window.
+ */
+@Composable
+private fun MicButton(holdToTalk: Boolean, onHoldStart: () -> Boolean, onHoldEnd: () -> Unit, onDictate: () -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    val scheme = MaterialTheme.colorScheme
+    var down by remember { mutableStateOf(false) }
+    var listening by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(if (down) 0.92f else 1f, tween(90), label = "mic")
+    val label = if (holdToTalk) "Voice, hold and speak" else "Voice, tap and speak"
+    Box(
+        modifier = Modifier
+            .size(width = 72.dp, height = 56.dp)
+            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .background(if (listening) scheme.error else scheme.primary, RoundedCornerShape(28.dp))
+            .semantics {
+                contentDescription = label
+                role = Role.Button
+                onClick(label) { if (!holdToTalk) onDictate(); true }
+            }
+            .pointerInput(holdToTalk) {
+                detectTapGestures(
+                    onPress = {
+                        down = true
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        val started = holdToTalk && onHoldStart()
+                        listening = started
+                        try {
+                            tryAwaitRelease()
+                        } finally {
+                            down = false
+                            listening = false
+                            if (started) onHoldEnd() // always let go, even if the screen is left while it is held
+                        }
+                    },
+                    onTap = { if (!holdToTalk) onDictate() },
+                )
+            },
+        contentAlignment = Alignment.Center,
+    ) { Text("🎤", color = scheme.onPrimary) }
+}
 
 /**
  * One remote button. A tap sends the key; with [repeat], holding it keeps sending (for moving through menus,

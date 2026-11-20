@@ -18,6 +18,7 @@ object TvKey {
     const val MUTE = 164
     const val DELETE = 67 // backspace
     const val ENTER = 66
+    const val SEARCH = 84 // on an Android TV this opens the voice assistant
 }
 
 /**

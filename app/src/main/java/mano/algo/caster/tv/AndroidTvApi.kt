@@ -33,8 +33,8 @@ object AndroidTvCommands {
     const val REMOTE_PORT = 6466
     const val STATUS_OK = 200
 
-    /** What this phone offers: ping, keys, power, volume and app links (no voice, no on-screen keyboard). */
-    const val FEATURES = 1 or 2 or 32 or 64 or 512
+    /** What this phone offers: ping, keys, voice (the phone's microphone), power, volume and app links (no on-screen keyboard). */
+    const val FEATURES = 1 or 2 or 8 or 32 or 64 or 512
 
     /** How a key is pressed: a normal press, or down and up separately (a long press). */
     const val SHORT = 3
@@ -132,7 +132,36 @@ object AndroidTvCommands {
     /** Opens a link (a web address, or an app's own link) on the TV. */
     fun appLink(url: String): ByteArray = Proto.bytes(90, Proto.string(1, url))
 
+    // --- Voice: the search key makes the TV open a session; the phone then streams its microphone into it ---------------
+
+    /** The phone's answer to the TV opening a voice session. */
+    fun voiceBegin(sessionId: Int): ByteArray = Proto.bytes(30, Proto.int(1, sessionId.toLong()))
+
+    fun voicePayload(sessionId: Int, samples: ByteArray): ByteArray =
+        Proto.bytes(31, Proto.concat(Proto.int(1, sessionId.toLong()), Proto.bytes(2, samples)))
+
+    fun voiceEnd(sessionId: Int): ByteArray = Proto.bytes(32, Proto.int(1, sessionId.toLong()))
+
+    private const val VOICE_MIN_BYTES = 8 * 1024
+    private const val VOICE_MAX_BYTES = 20 * 1024
+
+    /**
+     * Sound (16-bit, mono, 8000 samples a second) cut into the pieces the TV takes: at least 8 KB (a shorter last piece is
+     * filled up with silence) and at most 20 KB (the TV closes the connection on a bigger one).
+     */
+    fun voiceChunks(samples: ByteArray): List<ByteArray> {
+        val pieces = ArrayList<ByteArray>()
+        var start = 0
+        while (start < samples.size) {
+            val piece = samples.copyOfRange(start, minOf(samples.size, start + VOICE_MAX_BYTES))
+            pieces += if (piece.size < VOICE_MIN_BYTES) piece.copyOf(VOICE_MIN_BYTES) else piece
+            start += VOICE_MAX_BYTES
+        }
+        return pieces
+    }
+
     sealed interface RemoteEvent {
+        data class VoiceBegin(val sessionId: Int) : RemoteEvent
         data class Configure(val features: Int) : RemoteEvent
         data class SetActive(val features: Int) : RemoteEvent
         data class Start(val on: Boolean) : RemoteEvent
@@ -148,6 +177,7 @@ object AndroidTvCommands {
                 1 -> return RemoteEvent.Configure(number(1).toInt())
                 2 -> return RemoteEvent.SetActive(number(1).toInt())
                 8 -> return RemoteEvent.Ping(number(1))
+                30 -> return RemoteEvent.VoiceBegin(number(1).toInt())
                 40 -> return RemoteEvent.Start(number(1) != 0L)
             }
         }

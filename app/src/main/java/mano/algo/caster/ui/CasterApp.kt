@@ -68,6 +68,14 @@ import mano.algo.caster.server.ShareMode
 import mano.algo.caster.server.ServerState
 import mano.algo.caster.server.ShareSettings
 import mano.algo.caster.tv.TvRemote
+import androidx.core.app.NotificationManagerCompat
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.union
+import androidx.compose.material3.NavigationBarDefaults
+import androidx.compose.material3.ScaffoldDefaults
 
 private const val LOCAL_NETWORK_PERMISSION = "android.permission.ACCESS_LOCAL_NETWORK"
 private const val LOCAL_NETWORK_SDK = 37 // Android 17
@@ -76,8 +84,7 @@ private const val LOCAL_NETWORK_SDK = 37 // Android 17
 private fun startupPermissionList(): List<String> = buildList {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         add(Manifest.permission.READ_MEDIA_VIDEO)
-        add(Manifest.permission.READ_MEDIA_IMAGES)
-        add(Manifest.permission.READ_MEDIA_AUDIO)
+        // (Photos and music are asked for when the owner turns that switch on, not before.)
         add(Manifest.permission.POST_NOTIFICATIONS)
     } else {
         add(Manifest.permission.READ_EXTERNAL_STORAGE)
@@ -125,6 +132,15 @@ private fun openBatteryScreen(context: Context) {
         }
     }
     openAppSettings(context)
+}
+
+private fun openNotificationSettings(context: Context) {
+    val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+    try {
+        context.startActivity(intent)
+    } catch (e: ActivityNotFoundException) {
+        openAppSettings(context)
+    }
 }
 
 private fun openAppSettings(context: Context) {
@@ -178,6 +194,7 @@ fun CasterApp() {
     val tvFound by TvRemote.found.collectAsStateWithLifecycle()
     val tvScanning by TvRemote.scanning.collectAsStateWithLifecycle()
     val tvVolume by TvRemote.volume.collectAsStateWithLifecycle()
+    val tvVoiceError by TvRemote.voiceError.collectAsStateWithLifecycle()
     remember(context) { TvRemote.init(context); true }
     remember(context) { ShareSettings.init(context); true }   // returns a value, because remember must not return Unit
 
@@ -212,6 +229,10 @@ fun CasterApp() {
                 "Local network access is off, so other devices can't reach Caster. Turn it on in the app's permissions.",
                 Toast.LENGTH_LONG,
             ).show()
+            val activity = context as? android.app.Activity
+            if (activity != null && !androidx.core.app.ActivityCompat.shouldShowRequestPermissionRationale(activity, LOCAL_NETWORK_PERMISSION)) {
+                openAppSettings(context) // Android won't ask again: the settings screen is the only way
+            }
         }
         if (ok || runEvenIfDenied) next?.invoke()
     }
@@ -262,9 +283,19 @@ fun CasterApp() {
         if (ok) picking = true else storageDenied()
     }
     // Photos and music need their own permissions on Android 13+ (older versions use the one storage permission).
+    // The microphone, asked for the first time the voice button of an Android TV remote is held.
+    val recordPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        if (!ok) {
+            Toast.makeText(context, "Voice needs the microphone. Allow it in the app's permissions.", Toast.LENGTH_LONG).show()
+            val activity = context as? android.app.Activity
+            if (activity != null && !androidx.core.app.ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.RECORD_AUDIO)) {
+                openAppSettings(context) // Android won't ask again
+            }
+        }
+    }
     val extrasPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
-        if (results.values.any { !it }) {
-            // Refused: the switch must not stay on while nothing can be listed.
+        if (results.isNotEmpty() && results.values.none { it }) {
+            // Everything refused: the switch must not stay on while nothing can be listed. (Allowing only one of the two is fine.)
             ShareSettings.setShareExtras(false)
             Toast.makeText(context, "Photos and music need access to them. Allow it in the app's permissions to share them.", Toast.LENGTH_LONG).show()
         }
@@ -275,8 +306,12 @@ fun CasterApp() {
 
     // Re-read on every resume: the user changes this in a system screen and comes back.
     var unrestricted by remember { mutableStateOf(isIgnoringBatteryOptimizations(context)) }
+    var notificationsOn by remember { mutableStateOf(NotificationManagerCompat.from(context).areNotificationsEnabled()) }
+    var localNetworkOk by remember { mutableStateOf(!needsLocalNetwork()) }
     LifecycleResumeEffect(Unit) {
         unrestricted = isIgnoringBatteryOptimizations(context)
+        notificationsOn = NotificationManagerCompat.from(context).areNotificationsEnabled()
+        localNetworkOk = !needsLocalNetwork()
         hasStorage = granted(STORAGE_PERMISSION)
         onPauseOrDispose { }
     }
@@ -304,7 +339,12 @@ fun CasterApp() {
             CastPickerScreen(
                 onCancel = { castPicking = false },
                 onPick = { id, name ->
-                    (state as? ServerState.Running)?.let { CastController.cast(context, id, name, it.baseUrl) }
+                    val running = state as? ServerState.Running
+                    if (running != null) {
+                        CastController.cast(context, id, name, running.baseUrl)
+                    } else {
+                        Toast.makeText(context, "Sharing has stopped. Start sharing, then choose the video again.", Toast.LENGTH_LONG).show()
+                    }
                     castPicking = false
                 },
             )
@@ -316,10 +356,14 @@ fun CasterApp() {
     BackHandler(enabled = tab != Tab.Home.ordinal) { tab = Tab.Home.ordinal }
 
     Scaffold(
+        contentWindowInsets = ScaffoldDefaults.contentWindowInsets.union(WindowInsets.displayCutout),
         bottomBar = {
             val haptic = LocalHapticFeedback.current
             val scheme = MaterialTheme.colorScheme
-            NavigationBar(containerColor = scheme.surfaceContainer) {
+            NavigationBar(
+                containerColor = scheme.surfaceContainer,
+                windowInsets = NavigationBarDefaults.windowInsets.union(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal)),
+            ) {
                 Tab.entries.forEach { entry ->
                     NavigationBarItem(
                         selected = tab == entry.ordinal,
@@ -363,6 +407,28 @@ fun CasterApp() {
                 state = state,
                 request = request,
                 batteryUnrestricted = unrestricted,
+                warnings = buildList {
+                    if (!notificationsOn) {
+                        add(
+                            SetupWarning(
+                                title = "Notifications are off",
+                                text = "Without them you won't see a TV asking to connect while another app is open, and the request runs out.",
+                                button = "Turn on",
+                                onClick = { openNotificationSettings(context) },
+                            ),
+                        )
+                    }
+                    if (!localNetworkOk) {
+                        add(
+                            SetupWarning(
+                                title = "Local network access is off",
+                                text = "Android is blocking this phone from other devices on your Wi-Fi, so TVs and Chromecasts can't reach it.",
+                                button = "Allow",
+                                onClick = { openAppSettings(context) },
+                            ),
+                        )
+                    }
+                },
                 onStart = { if (granted(STORAGE_PERMISSION)) startAfterStorage() else storagePermission.launch(STORAGE_PERMISSION) },
                 onStop = { MediaServerService.stop(context) },
                 onCopy = { copyToClipboard(context, it) },
@@ -406,6 +472,16 @@ fun CasterApp() {
                 onKey = TvRemote::key,
                 onTyped = TvRemote::typed,
                 onOpenCaster = TvRemote::openUrl,
+                voiceError = tvVoiceError,
+                onVoiceStart = {
+                    if (granted(Manifest.permission.RECORD_AUDIO)) {
+                        TvRemote.voiceStart()
+                    } else {
+                        recordPermission.launch(Manifest.permission.RECORD_AUDIO)
+                        false
+                    }
+                },
+                onVoiceEnd = TvRemote::voiceEnd,
                 modifier = screenModifier,
             )
             Tab.Devices -> DevicesScreen(

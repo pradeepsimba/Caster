@@ -7,7 +7,7 @@ import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 
 /** A browser asking for access. [code] is shown on both the browser and the phone so the owner can match them. */
-data class PairRequest(val id: String, val code: String, val label: String, val expiresAt: Long)
+data class PairRequest(val id: String, val code: String, val label: String, val expiresAt: Long, val requester: String = "")
 
 /** A browser the owner has approved. [id] is a short public handle, never the secret token. */
 data class PairedDevice(val id: String, val label: String, val pairedAt: Long, val lastSeen: Long)
@@ -78,15 +78,21 @@ object PairingManager {
     }
 
     @Synchronized
-    fun request(label: String): RequestResult {
+    fun request(label: String, requester: String = ""): RequestResult {
         val now = System.currentTimeMillis()
         expireLocked(now)
-        if (_pending.value != null || now < cooldownUntil) return RequestResult.Busy
+        val pending = _pending.value
+        // The same screen asking again (the page was reloaded, or went back and forward) takes the place of its own earlier
+        // request; otherwise it would be turned away as "busy" by itself until the old one ran out.
+        val sameScreen = pending != null && requester.isNotEmpty() && pending.requester == requester
+        if ((pending != null && !sameScreen) || now < cooldownUntil) return RequestResult.Busy
+        if (pending != null) outcomes.remove(pending.id)
         val request = PairRequest(
             id = randomHex(16),
-            code = "%04d".format(random.nextInt(10_000)),
+            code = String.format(java.util.Locale.ROOT, "%04d", random.nextInt(10_000)), // plain digits in every language
             label = label,
             expiresAt = now + REQUEST_TTL_MS,
+            requester = requester,
         )
         _pending.value = request
         return RequestResult.Created(request, REQUEST_TTL_MS)
@@ -138,12 +144,14 @@ object PairingManager {
     fun revoke(deviceId: String) {
         clients.entries.removeAll { it.value.id == deviceId }
         ActivityTracker.forget(deviceId)
+        RemoteControl.idle(deviceId) // its controls and queued commands go with it
         publishDevices()
     }
 
     @Synchronized
     fun revokeAll() {
         ActivityTracker.clear()
+        RemoteControl.clear()
         clients.clear()
         publishDevices()
     }

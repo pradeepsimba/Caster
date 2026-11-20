@@ -129,7 +129,7 @@ class LocalMediaServer(
         val declared = session.headers["content-length"]?.trim()?.toLongOrNull() ?: 0L
         if (declared > MAX_PAIR_BODY) return error(PAYLOAD_TOO_LARGE, "too_large").also { it.closeConnection(true) }
         runCatching { session.parseBody(HashMap()) } // drain any body so a kept-alive connection stays in sync
-        return when (val result = PairingManager.request(describeClient(session.headers["user-agent"]))) {
+        return when (val result = PairingManager.request(describeClient(session.headers["user-agent"]), session.remoteIpAddress.orEmpty())) {
             is RequestResult.Created -> json(
                 JSONObject()
                     .put("id", result.request.id)
@@ -191,6 +191,7 @@ class LocalMediaServer(
         if (kind != "v" && !ShareSettings.state.value.shareExtras) return error(Response.Status.FORBIDDEN, "extras_off")
         val items = JSONArray()
         val limit = if (kind == "v") MAX_LISTED else MAX_LISTED * 3   // phones hold far more photos than videos
+        var truncated = false // more than the limit exist: the page says so instead of silently missing the older ones
         try {
             val folderColumn = when (kind) {
                 "v" -> MediaStore.Video.Media.BUCKET_DISPLAY_NAME
@@ -205,15 +206,21 @@ class LocalMediaServer(
                 folderColumn,
             ).toTypedArray()
             appContext.contentResolver.query(
-                table, projection, null, null, "${MediaStore.MediaColumns.DATE_ADDED} DESC",
+                // Music means music: ringtones, alarms, voice notes and call recordings are in the same table.
+                table, projection, if (kind == "a") "${MediaStore.Audio.Media.IS_MUSIC} != 0" else null, null,
+                "${MediaStore.MediaColumns.DATE_ADDED} DESC",
             )?.use { c ->
                 val nameCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
                 val sizeCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
                 val durCol = c.getColumnIndex(MediaStore.Video.Media.DURATION)
                 val folderCol = folderColumn?.let { c.getColumnIndex(it) } ?: -1
-                while (c.moveToNext() && items.length() < limit) {
+                while (c.moveToNext()) {
                     val id = c.getLong(0)
                     if (kind == "v" && !ShareSettings.isAllowed(id)) continue
+                    if (items.length() >= limit) {
+                        truncated = true
+                        break
+                    }
                     items.put(
                         JSONObject()
                             .put("id", id.toString())
@@ -230,7 +237,7 @@ class LocalMediaServer(
         val scope = if (ShareSettings.state.value.mode == ShareMode.ALL) "all" else "selected"
         return json(
             JSONObject().put("scope", scope).put("extras", ShareSettings.state.value.shareExtras)
-                .put("kind", kind).put("videos", items),
+                .put("kind", kind).put("videos", items).put("truncated", truncated),
         )
     }
 
@@ -294,8 +301,19 @@ class LocalMediaServer(
         return name
     }
 
+    @Suppress("DEPRECATION")
+    private fun legacyThumbnail(uri: Uri, kind: String): Bitmap? {
+        val id = ContentUris.parseId(uri)
+        val resolver = appContext.contentResolver
+        return when (kind) {
+            "v" -> MediaStore.Video.Thumbnails.getThumbnail(resolver, id, MediaStore.Video.Thumbnails.MINI_KIND, null)
+            "i" -> MediaStore.Images.Thumbnails.getThumbnail(resolver, id, MediaStore.Images.Thumbnails.MINI_KIND, null)
+            else -> null // music has no picture here
+        }
+    }
+
     private fun thumbnail(uri: Uri?, kind: String): Response {
-        if (uri == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return error(Response.Status.NOT_FOUND, "not_found")
+        if (uri == null) return error(Response.Status.NOT_FOUND, "not_found")
         // Ids of videos, music and photos overlap, so each kind gets its own range of cache keys.
         val key = ContentUris.parseId(uri) + when (kind) { "a" -> 1L shl 60; "i" -> 1L shl 61; else -> 0L }
         // Decoding a frame is the slowest thing the server does, so each encoded thumbnail is made once.
@@ -306,10 +324,14 @@ class LocalMediaServer(
             try {
                 thumbCache.get(key) ?: run {
                     val bitmap = try {
-                        appContext.contentResolver.loadThumbnail(uri, Size(320, 180), null)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            appContext.contentResolver.loadThumbnail(uri, Size(320, 180), null)
+                        } else {
+                            legacyThumbnail(uri, kind) // Android 9 and older have only the old thumbnail store
+                        }
                     } catch (e: Exception) {
-                        return error(Response.Status.NOT_FOUND, "not_found")
-                    }
+                        null
+                    } ?: return error(Response.Status.NOT_FOUND, "not_found")
                     try {
                         ByteArrayOutputStream(24 * 1024).also { bitmap.compress(Bitmap.CompressFormat.JPEG, 78, it) }
                             .toByteArray().also { thumbCache.put(key, it) }

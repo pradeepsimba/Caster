@@ -195,6 +195,7 @@ internal class WebSocketClient private constructor(
             }
             try {
                 onSocket(socket)
+                LanNetwork.bind(socket)
                 socket.tcpNoDelay = true
                 socket.keepAlive = true
                 socket.connect(InetSocketAddress(host, port), connectMs)

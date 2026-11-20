@@ -116,9 +116,14 @@ class MediaServerService : Service() {
         // Auto-stop timer: counted from when sharing started, and re-read if the owner changes it meanwhile.
         val startedAt = SystemClock.elapsedRealtime()
         scope.launch {
+            var from = startedAt
+            var first = true
             ShareSettings.state.map { it.autoStopMinutes }.distinctUntilChanged().collectLatest { minutes ->
+                // A limit changed later counts from that moment: choosing a shorter one must not end sharing at once.
+                if (!first) from = SystemClock.elapsedRealtime()
+                first = false
                 if (minutes <= 0) return@collectLatest
-                delay((minutes * 60_000L - (SystemClock.elapsedRealtime() - startedAt)).coerceAtLeast(0))
+                delay((minutes * 60_000L - (SystemClock.elapsedRealtime() - from)).coerceAtLeast(0))
                 stopSelf()
             }
         }
@@ -181,6 +186,7 @@ class MediaServerService : Service() {
         }
         networkCallback = null
         scope.cancel()
+        getSystemService(NotificationManager::class.java).cancel(PAIRING_NOTIFICATION_ID) // no question left to answer
         // Cancelled scope means no new reconcile; stop synchronously (closing sockets is quick).
         mdns?.stop()
         mdns = null
@@ -289,6 +295,13 @@ class MediaServerService : Service() {
      * already has the name, `-2`, `-3`... is tried so two phones on one network don't fight over it.
      */
     private fun startMdns(ip: Inet4Address, wanted: String): String? {
+        // The Cast library runs its own mDNS search inside this app, on the same port (5353) as this responder. On Android 10 the
+        // responder in the way left the Chromecast search finding nothing; it is only known to be harmless on Android 16, so
+        // that is the only place the name is announced (the IP address works the same everywhere).
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.BAKLAVA) {
+            Log.i(TAG, "Not announcing a .local name on Android ${Build.VERSION.RELEASE}: it could block the Chromecast search")
+            return null
+        }
         val name = (1..MAX_NAME_ATTEMPTS).asSequence()
             .map { if (it == 1) wanted else "$wanted-$it" }
             .firstOrNull { !MdnsResponder.isNameTaken(ip, it) }
