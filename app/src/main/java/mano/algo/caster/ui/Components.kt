@@ -24,10 +24,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -51,12 +49,16 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import mano.algo.caster.R
 import mano.algo.caster.server.PairRequest
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 
 /** The corner size every card in the app shares. */
 val CardShape = RoundedCornerShape(28.dp)
@@ -90,6 +92,14 @@ val HeroBrush: Brush
             mano.algo.caster.ui.theme.HeroEnd,
         ),
     )
+
+/** Shrinks a little while it is pressed, so a button feels like something that is pushed. */
+@Composable
+fun Modifier.pressScale(interaction: MutableInteractionSource, pressedScale: Float = 0.96f): Modifier {
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(if (pressed) pressedScale else 1f, tween(90), label = "pressScale")
+    return this.graphicsLayer { scaleX = scale; scaleY = scale }
+}
 
 /** The app logo; [rings] adds expanding signal rings behind it while sharing is live. */
 @Composable
@@ -218,8 +228,10 @@ fun GlassButton(label: String, onClick: () -> Unit, modifier: Modifier = Modifie
 }
 
 @Composable
-fun PairingCard(request: PairRequest, onApprove: () -> Unit, onDeny: () -> Unit) {
+fun PairingCard(request: PairRequest, onApprove: (durationMs: Long) -> Unit, onDeny: () -> Unit) {
     val haptic = LocalHapticFeedback.current
+    // How long this screen may watch: until it is disconnected, or for a time after which it has to ask again.
+    var access by rememberSaveable { mutableStateOf(0L) }
     Card(
         shape = CardShape,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
@@ -251,6 +263,11 @@ fun PairingCard(request: PairRequest, onApprove: () -> Unit, onDeny: () -> Unit)
                 textAlign = TextAlign.Center,
                 modifier = Modifier.alpha(0.85f),
             )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(0L to "Always", 60 * 60_000L to "1 hour", 24 * 60 * 60_000L to "1 day").forEach { (ms, label) ->
+                    androidx.compose.material3.FilterChip(selected = access == ms, onClick = { access = ms }, label = { Text(label) })
+                }
+            }
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedButton(
                     onClick = { haptic.performHapticFeedback(HapticFeedbackType.Reject); onDeny() },
@@ -258,7 +275,7 @@ fun PairingCard(request: PairRequest, onApprove: () -> Unit, onDeny: () -> Unit)
                     shape = RoundedCornerShape(16.dp),
                 ) { Text("Deny") }
                 Button(
-                    onClick = { haptic.performHapticFeedback(HapticFeedbackType.Confirm); onApprove() },
+                    onClick = { haptic.performHapticFeedback(HapticFeedbackType.Confirm); onApprove(access) },
                     modifier = Modifier.weight(1f).height(52.dp),
                     shape = RoundedCornerShape(16.dp),
                 ) {

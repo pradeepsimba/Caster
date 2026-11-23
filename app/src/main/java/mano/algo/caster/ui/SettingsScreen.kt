@@ -14,8 +14,6 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.OutlinedTextField
@@ -28,7 +26,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -50,6 +47,15 @@ fun SettingsScreen(
     onAutoStop: (Int) -> Unit,
     onCopy: (String) -> Unit,
     onShare: (String) -> Unit,
+    lockOn: Boolean,
+    onSetPin: () -> Unit,
+    onRemovePin: () -> Unit,
+    onOpenHistory: () -> Unit,
+    onClearResume: () -> Unit,
+    wifiOffer: Boolean,
+    onWifiOffer: (Boolean) -> Unit,
+    stopOnWifiLost: Boolean,
+    onStopOnWifiLost: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // Re-seeded whenever the saved port changes, so Reset and external changes show up in the field.
@@ -88,7 +94,7 @@ fun SettingsScreen(
                     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text("Photos and music", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                         Text(
-                            "Also show every photo and song on this phone to approved screens. Videos keep following the Library choice.",
+                            "Also show every photo and song on this phone to approved screens. Videos keep following the \"Videos to share\" choice.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -117,6 +123,44 @@ fun SettingsScreen(
                             label = { Text(label) },
                         )
                     }
+                }
+            }
+        }
+
+        CasterCard(high = false) {
+            Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                SettingSwitch(
+                    "Offer to share on Wi-Fi",
+                    "When this phone joins a Wi-Fi network, show a notification with a button to start sharing.",
+                    wifiOffer,
+                    onWifiOffer,
+                )
+                SettingSwitch(
+                    "Stop when the Wi-Fi is lost",
+                    "Sharing stops by itself when you leave the Wi-Fi it started on.",
+                    stopOnWifiLost,
+                    onStopOnWifiLost,
+                )
+            }
+        }
+
+        CasterCard(high = false) {
+            Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Privacy", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(
+                    if (lockOn) "A PIN is needed to open Caster." else "Ask for a PIN to open Caster, so nobody else can change what is shared.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    androidx.compose.material3.OutlinedButton(onClick = onSetPin, shape = RoundedCornerShape(14.dp)) {
+                        Text(if (lockOn) "Change PIN" else "Set a PIN")
+                    }
+                    if (lockOn) TextButton(onClick = onRemovePin) { Text("Remove PIN") }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    androidx.compose.material3.OutlinedButton(onClick = onOpenHistory, shape = RoundedCornerShape(14.dp)) { Text("Watch history") }
+                    TextButton(onClick = onClearResume) { Text("Forget resume points") }
                 }
             }
         }
@@ -199,6 +243,17 @@ fun SettingsScreen(
         }
 
         DiagnosticsCard()
+    }
+}
+
+@Composable
+private fun SettingSwitch(title: String, text: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Switch(checked = checked, onCheckedChange = onChange)
     }
 }
 

@@ -18,6 +18,7 @@ object TvKey {
     const val MUTE = 164
     const val DELETE = 67 // backspace
     const val ENTER = 66
+    const val POWER = 26 // switches the TV off, or on from standby (where the TV allows it)
     const val SEARCH = 84 // on an Android TV this opens the voice assistant
 }
 

@@ -105,10 +105,15 @@ class MediaServerService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        PairingManager.init(this)
+        ResumeStore.init(this)
+        WatchLog.init(this)
         PairingManager.reset()
         ShareSettings.init(this)
         createNotificationChannel()
         watchPairingRequests()
+        // The home-screen widget follows the state.
+        scope.launch { state.collect { mano.algo.caster.quick.ShareWidget.update(applicationContext) } }
         // Changing the port in Settings takes effect right away: rebind on the new one.
         scope.launch {
             ShareSettings.state.map { it.port to it.hostname }.distinctUntilChanged().drop(1).collect { reconcile() }
@@ -141,7 +146,8 @@ class MediaServerService : Service() {
                 if (!started) {
                     stopSelf()
                 } else if (intent?.action == ACTION_APPROVE) {
-                    PairingManager.approve()
+                    // With a PIN set the button only opens the app; this is for a stale notification.
+                    if (!mano.algo.caster.security.PinLock.isSet(this)) PairingManager.approve()
                 } else {
                     PairingManager.deny()
                 }
@@ -199,6 +205,7 @@ class MediaServerService : Service() {
         releaseLocks()
         // A start that failed leaves its reason on screen instead of replacing it with a plain "stopped".
         if (!startFailed) _state.value = ServerState.Stopped
+        mano.algo.caster.quick.ShareWidget.update(applicationContext) // the collector above is gone: say "off" ourselves
         super.onDestroy()
     }
 
@@ -347,6 +354,7 @@ class MediaServerService : Service() {
         watchdog = scope.launch {
             while (true) {
                 delay(WATCHDOG_INTERVAL_MS)
+                PairingManager.expireIfDue() // screens whose time is over are signed out
                 reconcile()
             }
         }
@@ -440,7 +448,12 @@ class MediaServerService : Service() {
             .setStyle(NotificationCompat.BigTextStyle().bigText("Approve only if the code on its screen is ${request.code}"))
             .setContentIntent(openApp)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Deny", action(2, ACTION_DENY))
-            .addAction(android.R.drawable.checkbox_on_background, "Approve", action(3, ACTION_APPROVE))
+            // With a PIN set, approving happens inside the app, which asks for the PIN first.
+            .addAction(
+                android.R.drawable.checkbox_on_background,
+                if (mano.algo.caster.security.PinLock.isSet(this)) "Open to approve" else "Approve",
+                if (mano.algo.caster.security.PinLock.isSet(this)) openApp else action(3, ACTION_APPROVE),
+            )
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setAutoCancel(true)

@@ -24,7 +24,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
@@ -46,7 +45,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
@@ -62,6 +60,18 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.IconButton
 import mano.algo.caster.server.PairedDevice
 import mano.algo.caster.server.ShareSelection
+import mano.algo.caster.server.KnownDevice
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material3.Surface
+import androidx.compose.ui.geometry.Offset
+import mano.algo.caster.ui.theme.HeroEnd
+import mano.algo.caster.ui.theme.HeroStart
+import androidx.compose.foundation.border
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.foundation.layout.offset
 
 /**
  * The Home page, kept to what matters: whether sharing is on, one big button, how many screens are watching, and the
@@ -74,35 +84,40 @@ fun HomeScreen(
     batteryUnrestricted: Boolean,
     warnings: List<SetupWarning>,
     devices: List<PairedDevice>,
+    known: List<KnownDevice>,
     selection: ShareSelection,
     hasStorage: Boolean,
     onStart: () -> Unit,
     onStop: () -> Unit,
-    onCopy: (String) -> Unit,
-    onApprove: () -> Unit,
+    onApprove: (durationMs: Long) -> Unit,
     onDeny: () -> Unit,
     onAllowBackground: () -> Unit,
     onAppSettings: () -> Unit,
     watching: List<NowWatching>,
     remotes: List<RemoteState>,
     onRemote: (deviceId: String, command: String) -> Unit,
-    onShare: (String) -> Unit,
     onCastChoose: () -> Unit,
     onDisconnect: (String) -> Unit,
     onDisconnectAll: () -> Unit,
+    onClearScreens: () -> Unit,
     onAll: () -> Unit,
     onSelected: () -> Unit,
     onChoose: () -> Unit,
+    onRemoveChosen: (Long) -> Unit,
+    onPlayChosen: (id: Long, name: String) -> Unit,
+    onFoldersMode: () -> Unit,
+    onSaveFolders: (Set<Long>) -> Unit,
+    onLimitScreen: (KnownDevice) -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val scheme = MaterialTheme.colorScheme
     val running = state is ServerState.Running
-    val screens = devices.size
-    var showConnect by remember { mutableStateOf(false) }
+    val screens = devices.count { it.label != mano.algo.caster.server.PairingManager.CHROMECAST_LABEL }
+    var showConnect by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(running) { if (!running) showConnect = false } // a closed-and-reopened share starts without the dialog
     if (showConnect && state is ServerState.Running) {
-        ConnectScreenDialog(state, onCopy = onCopy, onShare = onShare) { showConnect = false }
+        ConnectScreenDialog(state) { showConnect = false }
     }
 
     Column(
@@ -151,10 +166,26 @@ fun HomeScreen(
             border = if (running) null else BorderStroke(1.dp, scheme.outlineVariant.copy(alpha = 0.6f)),
         ) {
             Column(
-                modifier = Modifier.fillMaxWidth().background(background).padding(18.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(background)
+                    // While sharing, a soft light in the top corner gives the deep gradient some depth.
+                    .then(
+                        if (running) {
+                            Modifier.background(
+                                Brush.radialGradient(
+                                    listOf(Color.White.copy(alpha = 0.18f), Color.Transparent),
+                                    center = Offset(Float.POSITIVE_INFINITY, 0f),
+                                    radius = 700f,
+                                ),
+                            )
+                        } else Modifier,
+                    )
+                    .padding(18.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                // The logo, a title and one line, side by side: the card stays small.
+                // The logo, a title and one line, side by side: the card stays small. While sharing, an info button sits in the top corner.
+                Box(modifier = Modifier.fillMaxWidth()) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     PulsingLogo(rings = running, ringColor = Color.White, size = 84.dp)
                     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -184,6 +215,22 @@ fun HomeScreen(
                         )
                     }
                 }
+                if (state is ServerState.Running) {
+                    // How to connect a screen (the QR code and steps), kept out of the way as a small round "i".
+                    Surface(
+                        onClick = { showConnect = true },
+                        modifier = Modifier.align(Alignment.TopEnd).offset(x = 6.dp, y = (-6).dp).size(38.dp),
+                        shape = CircleShape,
+                        color = Color.White.copy(alpha = 0.22f),
+                        contentColor = Color.White,
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.45f)),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(Icons.Filled.Info, contentDescription = "Connect a screen", modifier = Modifier.size(22.dp))
+                        }
+                    }
+                }
+                }
 
                 when (state) {
                     ServerState.Stopped, is ServerState.Error -> {
@@ -202,14 +249,25 @@ fun HomeScreen(
                         }
                     }
                     is ServerState.Running -> {
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Button(
-                                onClick = { showConnect = true },
-                                modifier = Modifier.weight(1.6f).height(46.dp),
-                                shape = RoundedCornerShape(16.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color(0xFF1E3A8A)),
-                            ) { Text("Connect a screen", style = MaterialTheme.typography.titleSmall) }
-                            GlassButton("Stop", onStop, Modifier.weight(1f), icon = Icons.Filled.Close)
+                        val stopSource = remember { MutableInteractionSource() }
+                        // Stop: a wide pill in soft red glass. It is easy to find, but it does not shout.
+                        Surface(
+                            onClick = onStop,
+                            interactionSource = stopSource,
+                            modifier = Modifier.fillMaxWidth().height(48.dp).pressScale(stopSource),
+                            shape = CircleShape,
+                            color = Color(0xFFFF5A5F).copy(alpha = 0.26f),
+                            contentColor = Color.White,
+                            border = BorderStroke(1.dp, Color(0xFFFF9AA0).copy(alpha = 0.6f)),
+                        ) {
+                            Row(
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(Icons.Filled.Close, contentDescription = null, modifier = Modifier.size(20.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text("Stop sharing", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                            }
                         }
                     }
                     ServerState.Starting -> {
@@ -227,9 +285,25 @@ fun HomeScreen(
             }
         }
 
-        ConnectedScreensSection(devices, running, onDisconnect, onDisconnectAll)
+        LibrarySection(selection, hasStorage, onAll, onSelected, onChoose, onRemoveChosen, onPlayChosen, onFoldersMode, onSaveFolders)
 
-        LibrarySection(selection, hasStorage, onAll, onSelected, onChoose)
+        YourScreensSection(
+            known = known,
+            devices = devices,
+            running = running,
+            // A screen tapped while sharing is off turns sharing on; while it is on, the connect window opens.
+            onTap = {
+                when (state) {
+                    ServerState.Stopped, is ServerState.Error -> onStart()
+                    is ServerState.Running -> showConnect = true
+                    ServerState.Starting -> Unit
+                }
+            },
+            onDisconnect = onDisconnect,
+            onDisconnectAll = onDisconnectAll,
+            onClear = onClearScreens,
+            onLimit = onLimitScreen,
+        )
 
         if (running) CastCard(onChooseVideo = onCastChoose)
 
@@ -326,6 +400,26 @@ private fun RemoteRow(r: RemoteState, onRemote: (String, String) -> Unit) {
             FilledTonalButton(onClick = { onRemote(r.deviceId, "toggle") }) { Text(if (r.playing) "Pause" else "Play") }
             androidx.compose.material3.TextButton(onClick = { onRemote(r.deviceId, "seek:10") }) { Text("+10s") }
             androidx.compose.material3.TextButton(onClick = { onRemote(r.deviceId, "next") }) { Text("Next") }
+            androidx.compose.material3.TextButton(onClick = { onRemote(r.deviceId, "subs") }) { Text("CC") }
+        }
+        if (r.volume >= 0) {
+            // The same two-step as the position: the slider follows the finger, then the screen's own volume once it reports.
+            var volDrag by remember { mutableStateOf<Float?>(null) }
+            var volSent by remember { mutableStateOf<Float?>(null) }
+            LaunchedEffect(volSent) { if (volSent != null) { delay(2_500); volSent = null } }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Volume", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(end = 8.dp))
+                androidx.compose.material3.Slider(
+                    value = volDrag ?: volSent ?: r.volume.toFloat(),
+                    onValueChange = { volDrag = it },
+                    onValueChangeFinished = {
+                        volDrag?.let { onRemote(r.deviceId, "volume:${"%.2f".format(java.util.Locale.US, it / 100f)}"); volSent = it }
+                        volDrag = null
+                    },
+                    valueRange = 0f..100f,
+                    modifier = Modifier.weight(1f),
+                )
+            }
         }
     }
 }

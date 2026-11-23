@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
-enum class ShareMode { ALL, SELECTED }
+enum class ShareMode { ALL, SELECTED, FOLDERS }
 
 /**
  * The owner's sharing settings. [ids] are MediaStore video ids and only matter in [ShareMode.SELECTED].
@@ -17,12 +17,18 @@ enum class ShareMode { ALL, SELECTED }
 data class ShareSelection(
     val mode: ShareMode = ShareMode.ALL,
     val ids: Set<Long> = emptySet(),
+    /** MediaStore bucket (folder) ids, for [ShareMode.FOLDERS]: every video in them is shared, new ones included. */
+    val folders: Set<Long> = emptySet(),
     val port: Int = ShareSettings.DEFAULT_PORT,
     val hostname: String = ShareSettings.DEFAULT_HOSTNAME,
     /** Also list the phone's photos and music (videos follow [mode]; these are all-or-nothing). */
     val shareExtras: Boolean = false,
     /** Sharing stops by itself this many minutes after it starts; 0 means never. */
     val autoStopMinutes: Int = 0,
+    /** Offer to start sharing (a notification) when the phone joins a Wi-Fi network. */
+    val wifiOffer: Boolean = false,
+    /** Stop sharing when the Wi-Fi is lost, so nothing keeps running away from home. */
+    val stopOnWifiLost: Boolean = false,
 )
 
 /**
@@ -34,10 +40,13 @@ object ShareSettings {
     private const val PREFS = "caster_share"
     private const val KEY_MODE = "mode"
     private const val KEY_IDS = "ids"
+    private const val KEY_FOLDERS = "folders"
     private const val KEY_PORT = "port"
     private const val KEY_HOSTNAME = "hostname"
     private const val KEY_EXTRAS = "extras"
     private const val KEY_AUTO_STOP = "auto_stop"
+    private const val KEY_WIFI_OFFER = "wifi_offer"
+    private const val KEY_WIFI_STOP = "wifi_stop"
     private const val KEY_INSTANCE_ID = "instance_id"
 
     const val DEFAULT_HOSTNAME = MdnsResponder.DEFAULT_HOSTNAME
@@ -75,10 +84,14 @@ object ShareSettings {
             val ids = p.getStringSet(KEY_IDS, emptySet()).orEmpty().mapNotNull { it.toLongOrNull() }.toSet()
             val port = p.getInt(KEY_PORT, DEFAULT_PORT).takeIf(::isValidPort) ?: DEFAULT_PORT
             val hostname = p.getString(KEY_HOSTNAME, null)?.takeIf(::isValidHostname) ?: DEFAULT_HOSTNAME
+            val folders = p.getStringSet(KEY_FOLDERS, emptySet()).orEmpty().mapNotNull { it.toLongOrNull() }.toSet()
+            appContext = context.applicationContext
             _state.value = ShareSelection(
-                mode, ids, port, hostname,
+                mode, ids, folders, port, hostname,
                 shareExtras = p.getBoolean(KEY_EXTRAS, false),
                 autoStopMinutes = p.getInt(KEY_AUTO_STOP, 0).coerceAtLeast(0),
+                wifiOffer = p.getBoolean(KEY_WIFI_OFFER, false),
+                stopOnWifiLost = p.getBoolean(KEY_WIFI_STOP, false),
             )
             instanceId = p.getString(KEY_INSTANCE_ID, null) ?: ByteArray(6).also(java.security.SecureRandom()::nextBytes)
                 .joinToString("") { "%02x".format(it) }
@@ -89,6 +102,11 @@ object ShareSettings {
 
     fun setMode(mode: ShareMode) {
         _state.update { it.copy(mode = mode) }
+        persist()
+    }
+
+    fun setFolders(folders: Set<Long>) {
+        _state.update { it.copy(folders = folders) }
         persist()
     }
 
@@ -122,17 +140,63 @@ object ShareSettings {
         persist()
     }
 
-    fun isAllowed(id: Long): Boolean = state.value.let { it.mode == ShareMode.ALL || id in it.ids }
+    fun setWifiOffer(on: Boolean) {
+        _state.update { it.copy(wifiOffer = on) }
+        persist()
+    }
+
+    fun setStopOnWifiLost(on: Boolean) {
+        _state.update { it.copy(stopOnWifiLost = on) }
+        persist()
+    }
+
+    @Volatile private var appContext: Context? = null
+    // The folder of the videos asked about lately (a plain map, so it also works in tests): the oldest is dropped past 4096.
+    private class Folder(val bucket: Long, val at: Long)
+    private val buckets = object : LinkedHashMap<Long, Folder>(256, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Folder>) = size > 4096
+    }
+    /** A video moved to another folder is noticed after this long. */
+    private const val FOLDER_TTL_MS = 60_000L
+
+    /** The folder a video is in. A list that already has it passes it as [bucketId]; otherwise it is looked up (and remembered). */
+    private fun bucketOf(id: Long): Long? {
+        synchronized(buckets) { buckets[id] }?.let { if (System.currentTimeMillis() - it.at < FOLDER_TTL_MS) return it.bucket }
+        val context = appContext ?: return null
+        val found = runCatching {
+            context.contentResolver.query(
+                android.content.ContentUris.withAppendedId(android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id),
+                arrayOf(android.provider.MediaStore.Video.Media.BUCKET_ID), null, null, null,
+            )?.use { c -> if (c.moveToFirst()) c.getLong(0) else null }
+        }.getOrNull()
+        if (found != null) synchronized(buckets) { buckets[id] = Folder(found, System.currentTimeMillis()) }
+        return found
+    }
+
+    fun isAllowed(id: Long, bucketId: Long? = null): Boolean {
+        val s = state.value
+        return when (s.mode) {
+            ShareMode.ALL -> true
+            ShareMode.SELECTED -> id in s.ids
+            ShareMode.FOLDERS -> {
+                if (bucketId != null) synchronized(buckets) { buckets[id] = Folder(bucketId, System.currentTimeMillis()) }
+                (bucketId ?: bucketOf(id))?.let { it in s.folders } == true
+            }
+        }
+    }
 
     private fun persist() {
         val s = _state.value
         prefs?.edit()
             ?.putString(KEY_MODE, s.mode.name)
             ?.putStringSet(KEY_IDS, s.ids.map { it.toString() }.toSet())
+            ?.putStringSet(KEY_FOLDERS, s.folders.map { it.toString() }.toSet())
             ?.putInt(KEY_PORT, s.port)
             ?.putString(KEY_HOSTNAME, s.hostname)
             ?.putBoolean(KEY_EXTRAS, s.shareExtras)
             ?.putInt(KEY_AUTO_STOP, s.autoStopMinutes)
+            ?.putBoolean(KEY_WIFI_OFFER, s.wifiOffer)
+            ?.putBoolean(KEY_WIFI_STOP, s.stopOnWifiLost)
             ?.apply()
     }
 }

@@ -1,5 +1,6 @@
 package mano.algo.caster.tv
 
+import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -25,6 +26,14 @@ import javax.net.ssl.X509TrustManager
 import kotlin.concurrent.thread
 
 class AndroidTvTest {
+    // Set free when a test is over: a pretend TV that has to stay connected waits for it, instead of sleeping for a guessed time.
+    private val release = CountDownLatch(1)
+
+    @After
+    fun releasePretendTvs() {
+        release.countDown()
+    }
+
     private fun ByteArray.hex() = joinToString("") { "%02x".format(it) }
 
     // --- The messages ------------------------------------------------------------------------------------------
@@ -223,7 +232,7 @@ class AndroidTvTest {
             socket.read()
             socket.write(Proto.bytes(40, Proto.int(1, 1)))
             socket.read() // the search key, and no voice session follows
-            Thread.sleep(1_000)
+            release.await(20, TimeUnit.SECONDS)
         }
         val link = AndroidTvLink.open("127.0.0.1", phone, AndroidTvCommands.fingerprint(tv.certificate.encoded), {}, fake.port)
         try {

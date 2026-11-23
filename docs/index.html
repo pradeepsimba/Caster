@@ -758,6 +758,22 @@
     $('retry').focus();
   }
 
+  // A random id this browser keeps for itself, so the phone can tell two screens with the same name apart (two Fire TVs).
+  function clientId() {
+    let id = store.get('caster.cid', null);
+    if (typeof id !== 'string' || !/^[A-Za-z0-9]{8,40}$/.test(id)) {
+      id = '';
+      try {
+        const bytes = new Uint8Array(8);
+        (window.crypto || window.msCrypto).getRandomValues(bytes);
+        for (let i = 0; i < bytes.length; i++) id += (bytes[i] < 16 ? '0' : '') + bytes[i].toString(16);
+      } catch (_e) { id = ''; }
+      for (let i = id.length; i < 16; i++) id += Math.floor(Math.random() * 16).toString(16);
+      store.set('caster.cid', id);
+    }
+    return id;
+  }
+
   // Asks the phone to connect, shows the code, and waits for the owner to approve it there.
   async function openPairing(message = '') {
     stopPairPoll();
@@ -768,7 +784,7 @@
     $('pairHint').hidden = true;
     $('retry').hidden = true;
     try {
-      const r = await fetch(base(current) + '/api/pair/request', { method: 'POST' });
+      const r = await fetch(base(current) + '/api/pair/request?cid=' + encodeURIComponent(clientId()), { method: 'POST' });
       if (r.status === 429) { finishPairing('Another request is waiting on the phone. Try again in a few seconds.'); return; }
       if (!r.ok) throw new Error('request failed');
       const { id, code, expiresInMs } = await r.json();
@@ -846,6 +862,7 @@
       const data = await r.json();
       if (seq !== loadSeq) return;
       videos = data.videos || [];
+      if (kind === 'v') { await mergePhoneResume(); if (seq !== loadSeq) return; }
       $('kindTabs').hidden = !data.extras;
       for (const b of $('kindTabs').children) b.classList.toggle('on', b.dataset.k === kind);
       renderFolders();
@@ -871,6 +888,22 @@
   // Watch positions are kept per phone in this browser: { videoId: { t: seconds, d: duration } }.
   const posKey = () => 'caster.pos.' + current.host;
   const readPositions = () => (current ? store.get(posKey(), {}) : {});
+
+  // The phone remembers where each video was stopped on ANY screen: start here what another screen left off.
+  async function mergePhoneResume() {
+    try {
+      const r = await fetch(base(current) + '/api/resume?t=' + encodeURIComponent(token(current)), { cache: 'no-store' });
+      if (!r.ok) return;
+      const items = (await r.json()).items || [];
+      if (!items.length) return;
+      const all = readPositions();
+      items.forEach((it, rank) => {
+        // The phone hears from every screen, so its point is the latest (the clocks of TVs can't be compared).
+        all[it.id] = { t: it.pos, d: it.dur, at: Date.now() - rank }; // newest first, so "continue" keeps that order
+      });
+      store.set(posKey(), all);
+    } catch (_e) { /* an older phone build has no resume list */ }
+  }
 
   // Thumbnails load as they near the screen instead of all at once: a big gallery would otherwise queue
   // hundreds of requests behind the browser's 6-per-host limit and starve the video itself.
@@ -1235,7 +1268,7 @@
     let q = '&s=' + state;
     if (state !== 'idle') {
       q += '&p=' + Math.floor(video.currentTime || 0) + '&d=' + Math.floor(isFinite(video.duration) ? video.duration : 0) +
-        '&n=' + encodeURIComponent(v.name);
+        '&n=' + encodeURIComponent(v.name) + '&v=' + encodeURIComponent(v.id) + '&k=' + kind + '&vol=' + Math.round((video.muted ? 0 : video.volume) * 100);
     }
     try {
       const r = await fetch(base(current) + '/api/remote?t=' + encodeURIComponent(token(current)) + q, { cache: 'no-store' });
@@ -1259,6 +1292,8 @@
     else if (c === 'prev') prevVideo();
     else if (c === 'stop') closePlayer();
     else if (c.startsWith('seek:')) seekBy(Number(c.slice(5)) || 0);
+    else if (c.startsWith('volume:')) { const x = Number(c.slice(7)); if (isFinite(x)) { video.muted = false; video.volume = Math.max(0, Math.min(1, x)); } }
+    else if (c === 'subs') { if (subTrack) onSubsButton(); else toast('No subtitles for this video'); }
     else if (c.startsWith('seekto:') && isFinite(video.duration)) { video.currentTime = Math.max(0, Math.min(video.duration - 0.1, Number(c.slice(7)) || 0)); showUi(); }
   }
 

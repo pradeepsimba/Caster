@@ -43,6 +43,15 @@ internal object LanNetwork {
         }
     }
 
+    /** The same for a UDP socket (the Wake-on-LAN packet has to leave through the Wi-Fi, not mobile data). */
+    fun bind(socket: java.net.DatagramSocket) {
+        try {
+            current()?.bindSocket(socket)
+        } catch (e: IOException) {
+            // The network went away meanwhile: the send that follows goes the default way, as it would have.
+        }
+    }
+
     fun open(url: URL): URLConnection {
         val home = current() ?: return url.openConnection()
         return try {

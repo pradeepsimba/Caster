@@ -36,8 +36,9 @@ object ActivityTracker {
         val now = System.currentTimeMillis()
         val previous = entries[deviceId]
         val changed = previous == null || previous.videoId != videoId
-        entries[deviceId] =
-            if (changed) NowWatching(deviceId, deviceLabel, videoId, videoName(), now) else previous!!.copy(lastSeen = now)
+        val name = if (changed) videoName() else previous!!.videoName
+        entries[deviceId] = if (changed) NowWatching(deviceId, deviceLabel, videoId, name, now) else previous!!.copy(lastSeen = now)
+        if (changed) WatchLog.record(deviceLabel, name)
         if (changed || now - lastPublish >= PUBLISH_EVERY_MS) publish(now)
     }
 

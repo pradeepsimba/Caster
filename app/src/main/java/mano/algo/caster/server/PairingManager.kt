@@ -7,10 +7,37 @@ import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 
 /** A browser asking for access. [code] is shown on both the browser and the phone so the owner can match them. */
-data class PairRequest(val id: String, val code: String, val label: String, val expiresAt: Long, val requester: String = "")
+data class PairRequest(
+    val id: String,
+    val code: String,
+    val label: String,
+    val expiresAt: Long,
+    val requester: String = "",
+    /** A random id the browser keeps in its own storage, so two screens with the same name (two Fire TVs) stay two screens. */
+    val clientId: String = "",
+)
 
 /** A browser the owner has approved. [id] is a short public handle, never the secret token. */
-data class PairedDevice(val id: String, val label: String, val pairedAt: Long, val lastSeen: Long)
+data class PairedDevice(
+    val id: String,
+    val label: String,
+    val pairedAt: Long,
+    val lastSeen: Long,
+    val clientId: String = "",
+    /** When the access ends by itself (0 = never). */
+    val expiresAt: Long = 0L,
+    /** True when this screen may only see some of the shared videos. */
+    val limited: Boolean = false,
+)
+
+/** A screen that was approved at some time, remembered so it can be listed (not its token: that dies with the sharing session). */
+data class KnownDevice(
+    val clientId: String,
+    val label: String,
+    val lastConnected: Long,
+    /** The only videos this screen may see (null: all that are shared). Kept with the screen, so it applies again after re-approval. */
+    val limit: Set<Long>? = null,
+)
 
 sealed interface RequestResult {
     data class Created(val request: PairRequest, val ttlMs: Long) : RequestResult
@@ -34,6 +61,8 @@ sealed interface PairStatus {
  * Approved browsers are listed in [devices] and can be disconnected, which invalidates their token.
  */
 object PairingManager {
+    /** The label of the access the phone gives its own Chromecast casts; it is not a screen the owner approved. */
+    const val CHROMECAST_LABEL = "Chromecast (this phone)"
     const val REQUEST_TTL_MS = 60_000L
     private const val COOLDOWN_MS = 5_000L
     private const val REMEMBERED_OUTCOMES = 20
@@ -41,7 +70,14 @@ object PairingManager {
 
     private val random = SecureRandom()
 
-    private class Client(val id: String, val label: String, val pairedAt: Long) {
+    private class Client(
+        val id: String,
+        val label: String,
+        val pairedAt: Long,
+        val clientId: String,
+        val expiresAt: Long = 0L,
+        @Volatile var limit: Set<Long>? = null,
+    ) {
         @Volatile var lastSeen: Long = pairedAt
         @Volatile var published: Long = pairedAt
     }
@@ -53,6 +89,67 @@ object PairingManager {
 
     /** The request awaiting the owner's decision, for the phone UI and notification. */
     val pending: StateFlow<PairRequest?> = _pending.asStateFlow()
+
+    private const val HISTORY_PREFS = "caster_screens"
+    private const val HISTORY_KEY = "known"
+    private const val HISTORY_MAX = 10
+    private var historyContext: android.content.Context? = null
+
+    private val _known = MutableStateFlow<List<KnownDevice>>(emptyList())
+
+    /** Screens approved before, the newest first. Connected or not, they stay listed until cleared. */
+    val known: StateFlow<List<KnownDevice>> = _known.asStateFlow()
+
+    /** Loads the list of screens used before. Safe to call often. */
+    @Synchronized
+    fun init(context: android.content.Context) {
+        if (historyContext != null) return
+        historyContext = context.applicationContext
+        _known.value = context.applicationContext.getSharedPreferences(HISTORY_PREFS, android.content.Context.MODE_PRIVATE)
+            .getString(HISTORY_KEY, "").orEmpty().lines().mapNotNull { line ->
+                val parts = line.split('\t', limit = 4)
+                val time = parts.getOrNull(0)?.toLongOrNull() ?: return@mapNotNull null
+                when {
+                    parts.size == 4 && parts[2].isNotBlank() -> KnownDevice(parts[1], parts[2], time, parseLimit(parts[3]))
+                    parts.size == 3 && parts[2].isNotBlank() -> KnownDevice(parts[1], parts[2], time)
+                    // The older format had no id: the name stood in for it.
+                    parts.size == 2 && parts[1].isNotBlank() -> KnownDevice("label:" + parts[1], parts[1], time)
+                    else -> null
+                }
+            }
+    }
+
+    // A limit is saved as nothing (no limit), "none" (the empty set) or the ids with commas between them.
+    internal fun formatLimit(limit: Set<Long>?) = when {
+        limit == null -> ""
+        limit.isEmpty() -> "none"
+        else -> limit.joinToString(",")
+    }
+
+    internal fun parseLimit(text: String): Set<Long>? = when (text.trim()) {
+        "" -> null
+        "none" -> emptySet()
+        else -> text.split(',').mapNotNull { it.trim().toLongOrNull() }.toSet()
+    }
+
+    private fun saveKnown(list: List<KnownDevice>) {
+        _known.value = list
+        historyContext?.getSharedPreferences(HISTORY_PREFS, android.content.Context.MODE_PRIVATE)?.edit()
+            ?.putString(HISTORY_KEY, list.joinToString("\n") { it.lastConnected.toString() + "\t" + it.clientId + "\t" + it.label + "\t" + formatLimit(it.limit) })?.apply()
+    }
+
+    /** Keeps the newest screens, but a screen that has a limit is never dropped to make room: its limit would be lost with it. */
+    internal fun trimKnown(list: List<KnownDevice>): List<KnownDevice> {
+        var plain = 0
+        return list.filter { it.limit != null || ++plain <= HISTORY_MAX }
+    }
+
+    @Synchronized
+    fun clearKnown() = saveKnown(emptyList())
+
+    /** What "Clear list" does: forgets the screens, except those with a limit (forgetting them would lift the limit). */
+    @Synchronized
+    fun clearUnlimited() = saveKnown(_known.value.filter { it.limit != null })
 
     private val _devices = MutableStateFlow<List<PairedDevice>>(emptyList())
 
@@ -78,7 +175,7 @@ object PairingManager {
     }
 
     @Synchronized
-    fun request(label: String, requester: String = ""): RequestResult {
+    fun request(label: String, requester: String = "", clientId: String = ""): RequestResult {
         val now = System.currentTimeMillis()
         expireLocked(now)
         val pending = _pending.value
@@ -93,6 +190,7 @@ object PairingManager {
             label = label,
             expiresAt = now + REQUEST_TTL_MS,
             requester = requester,
+            clientId = clientId,
         )
         _pending.value = request
         return RequestResult.Created(request, REQUEST_TTL_MS)
@@ -107,11 +205,34 @@ object PairingManager {
 
     /** Owner pressed Approve. Returns false if the request already expired or was answered. */
     @Synchronized
-    fun approve(): Boolean {
+    fun approve(durationMs: Long = 0L): Boolean {
         expireLocked(System.currentTimeMillis())
         val request = _pending.value ?: return false
         val token = randomHex(16)
-        clients[token] = Client(id = randomHex(4), label = request.label, pairedAt = System.currentTimeMillis())
+        val now = System.currentTimeMillis()
+        val label = request.label.replace('\t', ' ').replace('\n', ' ')
+        // A screen that already has no id of its own (an old page) is told apart by its name only.
+        val cid = request.clientId.ifEmpty { "label:$label" }
+        // The same screen approved again replaces its older access instead of leaving two valid tokens behind.
+        val older = clients.entries.filter { it.value.clientId == cid }
+        older.forEach { entry ->
+            clients.remove(entry.key)
+            ActivityTracker.forget(entry.value.id)
+            RemoteControl.idle(entry.value.id)
+        }
+        // What this screen was limited to before is still its limit; a time limit counts from now.
+        // A screen that comes back with a new id (its browser data was cleared) but the same name as a limited screen is limited
+        // too: the id is chosen by the screen itself, so it can't be what keeps a limit in place. The owner can lift it on the row.
+        val limit = _known.value.firstOrNull { it.clientId == cid }?.limit
+            ?: if (_known.value.none { it.clientId == cid }) {
+                // (Only from a screen that is not connected now: one that is connected is another device with the same name.)
+                _known.value.firstOrNull { k -> k.limit != null && k.label == label && clients.values.none { it.clientId == k.clientId } }?.limit
+            } else null
+        clients[token] = Client(
+            id = randomHex(4), label = request.label, pairedAt = now, clientId = cid,
+            expiresAt = if (durationMs > 0) now + durationMs else 0L, limit = limit,
+        )
+        saveKnown(trimKnown(listOf(KnownDevice(cid, label, now, limit)) + _known.value.filter { it.clientId != cid }))
         outcomes[request.id] = PairStatus.Approved(token)
         _pending.value = null
         publishDevices()
@@ -126,7 +247,7 @@ object PairingManager {
     fun issueLocal(label: String): String {
         clients.entries.firstOrNull { it.value.label == label }?.let { return it.key }
         val token = randomHex(16)
-        clients[token] = Client(id = randomHex(4), label = label, pairedAt = System.currentTimeMillis())
+        clients[token] = Client(id = randomHex(4), label = label, pairedAt = System.currentTimeMillis(), clientId = "local:$label")
         publishDevices()
         return token
     }
@@ -158,7 +279,12 @@ object PairingManager {
 
     /** Lets the phone side expire a request nobody is polling for any more. */
     @Synchronized
-    fun expireIfDue() = expireLocked(System.currentTimeMillis())
+    fun expireIfDue() {
+        val now = System.currentTimeMillis()
+        expireLocked(now)
+        // Screens whose time is over are signed out even if they never ask for anything again.
+        clients.values.filter { it.expiresAt != 0L && now >= it.expiresAt }.forEach { revoke(it.id) }
+    }
 
     /** The id and label behind a token, for showing what each screen is doing; null if the token isn't valid. */
     fun clientOf(token: String?): Pair<String, String>? {
@@ -166,22 +292,47 @@ object PairingManager {
         return client.id to client.label
     }
 
+    /** Limits [clientId] to [ids] (null removes the limit), for the screen as it is now and for when it is approved again. */
+    @Synchronized
+    fun setLimit(clientId: String, ids: Set<Long>?) {
+        saveKnown(_known.value.map { if (it.clientId == clientId) it.copy(limit = ids) else it })
+        clients.values.filter { it.clientId == clientId }.forEach { it.limit = ids }
+        publishDevices()
+    }
+
+    fun limitOf(clientId: String): Set<Long>? = _known.value.firstOrNull { it.clientId == clientId }?.limit
+
+    /** True when the screen behind [token] has been limited to some videos. */
+    fun isLimited(token: String?): Boolean = (if (token == null) null else clients[token])?.limit != null
+
+    /** True when the screen behind [token] may see video [id] (the owner's own choice of shared videos is checked separately). */
+    fun allows(token: String?, id: Long): Boolean {
+        val client = (if (token == null) null else clients[token]) ?: return false
+        val limit = client.limit
+        return limit == null || id in limit
+    }
+
     /** Called for every authenticated request, so it must stay cheap and lock-free. */
     fun isValid(token: String?): Boolean {
         val client = (if (token == null) null else clients[token]) ?: return false
         val now = System.currentTimeMillis()
+        if (client.expiresAt != 0L && now >= client.expiresAt) { // the time the owner gave this screen is over
+            revoke(client.id)
+            return false
+        }
         client.lastSeen = now
         // Re-publishing on every video chunk would flood the UI; show "last active" at a coarse grain.
         if (now - client.published >= LAST_SEEN_PUBLISH_MS) {
             client.published = now
-            publishDevices()
+            // Under the lock, and only if the screen is still there: a snapshot taken before a disconnect must not be published after it.
+            synchronized(this) { if (clients[token] === client) publishDevices() }
         }
         return true
     }
 
     private fun publishDevices() {
         _devices.value = clients.values
-            .map { PairedDevice(it.id, it.label, it.pairedAt, it.lastSeen) }
+            .map { PairedDevice(it.id, it.label, it.pairedAt, it.lastSeen, it.clientId, it.expiresAt, it.limit != null) }
             .sortedByDescending { it.pairedAt }
     }
 

@@ -1,5 +1,6 @@
 package mano.algo.caster.tv
 
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -25,6 +26,14 @@ import javax.net.ssl.SSLServerSocket
 import kotlin.concurrent.thread
 
 class WebSocketTvsTest {
+    // Set free when a test is over: a pretend TV that has to stay connected waits for it, instead of sleeping for a guessed time.
+    private val release = CountDownLatch(1)
+
+    @After
+    fun releasePretendTvs() {
+        release.countDown()
+    }
+
     // --- A pretend TV: the server side of a WebSocket -----------------------------------------------------------
 
     private class Peer(private val socket: Socket) : Closeable {
@@ -202,7 +211,7 @@ class WebSocketTvsTest {
             pinged = opcode == 9
             peer.pong() // it answers the first ping ...
             peer.frame() // ... and the next one
-            Thread.sleep(1_000) // ... and then nothing
+            release.await(20, TimeUnit.SECONDS) // ... and then nothing, until the test is over
         }
         val ws = WebSocketClient.connect("127.0.0.1", fake.port, "/", secure = false, pinned = null)
         try {
@@ -270,7 +279,7 @@ class WebSocketTvsTest {
         server.soTimeout = 15_000
         thread(isDaemon = true) {
             repeat(2) {
-                runCatching { Peer(server.accept()).use { it.handshake(); Thread.sleep(300) } }
+                runCatching { Peer(server.accept()).use { it.handshake(); release.await(5, TimeUnit.SECONDS) } }
             }
         }
         try {
@@ -364,6 +373,8 @@ class WebSocketTvsTest {
         val closed = ServerSocket(0).use { it.localPort } // nothing listens there any more
         val fake = FakeTv { peer -> peer.send("""{"event":"ms.channel.connect","data":{}}""") }
         val opened = SamsungTvLink.open("127.0.0.1", "Caster", null, null, listOf(Endpoint(closed, true), Endpoint(fake.port, false)), {}, {})
+        assertTrue(opened.link.supports(TvKey.OK)) // the plain port is the one that answered
+        assertNull(opened.fingerprint) // and a plain connection has no certificate to remember
         opened.link.close()
         fake.close()
     }
@@ -373,6 +384,7 @@ class WebSocketTvsTest {
         val hangsUp = FakeTv { } // takes the connection and drops it
         val works = FakeTv { peer -> peer.send("""{"event":"ms.channel.connect","data":{}}""") }
         val opened = SamsungTvLink.open("127.0.0.1", "Caster", null, null, listOf(Endpoint(hangsUp.port, false), Endpoint(works.port, false)), {}, {})
+        assertTrue(opened.link.supports(TvKey.OK)) // the second port is the one that answered
         opened.link.close()
         hangsUp.close()
         works.close()
@@ -412,11 +424,13 @@ class WebSocketTvsTest {
     @Test
     fun lgRegistersAndTakesButtonsAndText() {
         val buttons = ArrayList<String>()
+        val buttonsRead = CountDownLatch(3)
         val input = FakeTv { peer ->
-            buttons += peer.read()
-            buttons += peer.read()
-            buttons += peer.read()
-            Thread.sleep(1_500) // a TV that hangs up would end the whole link, so stay until the test is done
+            repeat(3) {
+                buttons += peer.read()
+                buttonsRead.countDown()
+            }
+            release.await(20, TimeUnit.SECONDS) // a TV that hangs up would end the whole link, so stay until the test is done
         }
         val main = FakeTv { peer ->
             assertEquals(LgTvCommands.hello(), peer.read())
@@ -445,7 +459,7 @@ class WebSocketTvsTest {
             link.typed("ab", "ac")
             link.openUrl("http://x/")
             main.finish()
-            input.finish()
+            assertTrue("the buttons never reached the TV", buttonsRead.await(10, TimeUnit.SECONDS))
         } finally {
             opened.link.close()
             main.close()
@@ -457,13 +471,13 @@ class WebSocketTvsTest {
     @Test
     fun lgTriesThePlainPortWhenTheSecureOneHangsUpAfterConnecting() {
         val hangsUp = FakeTv { peer -> peer.read() } // answers the handshake, then drops the connection on the first message
-        val input = FakeTv { Thread.sleep(1_500) }
+        val input = FakeTv { release.await(20, TimeUnit.SECONDS) }
         val works = FakeTv { peer ->
             peer.read(); peer.send("""{"type":"hello","payload":{}}""")
             peer.read(); peer.send("""{"type":"response","payload":{}}""")
             peer.read(); peer.send("""{"type":"registered","id":"register_0","payload":{"client-key":"k"}}""")
             peer.read(); peer.send("""{"type":"response","id":0,"payload":{"socketPath":"ws://192.168.0.9:${input.port}/p"}}""")
-            Thread.sleep(1_500)
+            release.await(20, TimeUnit.SECONDS)
         }
         val opened = LgTvLink.open("127.0.0.1", null, null, listOf(Endpoint(hangsUp.port, false), Endpoint(works.port, false)), {}, {})
         assertEquals("k", opened.clientKey)

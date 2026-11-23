@@ -99,6 +99,7 @@ object SamsungTvCommands {
         TvKey.VOLUME_UP -> "KEY_VOLUP"
         TvKey.VOLUME_DOWN -> "KEY_VOLDOWN"
         TvKey.MUTE -> "KEY_MUTE"
+        TvKey.POWER -> "KEY_POWER"
         else -> null
     }
 }
@@ -304,12 +305,13 @@ internal class LgTvLink private constructor(
     private var playing = true // the pause and play buttons are separate: pause first, then play, and so on
 
     override fun supports(code: Int) =
-        LgTvCommands.buttonName(code) != null || code == TvKey.PLAY_PAUSE || code == TvKey.ENTER || code == TvKey.DELETE
+        LgTvCommands.buttonName(code) != null || code == TvKey.PLAY_PAUSE || code == TvKey.ENTER || code == TvKey.DELETE || code == TvKey.POWER
 
     override fun press(code: Int) {
         when (code) {
             TvKey.ENTER -> request(LgTvCommands.ENTER_KEY, "{}")
             TvKey.DELETE -> request(LgTvCommands.deleteCharacters(1))
+            TvKey.POWER -> request("ssap://system/turnOff", "{}")
             TvKey.PLAY_PAUSE -> {
                 playing = !playing
                 input.sendText(LgTvCommands.button(if (playing) "PLAY" else "PAUSE"))

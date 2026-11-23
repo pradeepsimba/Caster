@@ -4,8 +4,9 @@ HSPLmano/algo/caster/MainActivity;->**(**)**
 HSPLmano/algo/caster/ui/CasterAppKt;->**(**)**
 HSPLmano/algo/caster/ui/HomeScreenKt;->**(**)**
 HSPLmano/algo/caster/ui/ComponentsKt;->**(**)**
-HSPLmano/algo/caster/ui/LibraryScreenKt;->**(**)**
-HSPLmano/algo/caster/ui/DevicesScreenKt;->**(**)**
+HSPLmano/algo/caster/ui/HomeSectionsKt;->**(**)**
+HSPLmano/algo/caster/ui/CastCardKt;->**(**)**
+HSPLmano/algo/caster/ui/QrCodeKt;->**(**)**
 HSPLmano/algo/caster/ui/SettingsScreenKt;->**(**)**
 HSPLmano/algo/caster/ui/theme/**->**(**)**
 HSPLmano/algo/caster/server/ShareSettings;->**(**)**

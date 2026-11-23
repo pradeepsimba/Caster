@@ -99,6 +99,9 @@ object TvRemote {
     private const val KEY_LG_KEY = "lg_key_"
     private const val KEY_LG_PIN = "lg_pin_"
     private const val KEY_KIND_PREFIX = "kind_" // which kind of TV answered at an address last time
+    private const val KEY_RECENT = "recent_tvs" // the addresses used before, the newest first
+    private const val KEY_MAC_PREFIX = "mac_" // the MAC address of a TV, for switching it on
+    private const val RECENT_MAX = 6
 
     /** A held direction is released by itself after this long, so a lost "key up" can't leave the TV scrolling for ever. */
     private const val HOLD_LIMIT_MS = 8_000L
@@ -132,6 +135,14 @@ object TvRemote {
 
     /** The TV address used last, so it doesn't have to be typed again. */
     val savedHost: StateFlow<String> = _savedHost.asStateFlow()
+
+    /** A TV that was connected to before: its address as it was typed, the kind of TV, and its MAC address when known. */
+    data class SavedTv(val address: String, val kind: String?, val mac: String?)
+
+    private val _saved = MutableStateFlow<List<SavedTv>>(emptyList())
+
+    /** The TVs used before, the newest first, so one tap connects again. */
+    val saved: StateFlow<List<SavedTv>> = _saved.asStateFlow()
 
     private val _found = MutableStateFlow<List<String>>(emptyList())
 
@@ -191,6 +202,63 @@ object TvRemote {
         if (_savedHost.value.isEmpty()) {
             _savedHost.value = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_HOST, "").orEmpty()
         }
+        if (_saved.value.isEmpty()) refreshSaved(context)
+    }
+
+    private fun recentAddresses(p: android.content.SharedPreferences): List<String> =
+        p.getString(KEY_RECENT, "").orEmpty().lines().map { it.trim() }.filter { it.isNotEmpty() }
+
+    private fun kindLabel(name: String?) = when (name) {
+        Kind.Fire.name -> "Fire TV"
+        Kind.AndroidTv.name -> "Android TV"
+        Kind.Samsung.name -> "Samsung"
+        Kind.Lg.name -> "LG"
+        else -> null
+    }
+
+    private fun refreshSaved(context: Context) {
+        val p = prefs(context)
+        _saved.value = recentAddresses(p).map { address ->
+            val host = TvCommands.parseTarget(address)?.host ?: address
+            SavedTv(address, kindLabel(p.getString(KEY_KIND_PREFIX + host, null)), p.getString(KEY_MAC_PREFIX + host, null))
+        }
+    }
+
+    /** Puts [address] first in the list of TVs used before. */
+    private fun remember(context: Context, address: String) {
+        val p = prefs(context)
+        val updated = (listOf(address) + recentAddresses(p).filter { it != address }).take(RECENT_MAX)
+        p.edit().putString(KEY_RECENT, updated.joinToString("\n")).apply()
+        refreshSaved(context)
+    }
+
+    /** Forgets a TV from the list (and what is remembered about it). */
+    fun forget(context: Context, address: String) {
+        val p = prefs(context)
+        val host = TvCommands.parseTarget(address)?.host
+        val edit = p.edit().putString(KEY_RECENT, recentAddresses(p).filter { it != address }.joinToString("\n"))
+        if (host != null && recentAddresses(p).none { it != address && TvCommands.parseTarget(it)?.host == host }) {
+            edit.remove(KEY_MAC_PREFIX + host)
+        }
+        edit.apply()
+        refreshSaved(context)
+    }
+
+    /**
+     * Switches a TV on from standby with a Wake-on-LAN packet. [mac] is typed once and remembered; without it the one remembered
+     * (or, on older Android, read from the phone's neighbour table) is used. False when no MAC address is known yet.
+     */
+    fun wake(context: Context, address: String, mac: String? = null): Boolean {
+        val app = context.applicationContext
+        val host = TvCommands.parseTarget(address)?.host ?: return false
+        val p = prefs(app)
+        if (mac != null && WakeOnLan.normalize(mac) == null) return false
+        val known = mac?.let(WakeOnLan::normalize) ?: p.getString(KEY_MAC_PREFIX + host, null) ?: WakeOnLan.fromNeighbours(host) ?: return false
+        p.edit().putString(KEY_MAC_PREFIX + host, known).apply()
+        refreshSaved(app)
+        LanNetwork.refresh(app)
+        scope.launch { runCatching { WakeOnLan.send(known, host) } }
+        return true
     }
 
     private fun prefs(context: Context) = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -207,6 +275,17 @@ object TvRemote {
         disconnect()
         _savedHost.value = rawHost.trim()
         prefs(context).edit().putString(KEY_HOST, rawHost.trim()).apply()
+        remember(context, rawHost.trim())
+        // The TV has just been talked to, so the phone may know its MAC address by now (for switching it on later).
+        val app = context.applicationContext
+        scope.launch {
+            delay(4_000)
+            val p = prefs(app)
+            if (p.getString(KEY_MAC_PREFIX + target.host, null) == null) {
+                WakeOnLan.fromNeighbours(target.host)?.let { p.edit().putString(KEY_MAC_PREFIX + target.host, it).apply() }
+            }
+            refreshSaved(app)
+        }
         return target
     }
 
@@ -216,7 +295,7 @@ object TvRemote {
 
     /** Remembers which kind of TV is at [host], for the next time (a TV in standby doesn't answer on its remote port). */
     private fun rememberKind(host: String, kind: Kind) {
-        appContext?.let { prefs(it).edit().putString(KEY_KIND_PREFIX + host, kind.name).apply() }
+        appContext?.let { prefs(it).edit().putString(KEY_KIND_PREFIX + host, kind.name).apply(); refreshSaved(it) }
     }
 
     /** Which kind of TV is at [host]: each kind has its own remote port that answers; a Fire TV is what is left. */

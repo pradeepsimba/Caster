@@ -15,13 +15,6 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -32,29 +25,23 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
@@ -74,13 +61,11 @@ import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.union
-import androidx.compose.material3.NavigationBarDefaults
 import androidx.compose.material3.ScaffoldDefaults
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -97,6 +82,15 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.size
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
+import mano.algo.caster.security.PinLock
+import mano.algo.caster.server.ResumeStore
+import mano.algo.caster.server.WatchLog
+import mano.algo.caster.server.WifiWatcher
+import androidx.compose.material3.TextButton
+import mano.algo.caster.cast.ShareIntake
+import mano.algo.caster.quick.QuickActionActivity
 
 private const val LOCAL_NETWORK_PERMISSION = "android.permission.ACCESS_LOCAL_NETWORK"
 private const val LOCAL_NETWORK_SDK = 37 // Android 17
@@ -200,17 +194,45 @@ fun CasterApp() {
     val state by MediaServerService.state.collectAsStateWithLifecycle()
     val request by PairingManager.pending.collectAsStateWithLifecycle()
     val devices by PairingManager.devices.collectAsStateWithLifecycle()
+    val knownScreens by PairingManager.known.collectAsStateWithLifecycle()
     val selection by ShareSettings.state.collectAsStateWithLifecycle()
     val watching by ActivityTracker.watching.collectAsStateWithLifecycle()
     val remotes by RemoteControl.all.collectAsStateWithLifecycle()
     val tvState by TvRemote.state.collectAsStateWithLifecycle()
     val tvHost by TvRemote.savedHost.collectAsStateWithLifecycle()
     val tvFound by TvRemote.found.collectAsStateWithLifecycle()
+    val tvSaved by TvRemote.saved.collectAsStateWithLifecycle()
     val tvScanning by TvRemote.scanning.collectAsStateWithLifecycle()
     val tvVolume by TvRemote.volume.collectAsStateWithLifecycle()
     val tvVoiceError by TvRemote.voiceError.collectAsStateWithLifecycle()
     remember(context) { TvRemote.init(context); true }
+    remember(context) { PairingManager.init(context); true }
     remember(context) { ShareSettings.init(context); true }   // returns a value, because remember must not return Unit
+    remember(context) { ResumeStore.init(context); WatchLog.init(context); true }
+    val history by WatchLog.entries.collectAsStateWithLifecycle()
+    val historyOn by WatchLog.enabled.collectAsStateWithLifecycle()
+
+    // The PIN: asked when the app opens, and again after it has been out of sight for a while.
+    var pinSet by remember { mutableStateOf(PinLock.isSet(context)) }
+    var unlocked by remember { mutableStateOf(PinLock.unlocked) }   // from memory, never from a saved state
+    var pinDialog by remember { mutableStateOf<String?>(null) }   // "set", "change" (asks the old PIN), "new" or "remove"
+    var showHistory by rememberSaveable { mutableStateOf(false) }
+    var limitFor by rememberSaveable { mutableStateOf<String?>(null) }     // clientId of the screen being limited
+    var limitPicking by rememberSaveable { mutableStateOf(false) }
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { PinLock.leftAt = android.os.SystemClock.elapsedRealtime() }
+    LifecycleEventEffect(Lifecycle.Event.ON_START) {
+        val left = PinLock.leftAt
+        if (left != 0L && android.os.SystemClock.elapsedRealtime() - left > PinLock.RELOCK_AFTER_MS) {
+            PinLock.unlocked = false
+            unlocked = false
+            pinDialog = null // a PIN dialog left open must not come back after the next unlock
+            limitFor = null
+            limitPicking = false
+        }
+        PinLock.leftAt = 0L
+    }
+    // The Wi-Fi offer is a system callback; this keeps it in step with the settings whenever the app is opened.
+    remember(context) { WifiWatcher.refresh(context); true }
 
     var showRemote by rememberSaveable { mutableStateOf(false) } // the TV remote, as a page that floats over Home
     var showSettings by rememberSaveable { mutableStateOf(false) }
@@ -331,8 +353,145 @@ fun CasterApp() {
         onPauseOrDispose { }
     }
 
+    // A cast picker restored after the app was killed would open with nothing shared: it only makes sense while sharing runs.
+    LaunchedEffect(state) { if (state !is ServerState.Running) castPicking = false }
+
     // A new connection request is urgent: bring the approval card into view.
     LaunchedEffect(request?.id) { if (request != null) { showSettings = false; showRemote = false } }
+
+    // Locked: nothing of the app shows until the PIN is typed.
+    if (pinSet && !unlocked) {
+        FullScreenPage { LockScreen(attempt = { PinLock.attempt(context, it) }, onUnlocked = { PinLock.unlocked = true; unlocked = true }) }
+        return
+    }
+
+    when (pinDialog) {
+        "set", "new" -> SetPinDialog(
+            title = if (pinDialog == "set") "Set a PIN" else "Choose the new PIN",
+            onDone = { pin ->
+                PinLock.set(context, pin)
+                pinSet = true
+                PinLock.unlocked = true
+                unlocked = true
+                pinDialog = null
+            },
+            onDismiss = { pinDialog = null },
+        )
+        // Changing or removing the PIN needs the PIN that is set now.
+        "change" -> VerifyPinDialog(
+            title = "Change the PIN",
+            attempt = { PinLock.attempt(context, it) },
+            onOk = { pinDialog = "new" },
+            onDismiss = { pinDialog = null },
+        )
+        "remove" -> VerifyPinDialog(
+            title = "Remove the PIN",
+            attempt = { PinLock.attempt(context, it) },
+            onOk = { PinLock.clear(context); pinSet = false; pinDialog = null },
+            onDismiss = { pinDialog = null },
+        )
+    }
+
+    // A video sent here from the gallery with "Share": start sharing if needed, then play it once a Chromecast is connected.
+    val incoming by ShareIntake.pending.collectAsStateWithLifecycle()
+    val castNow by CastController.state.collectAsStateWithLifecycle()
+    LaunchedEffect(incoming, state, castNow.device) {
+        val item = incoming ?: return@LaunchedEffect
+        CastController.init(context)
+        if (!CastController.state.value.available) { // no Google Play services: a Chromecast can never be connected
+            Toast.makeText(context, "Chromecast needs Google Play services, which this phone doesn't have.", Toast.LENGTH_LONG).show()
+            ShareIntake.clear()
+            return@LaunchedEffect
+        }
+        when (val s = state) {
+            // (Sharing is started from the dialog below, by the owner, never by another app on its own.)
+            ServerState.Stopped, ServerState.Starting -> Unit
+            is ServerState.Error -> {
+                Toast.makeText(context, "Sharing couldn't start.", Toast.LENGTH_LONG).show()
+                ShareIntake.clear()
+            }
+            is ServerState.Running -> if (!ShareSettings.isAllowed(item.id)) {
+                Toast.makeText(context, "This video isn't one of the videos to share. Add it under \"Videos to share\" first.", Toast.LENGTH_LONG).show()
+                ShareIntake.clear()
+            } else if (!item.fromOutside && castNow.device != null && CastController.cast(context, item.id, item.name, s.baseUrl)) {
+                Toast.makeText(context, "Playing ${item.name} on ${castNow.device}", Toast.LENGTH_SHORT).show()
+                ShareIntake.clear()
+            }
+        }
+    }
+    incoming?.let { item ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { ShareIntake.clear() },
+            title = { Text("Play on a Chromecast") },
+            text = {
+                Text(
+                    if (state is ServerState.Running && item.fromOutside && castNow.device != null) {
+                        "Play \"${item.name}\" on ${castNow.device}?"
+                    } else if (state is ServerState.Running || state == ServerState.Starting) {
+                        "\"${item.name}\" will start as soon as a Chromecast is connected. Choose one in the Chromecast card."
+                    } else {
+                        "\"${item.name}\" needs sharing to be on, so the Chromecast can fetch it from this phone over your Wi-Fi."
+                    },
+                )
+            },
+            confirmButton = {
+                val running = state as? ServerState.Running
+                if (running != null && item.fromOutside && castNow.device != null) {
+                    TextButton(onClick = {
+                        if (CastController.cast(context, item.id, item.name, running.baseUrl)) ShareIntake.clear()
+                    }) { Text("Play") }
+                }
+                if (state is ServerState.Stopped) {
+                    TextButton(onClick = {
+                        if (QuickActionActivity.canStartHere(context)) {
+                            MediaServerService.start(context)
+                        } else {
+                            Toast.makeText(context, "Allow Caster to read your videos first (open its permissions).", Toast.LENGTH_LONG).show()
+                            ShareIntake.clear()
+                        }
+                    }) { Text("Start sharing") }
+                }
+            },
+            dismissButton = { TextButton(onClick = { ShareIntake.clear() }) { Text("Cancel") } },
+        )
+    }
+
+    // The videos one screen may see: chosen like "Only some", but kept with that screen.
+    val limitTarget = knownScreens.firstOrNull { it.clientId == limitFor }
+    LaunchedEffect(limitTarget == null) { if (limitTarget == null) { limitPicking = false; limitFor = null } } // the screen is gone: nothing to pick for
+    if (limitPicking && limitTarget != null) {
+        FullScreenPage {
+            VideoPickerScreen(
+                initialSelection = limitTarget.limit.orEmpty(),
+                onCancel = { limitPicking = false; limitFor = null },
+                onDone = { ids ->
+                    PairingManager.setLimit(limitTarget.clientId, ids)
+                    limitPicking = false
+                    limitFor = null
+                },
+            )
+        }
+        return
+    }
+    if (limitTarget != null) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { limitFor = null },
+            title = { Text("Videos for ${limitTarget.label}") },
+            text = {
+                Text(
+                    if (limitTarget.limit == null) "This screen sees every video that is shared. You can let it see only some of them."
+                    else "This screen sees only ${limitTarget.limit.size} chosen videos.",
+                )
+            },
+            confirmButton = { TextButton(onClick = { if (granted(STORAGE_PERMISSION)) limitPicking = true else pickerPermission.launch(STORAGE_PERMISSION) }) { Text("Choose videos") } },
+            dismissButton = {
+                Row {
+                    if (limitTarget.limit != null) TextButton(onClick = { PairingManager.setLimit(limitTarget.clientId, null); limitFor = null }) { Text("Remove limit") }
+                    TextButton(onClick = { limitFor = null }) { Text("Cancel") }
+                }
+            },
+        )
+    }
 
     if (picking) {
         FullScreenPage {
@@ -362,7 +521,35 @@ fun CasterApp() {
                     }
                     castPicking = false
                 },
+                onPlayAll = { videos, shuffle ->
+                    val running = state as? ServerState.Running
+                    if (running != null) {
+                        CastController.castAll(context, videos, running.baseUrl, shuffle)
+                    } else {
+                        Toast.makeText(context, "Sharing has stopped. Start sharing, then choose again.", Toast.LENGTH_LONG).show()
+                    }
+                    castPicking = false
+                },
             )
+        }
+        return
+    }
+
+    if (showHistory) {
+        BackHandler { showHistory = false }
+        FullScreenPage {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(start = 8.dp, end = 20.dp, top = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = { showHistory = false }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                    Text("Watch history", style = MaterialTheme.typography.headlineMedium)
+                }
+                HistoryScreen(history, historyOn, WatchLog::setEnabled, WatchLog::clear, Modifier.weight(1f))
+            }
         }
         return
     }
@@ -397,6 +584,24 @@ fun CasterApp() {
                     onAutoStop = ShareSettings::setAutoStopMinutes,
                     onCopy = { copyToClipboard(context, it) },
                     onShare = { shareAddress(context, it) },
+                    lockOn = pinSet,
+                    onSetPin = { pinDialog = if (pinSet) "change" else "set" },
+                    onRemovePin = { pinDialog = "remove" },
+                    onOpenHistory = { showHistory = true },
+                    onClearResume = {
+                        ResumeStore.clear()
+                        Toast.makeText(context, "Resume points forgotten", Toast.LENGTH_SHORT).show()
+                    },
+                    wifiOffer = selection.wifiOffer,
+                    onWifiOffer = { on ->
+                        ShareSettings.setWifiOffer(on)
+                        WifiWatcher.refresh(context)
+                    },
+                    stopOnWifiLost = selection.stopOnWifiLost,
+                    onStopOnWifiLost = { on ->
+                        ShareSettings.setStopOnWifiLost(on)
+                        WifiWatcher.refresh(context)
+                    },
                     modifier = Modifier.weight(1f).imePadding(),
                 )
             }
@@ -441,6 +646,7 @@ fun CasterApp() {
             request = request,
             batteryUnrestricted = unrestricted,
             devices = devices,
+            known = knownScreens,
             selection = selection,
             hasStorage = hasStorage,
             warnings = buildList {
@@ -467,18 +673,17 @@ fun CasterApp() {
             },
             onStart = { if (granted(STORAGE_PERMISSION)) startAfterStorage() else storagePermission.launch(STORAGE_PERMISSION) },
             onStop = { MediaServerService.stop(context) },
-            onCopy = { copyToClipboard(context, it) },
-            onApprove = { PairingManager.approve() },
+            onApprove = { duration -> PairingManager.approve(duration) },
             onDeny = { PairingManager.deny() },
             onAllowBackground = { requestBatteryExemption(context) },
             onAppSettings = { openBatteryScreen(context) },
             watching = watching,
             remotes = remotes,
             onRemote = RemoteControl::send,
-            onShare = { shareAddress(context, it) },
             onCastChoose = { withLocalNetwork(runIfDenied = true) { castPicking = true } },
             onDisconnect = PairingManager::revoke,
             onDisconnectAll = PairingManager::revokeAll,
+            onClearScreens = PairingManager::clearUnlimited,
             onAll = { ShareSettings.setMode(ShareMode.ALL) },
             onSelected = {
                 // With nothing chosen yet the picker opens first, and "selected" starts when videos are confirmed:
@@ -486,6 +691,28 @@ fun CasterApp() {
                 if (selection.ids.isEmpty()) openPicker() else ShareSettings.setMode(ShareMode.SELECTED)
             },
             onChoose = { openPicker() },
+            onRemoveChosen = { id -> ShareSettings.setSelected(selection.ids - id) },
+            onPlayChosen = { id, name ->
+                val running = state as? ServerState.Running
+                CastController.init(context)
+                when {
+                    !CastController.state.value.available ->
+                        Toast.makeText(context, "Chromecast needs Google Play services, which this phone doesn't have.", Toast.LENGTH_LONG).show()
+                    running == null -> Toast.makeText(context, "Start sharing first.", Toast.LENGTH_SHORT).show()
+                    castNow.device == null -> {
+                        // No Chromecast yet: the video waits, Google's chooser opens, and it plays once one is connected.
+                        ShareIntake.offer(id, name)
+                        CastController.requestChooser()
+                    }
+                    CastController.cast(context, id, name, running.baseUrl) -> Toast.makeText(context, "Playing $name on ${castNow.device}", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onFoldersMode = { ShareSettings.setMode(ShareMode.FOLDERS) },
+            onSaveFolders = { ids ->
+                ShareSettings.setFolders(ids)
+                ShareSettings.setMode(ShareMode.FOLDERS)
+            },
+            onLimitScreen = { limitFor = it.clientId },
             onOpenSettings = { showSettings = true },
             modifier = Modifier.padding(padding).consumeWindowInsets(padding),
         )
@@ -501,8 +728,19 @@ fun CasterApp() {
                 state = tvState,
                 savedHost = tvHost,
                 found = tvFound,
+                saved = tvSaved,
                 scanning = tvScanning,
                 shareUrl = (state as? ServerState.Running)?.baseUrl,
+                onWake = { address, mac ->
+                    withLocalNetwork(runIfDenied = false) {
+                        if (TvRemote.wake(context, address, mac)) {
+                            Toast.makeText(context, "Sent the turn-on signal to $address", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(context, "The TV's MAC address isn't known yet.", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                },
+                onForget = { address -> TvRemote.forget(context, address) },
                 onConnect = { host -> withLocalNetwork(runIfDenied = false) { TvRemote.connect(context, host) } },
                 onConnectAdb = { host -> withLocalNetwork(runIfDenied = false) { TvRemote.connectAdb(context, host) } },
                 onSubmitPin = { pin -> TvRemote.submitPin(context, pin) },

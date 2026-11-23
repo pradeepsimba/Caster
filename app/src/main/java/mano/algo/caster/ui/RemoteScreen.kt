@@ -25,8 +25,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -74,6 +72,8 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.clickable
+import mano.algo.caster.tv.WakeOnLan
 
 /** The Material "settings remote" glyph, which the core icon set doesn't include. */
 val RemoteIcon: ImageVector by lazy {
@@ -96,8 +96,11 @@ fun RemoteScreen(
     state: TvRemote.State,
     savedHost: String,
     found: List<String>,
+    saved: List<TvRemote.SavedTv>,
     scanning: Boolean,
     shareUrl: String?,
+    onWake: (address: String, mac: String?) -> Unit,
+    onForget: (String) -> Unit,
     onConnect: (String) -> Unit,
     onConnectAdb: (String) -> Unit,
     onSubmitPin: (String) -> Unit,
@@ -123,7 +126,7 @@ fun RemoteScreen(
             EmptyState("Needs Android 8 or newer", "The TV remote can't run on this version of Android.")
             return@Column
         }
-        ConnectionCard(state, savedHost, found, scanning, onConnect, onConnectAdb, onSubmitPin, onDisconnect, onScan)
+        ConnectionCard(state, savedHost, found, saved, scanning, onWake, onForget, onConnect, onConnectAdb, onSubmitPin, onDisconnect, onScan)
         if (state is TvRemote.State.Connected) {
             RemotePad(state.link, volume, onEnableVolume, onKey, onTyped, shareUrl, onOpenCaster, onOpenBrowser, voiceError, onVoiceStart, onVoiceEnd)
         }
@@ -135,7 +138,10 @@ private fun ConnectionCard(
     state: TvRemote.State,
     savedHost: String,
     found: List<String>,
+    saved: List<TvRemote.SavedTv>,
     scanning: Boolean,
+    onWake: (address: String, mac: String?) -> Unit,
+    onForget: (String) -> Unit,
     onConnect: (String) -> Unit,
     onConnectAdb: (String) -> Unit,
     onSubmitPin: (String) -> Unit,
@@ -150,6 +156,35 @@ private fun ConnectionCard(
     val connected = state is TvRemote.State.Connected
     val connecting = state is TvRemote.State.Connecting
     val busy = connected || connecting || needsPin != null
+    // The TV that is being asked for its MAC address, to switch it on.
+    var macFor by rememberSaveable { mutableStateOf<String?>(null) }
+    macFor?.let { address ->
+        var mac by rememberSaveable(address) { mutableStateOf(saved.firstOrNull { it.address == address }?.mac.orEmpty()) }
+        val valid = WakeOnLan.normalize(mac) != null
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { macFor = null },
+            title = { Text("Turn on $address") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Type the TV's MAC address once (in the TV's network settings, like aa:bb:cc:dd:ee:ff). " +
+                            "The TV must allow being turned on from the network (often called Wake on LAN or \"Turn on with mobile\").",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    OutlinedTextField(
+                        value = mac,
+                        onValueChange = { mac = it.take(17) },
+                        label = { Text("MAC address") },
+                        singleLine = true,
+                        isError = mac.isNotEmpty() && !valid,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, autoCorrectEnabled = false),
+                    )
+                }
+            },
+            confirmButton = { TextButton(onClick = { onWake(address, mac); macFor = null }, enabled = valid) { Text("Turn on") } },
+            dismissButton = { TextButton(onClick = { macFor = null }) { Text("Cancel") } },
+        )
+    }
 
     CasterCard(high = true) {
         Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -211,6 +246,33 @@ private fun ConnectionCard(
                     Button(onClick = { onConnect(host) }, shape = RoundedCornerShape(14.dp)) { Text("Connect") }
                     OutlinedButton(onClick = onScan, enabled = !scanning, shape = RoundedCornerShape(14.dp)) {
                         Text(if (scanning) "Searching…" else "Find on network")
+                    }
+                }
+            }
+            if (!busy && saved.isNotEmpty()) {
+                Text("Your TVs", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                saved.forEach { tv ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(14.dp))
+                            .padding(start = 14.dp, top = 2.dp, bottom = 2.dp, end = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f).clickable { host = tv.address; onConnect(tv.address) }.padding(vertical = 8.dp),
+                        ) {
+                            Text(tv.address, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                            Text(
+                                tv.kind ?: "Tap to connect",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        TextButton(onClick = { if (tv.mac != null) onWake(tv.address, null) else macFor = tv.address }) { Text("Turn on") }
+                        // The MAC address is read once and remembered: this is how a wrong one is put right.
+                        TextButton(onClick = { macFor = tv.address }) { Text("MAC") }
+                        TextButton(onClick = { onForget(tv.address) }) { Text("Forget") }
                     }
                 }
             }
@@ -301,7 +363,11 @@ private fun RemotePad(
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Spacer72()
                 MicButton(holdToTalk, onVoiceStart, onVoiceEnd, ::dictate)
-                Spacer72()
+                if (TvRemote.supportsKey(link, TvKey.POWER)) {
+                    PadButton("Power", TvKey.POWER, onKey) { Text("⏻", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.error) }
+                } else {
+                    Spacer72()
+                }
             }
             if (holdToTalk && voiceError != null) {
                 Text(voiceError, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
@@ -376,7 +442,7 @@ private fun RemotePad(
                 }
             } else {
                 Text(
-                    "Start sharing on the Home tab first.",
+                    "Start sharing on the main page first.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

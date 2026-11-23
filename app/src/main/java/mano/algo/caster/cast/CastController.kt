@@ -19,6 +19,18 @@ import kotlinx.coroutines.flow.asStateFlow
 import mano.algo.caster.server.PairingManager
 import androidx.mediarouter.media.MediaRouter
 import com.google.android.gms.cast.CastDevice
+import com.google.android.gms.cast.MediaQueueItem
+import com.google.android.gms.cast.MediaTrack
+import mano.algo.caster.server.ResumeStore
+import mano.algo.caster.server.SubtitleFinder
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 
 /**
  * Plays a video from this phone on a Chromecast. The Chromecast fetches the file itself from the phone's media
@@ -35,15 +47,12 @@ object CastController {
         val error: String? = null,
         /** The id the Cast library gives the connected Chromecast (what [recent] remembers it by). */
         val deviceId: String? = null,
-        /** 0..1 while a video is being re-encoded to fill the screen (see [Picture]); null when nothing is. */
-        val preparing: Float? = null,
-        val preparingName: String? = null,
     )
 
     /** A Chromecast that was connected before. */
     data class Recent(val id: String, val name: String)
 
-    private const val TOKEN_LABEL = "Chromecast (this phone)"
+    private const val TOKEN_LABEL = PairingManager.CHROMECAST_LABEL
 
     private val _state = MutableStateFlow(State())
     val state: StateFlow<State> = _state.asStateFlow()
@@ -51,17 +60,6 @@ object CastController {
     private const val PREFS = "caster_cast"
     private const val KEY_RECENT = "recent"
     private const val RECENT_MAX = 6
-
-    private const val KEY_PICTURE = "picture"
-
-    private val _picture = MutableStateFlow(Picture.Fit)
-
-    /** How the next video is laid out on the TV (and the current one, when it is changed while one is playing). */
-    val picture: StateFlow<Picture> = _picture.asStateFlow()
-
-    /** The video that was cast last, to start it again when the picture setting changes. */
-    private data class LastCast(val id: Long, val name: String, val baseUrl: String)
-    private var last: LastCast? = null
 
     private val _recent = MutableStateFlow<List<Recent>>(emptyList())
 
@@ -104,9 +102,6 @@ object CastController {
         if (appContext == null) {
             appContext = context.applicationContext
             _recent.value = loadRecent(context.applicationContext)
-            _picture.value = runCatching {
-                Picture.valueOf(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_PICTURE, null).orEmpty())
-            }.getOrDefault(Picture.Fit)
         }
         val cc = runCatching { CastContext.getSharedInstance(context.applicationContext) }.getOrNull()
         if (cc == null) {
@@ -120,7 +115,11 @@ object CastController {
 
     private fun attach(session: CastSession) {
         client?.unregisterCallback(mediaCallback)
-        client = session.remoteMediaClient?.also { it.registerCallback(mediaCallback) }
+        client?.removeProgressListener(progress)
+        client = session.remoteMediaClient?.also {
+            it.registerCallback(mediaCallback)
+            it.addProgressListener(progress, 5_000L)
+        }
         val device = session.castDevice
         if (device != null) rememberDevice(device.deviceId, device.friendlyName ?: "Chromecast")
         _state.value = State(device = device?.friendlyName ?: "Chromecast", deviceId = device?.deviceId)
@@ -128,6 +127,7 @@ object CastController {
     }
 
     private fun detach() {
+        client?.removeProgressListener(progress)
         client?.unregisterCallback(mediaCallback)
         client = null
         _state.value = State()
@@ -159,58 +159,12 @@ object CastController {
             _state.value = _state.value.copy(error = "Not connected to a Chromecast. Choose one first.")
             return false
         }
-        last = LastCast(id, name, baseUrl)
-        val picture = _picture.value
-        if (picture == Picture.Fit) {
-            load(context, id, name, baseUrl, "video/$id", 0L)
-        } else {
-            prepare(context, id, name, baseUrl, picture, 0L)
-        }
+        load(context, id, name, baseUrl)
         return true
     }
 
-    /** Re-encodes the video to fill the screen (it takes a while), then plays the copy. */
-    private fun prepare(context: Context, id: Long, name: String, baseUrl: String, picture: Picture, startMs: Long) {
-        _state.value = _state.value.copy(preparing = 0f, preparingName = name, error = null)
-        FillConverter.start(
-            context, id, picture,
-            onProgress = { progress -> _state.value = _state.value.copy(preparing = progress) },
-            onDone = {
-                _state.value = _state.value.copy(preparing = null, preparingName = null)
-                load(context, id, name, baseUrl, "fill/$id-${picture.name.lowercase()}", startMs)
-            },
-            onError = { message -> _state.value = _state.value.copy(preparing = null, preparingName = null, error = message) },
-        )
-    }
-
-    /** Stops preparing a video (the one asked for isn't played). */
-    fun cancelPreparing() {
-        FillConverter.cancel()
-        _state.value = _state.value.copy(preparing = null, preparingName = null)
-    }
-
-    /** Chooses how videos fill the TV. When one is playing it starts again, from where it was, in the new layout. */
-    fun setPicture(context: Context, picture: Picture) {
-        if (_picture.value == picture) return
-        _picture.value = picture
-        (appContext ?: context.applicationContext).getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_PICTURE, picture.name).apply()
-        val now = last ?: return
-        val c = client ?: return
-        if (c.mediaInfo == null && _state.value.preparing == null) return
-        val position = c.approximateStreamPosition
-        if (picture == Picture.Fit) {
-            FillConverter.cancel()
-            _state.value = _state.value.copy(preparing = null, preparingName = null)
-            load(context, now.id, now.name, now.baseUrl, "video/${now.id}", position)
-        } else {
-            prepare(context, now.id, now.name, now.baseUrl, picture, position)
-        }
-    }
-
-    /** Hands the Chromecast the address of [path] (the original video, or its converted copy) and starts it at [startMs]. */
-    private fun load(context: Context, id: Long, name: String, baseUrl: String, path: String, startMs: Long) {
-        val c = client ?: return
-        val token = PairingManager.issueLocal(TOKEN_LABEL)
+    /** Everything the Chromecast needs to fetch one video: the address (with the pass), a picture, and subtitles when there are any. */
+    private fun mediaInfo(context: Context, id: Long, name: String, baseUrl: String, token: String): MediaInfo {
         val query = "?t=" + Uri.encode(token) + "&k=v"
         val uri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
         val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull() ?: "video/mp4"
@@ -218,14 +172,83 @@ object CastController {
             putString(MediaMetadata.KEY_TITLE, name)
             addImage(WebImage(Uri.parse(baseUrl + "api/thumb/" + id + query)))
         }
-        val info = MediaInfo.Builder(baseUrl + path + query)
+        val builder = MediaInfo.Builder(baseUrl + "video/" + id + query)
             .setStreamType(MediaInfo.STREAM_TYPE_BUFFERED)
             .setContentType(mime)
             .setMetadata(metadata)
-            .build()
-        c.load(MediaLoadRequestData.Builder().setMediaInfo(info).setAutoplay(true).setCurrentTime(startMs).build())
-        _state.value = _state.value.copy(title = name, error = null)
+        // A .srt or .vtt next to the video: the phone serves it as WebVTT, which the Chromecast shows.
+        if (runCatching { SubtitleFinder.find(context, uri) }.getOrNull() != null) {
+            builder.setMediaTracks(
+                listOf(
+                    MediaTrack.Builder(SUBTITLE_TRACK, MediaTrack.TYPE_TEXT)
+                        .setContentId(baseUrl + "api/sub/" + id + query)
+                        .setContentType("text/vtt")
+                        .setSubtype(MediaTrack.SUBTYPE_SUBTITLES)
+                        .setName("Subtitles")
+                        .setLanguage("en")
+                        .build(),
+                ),
+            )
+        }
+        return builder.build()
     }
+
+    /** Hands the Chromecast the address of the selected video and starts it (where it was stopped, when that is known). */
+    private fun load(context: Context, id: Long, name: String, baseUrl: String) {
+        if (client == null) return
+        val token = PairingManager.issueLocal(TOKEN_LABEL)
+        _state.value = _state.value.copy(title = name, error = null)
+        // Looking for subtitle files reads the phone's storage: not on the main thread. The Cast library is used on it again after.
+        background.launch {
+            val info = mediaInfo(context, id, name, baseUrl, token)
+            val request = MediaLoadRequestData.Builder().setMediaInfo(info).setAutoplay(true)
+            ResumeStore.get(id)?.let { request.setCurrentTime(it.positionSec * 1000L) }
+            if (!info.mediaTracks.isNullOrEmpty()) request.setActiveTrackIds(longArrayOf(SUBTITLE_TRACK))
+            withContext(Dispatchers.Main) { client?.load(request.build()) }
+        }
+    }
+
+    private val background = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** At most this many videos go to the Chromecast's queue at once (a long list is slow to hand over). */
+    const val QUEUE_MAX = 20
+
+    /** Plays [videos] one after the other on the connected Chromecast, in this order or mixed. False when none is connected. */
+    fun castAll(context: Context, videos: List<Pair<Long, String>>, baseUrl: String, shuffle: Boolean): Boolean {
+        val c = client
+        if (c == null) {
+            _state.value = _state.value.copy(error = "Not connected to a Chromecast. Choose one first.")
+            return false
+        }
+        val list = (if (shuffle) videos.shuffled() else videos).take(QUEUE_MAX)
+        if (list.isEmpty()) return false
+        val token = PairingManager.issueLocal(TOKEN_LABEL)
+        _state.value = _state.value.copy(title = list.first().second, error = null)
+        background.launch {
+            val items = list.map { (id, name) ->
+                MediaQueueItem.Builder(mediaInfo(context, id, name, baseUrl, token))
+                    .setAutoplay(true)
+                    .setPreloadTime(20.0)
+                    .apply { ResumeStore.get(id)?.let { setStartTime(it.positionSec.toDouble()) } }
+                    .build()
+            }
+            withContext(Dispatchers.Main) { client?.queueLoad(items.toTypedArray(), 0, MediaStatus.REPEAT_MODE_REPEAT_OFF, null) }
+        }
+        return true
+    }
+
+    /** Remembers where the Chromecast is in what it plays, so another screen (or this one later) can carry on from there. */
+    private val progress = RemoteMediaClient.ProgressListener { progressMs, durationMs ->
+        val c = client ?: return@ProgressListener
+        val state = c.playerState
+        // Not while loading: the position is still 0 then, and would wipe the point being resumed from.
+        if (durationMs <= 0 || (state != MediaStatus.PLAYER_STATE_PLAYING && state != MediaStatus.PLAYER_STATE_PAUSED)) return@ProgressListener
+        val id = c.mediaInfo?.contentId?.let { VIDEO_ID.find(it)?.groupValues?.get(1)?.toLongOrNull() } ?: return@ProgressListener
+        ResumeStore.record(id, (progressMs / 1000).toInt(), (durationMs / 1000).toInt())
+    }
+
+    private val VIDEO_ID = Regex("/video/(\\d+)")
+    private const val SUBTITLE_TRACK = 1L
 
     // --- Chromecasts used before, and the ones in range now ---------------------------------------------------------
 
@@ -263,6 +286,7 @@ object CastController {
     /** Starts looking for Chromecasts on this Wi-Fi (the list [nearby] follows). Call [stopDiscovery] when the card goes away. */
     fun startDiscovery(context: Context) {
         init(context)
+        if (_state.value.device == null) _state.value = _state.value.copy(error = null) // an old "isn't answering" doesn't stay
         val selector = castContext?.mergedSelector ?: return
         val r = MediaRouter.getInstance(context.applicationContext)
         router = r
@@ -296,14 +320,21 @@ object CastController {
         return true
     }
 
+    private val _chooserRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
+    /** Something asked for Google's Chromecast chooser to be opened; the Chromecast card (which owns its button) opens it. */
+    val chooserRequests: SharedFlow<Unit> = _chooserRequests.asSharedFlow()
+
+    fun requestChooser() {
+        _chooserRequests.tryEmit(Unit)
+    }
+
     fun togglePlayback() {
         client?.togglePlayback()
     }
 
     /** Stops the video and disconnects from the Chromecast. */
     fun stop() {
-        FillConverter.cancel()
-        _state.value = _state.value.copy(preparing = null, preparingName = null)
         castContext?.sessionManager?.endCurrentSession(true)
     }
 }

@@ -41,7 +41,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateSetOf
 import androidx.compose.runtime.produceState
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshots.SnapshotStateSet
@@ -84,7 +83,7 @@ private fun queryVideos(context: Context): List<PickerVideo> {
     return result
 }
 
-private fun formatDuration(ms: Long): String {
+internal fun formatDuration(ms: Long): String {
     val total = ms / 1000
     val h = total / 3600
     val m = total % 3600 / 60
@@ -92,7 +91,7 @@ private fun formatDuration(ms: Long): String {
     return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
 }
 
-private fun formatSize(bytes: Long): String =
+internal fun formatSize(bytes: Long): String =
     if (bytes >= 1_000_000_000) "%.1f GB".format(bytes / 1e9) else "${maxOf(1L, bytes / 1_000_000)} MB"
 
 /** Full-screen list of the phone's videos with checkboxes; [onDone] receives the chosen MediaStore ids. */
@@ -160,13 +159,12 @@ fun VideoPickerScreen(
         }
 
         Button(
-            onClick = { onDone(selected.toSet()) },
-            enabled = selected.isNotEmpty(),
+            onClick = { onDone(selected.toSet()) }, // an empty choice is a choice too ("None" must be possible to keep)
             modifier = Modifier.fillMaxWidth().padding(16.dp).height(54.dp),
             shape = RoundedCornerShape(16.dp),
         ) {
             Text(
-                if (selected.isEmpty()) "Select at least one video"
+                if (selected.isEmpty()) "Share no videos"
                 else "Share ${selected.size} video${if (selected.size == 1) "" else "s"}",
                 style = MaterialTheme.typography.titleSmall,
             )
@@ -204,7 +202,7 @@ private val thumbnailCache = object : LruCache<Long, Bitmap>(8 * 1024 * 1024) {
 
 @Suppress("DEPRECATION")
 @Composable
-private fun Thumbnail(id: Long) {
+internal fun Thumbnail(id: Long) {
     val context = LocalContext.current
     // Loaded lazily per visible row; older Android has no cheap thumbnail API, so it shows the placeholder.
     val bitmap by produceState<ImageBitmap?>(initialValue = thumbnailCache.get(id)?.asImageBitmap(), id) {
@@ -244,6 +242,7 @@ private fun Thumbnail(id: Long) {
 fun CastPickerScreen(
     onCancel: () -> Unit,
     onPick: (id: Long, name: String) -> Unit,
+    onPlayAll: (videos: List<Pair<Long, String>>, shuffle: Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -262,11 +261,27 @@ fun CastPickerScreen(
             Text("Choose a video to cast", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
         }
         val list = videos
+        if (!list.isNullOrEmpty()) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                val all = list.map { it.id to it.name }
+                androidx.compose.material3.FilledTonalButton(onClick = { onPlayAll(all, false) }, modifier = Modifier.weight(1f)) { Text("Play all") }
+                androidx.compose.material3.FilledTonalButton(onClick = { onPlayAll(all, true) }, modifier = Modifier.weight(1f)) { Text("Shuffle") }
+            }
+            Text(
+                "Plays up to ${mano.algo.caster.cast.CastController.QUEUE_MAX} videos, one after the other.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 20.dp),
+            )
+        }
         Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
             when {
                 list == null -> CircularProgressIndicator()
                 list.isEmpty() -> Text(
-                    "No shared videos. Choose videos in the Library tab first.",
+                    "No shared videos. Choose videos under \"Videos to share\" on the main page first.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

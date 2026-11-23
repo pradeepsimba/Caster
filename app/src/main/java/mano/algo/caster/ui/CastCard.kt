@@ -9,8 +9,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -42,9 +40,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.draw.clip
 import mano.algo.caster.ui.theme.LiveGreen
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.LinearProgressIndicator
-import mano.algo.caster.cast.Picture
+import androidx.compose.runtime.LaunchedEffect
 
 /** The Material "cast" glyph, which the core icon set doesn't include. */
 private val CastIcon: ImageVector by lazy {
@@ -74,7 +70,6 @@ fun CastCard(onChooseVideo: () -> Unit, modifier: Modifier = Modifier) {
     val cast by CastController.state.collectAsStateWithLifecycle()
     val recent by CastController.recent.collectAsStateWithLifecycle()
     val nearby by CastController.nearby.collectAsStateWithLifecycle()
-    val picture by CastController.picture.collectAsStateWithLifecycle()
     // Looking for Chromecasts only costs battery while this card is on screen.
     DisposableEffect(cast.available) {
         if (cast.available) CastController.startDiscovery(context)
@@ -83,6 +78,9 @@ fun CastCard(onChooseVideo: () -> Unit, modifier: Modifier = Modifier) {
 
     // Google's chooser dialog is opened by clicking its own (invisible) button; the visible controls are ours.
     var routeButton by remember { mutableStateOf<MediaRouteButton?>(null) }
+
+    // Asked for from elsewhere (a video was tapped while no Chromecast is connected): open the chooser.
+    LaunchedEffect(Unit) { CastController.chooserRequests.collect { routeButton?.performClick() } }
 
     // A Box, so the invisible button adds no spacing to the Home column.
     Box(modifier = modifier.fillMaxWidth()) {
@@ -132,32 +130,6 @@ fun CastCard(onChooseVideo: () -> Unit, modifier: Modifier = Modifier) {
                 cast.error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
 
                 if (cast.device != null) {
-                    // How the picture fills the TV. Fill and Stretch re-encode the video on the phone first, which takes a while.
-                    Text("Picture on the TV", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Picture.entries.forEach { option ->
-                            FilterChip(
-                                selected = picture == option,
-                                onClick = { CastController.setPicture(context, option) },
-                                label = { Text(option.label) },
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
-                    }
-                    Text(
-                        picture.detail + if (picture != Picture.Fit) " The video is prepared on this phone first, which takes a while." else "",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    cast.preparing?.let { progress ->
-                        Text(
-                            "Preparing ${cast.preparingName ?: "the video"} for the TV… ${(progress * 100).toInt()}%",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Medium,
-                        )
-                        LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
-                        TextButton(onClick = CastController::cancelPreparing) { Text("Cancel") }
-                    }
                     cast.title?.let {
                         Text(
                             (if (cast.playing) "Playing " else "") + it,

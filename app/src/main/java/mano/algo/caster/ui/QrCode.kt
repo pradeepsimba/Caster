@@ -23,11 +23,8 @@ import android.graphics.Bitmap
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.text.font.FontFamily
 import mano.algo.caster.server.ServerState
 
 /** Black-on-white QR code for [text]; white margin included so phone cameras can find the edges. */
@@ -46,7 +43,7 @@ private fun qrBitmap(text: String, sizePx: Int = 512): ImageBitmap {
  * camera, and the address to type, with the few notes that matter (a hotspot, a name or port that had to change).
  */
 @Composable
-fun ConnectScreenDialog(state: ServerState.Running, onCopy: (String) -> Unit, onShare: (String) -> Unit, onDismiss: () -> Unit) {
+fun ConnectScreenDialog(state: ServerState.Running, onDismiss: () -> Unit) {
     // On a hotspot the name stops resolving once the screen turns off, the IP keeps working. (The address is never written out
     // here: the QR code carries it, and Settings shows it.)
     val url = if (state.hotspot) state.baseUrl else state.nameUrl ?: state.baseUrl
@@ -54,12 +51,6 @@ fun ConnectScreenDialog(state: ServerState.Running, onCopy: (String) -> Unit, on
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
-        dismissButton = {
-            Row {
-                TextButton(onClick = { onCopy(url) }) { Text("Copy link") }
-                TextButton(onClick = { onShare(url) }) { Text("Share") }
-            }
-        },
         title = { Text("Connect a screen") },
         text = {
             Column(
@@ -67,13 +58,13 @@ fun ConnectScreenDialog(state: ServerState.Running, onCopy: (String) -> Unit, on
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Text(
-                    "Scan this with the camera of a TV, tablet or computer. To type the address instead, you will find it in Settings.",
+                    "Scan this with the camera of a TV, tablet or computer. To copy or type the address instead, open Settings.",
                     style = MaterialTheme.typography.bodyMedium,
                     textAlign = TextAlign.Center,
                 )
                 Image(
                     bitmap = image,
-                    contentDescription = "QR code for $url",
+                    contentDescription = "QR code to open Caster",
                     modifier = Modifier.size(220.dp).clip(RoundedCornerShape(16.dp)).background(Color.White).padding(6.dp),
                 )
                 if (state.nameChanged) {
