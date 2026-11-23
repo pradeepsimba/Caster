@@ -76,6 +76,27 @@ import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.union
 import androidx.compose.material3.NavigationBarDefaults
 import androidx.compose.material3.ScaffoldDefaults
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
+import mano.algo.caster.ui.theme.LiveGreen
+import androidx.compose.foundation.layout.Column
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.unit.dp
+import androidx.compose.material3.Button
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.size
 
 private const val LOCAL_NETWORK_PERMISSION = "android.permission.ACCESS_LOCAL_NETWORK"
 private const val LOCAL_NETWORK_SDK = 37 // Android 17
@@ -161,16 +182,8 @@ private fun copyToClipboard(context: Context, text: String) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
 }
 
-private enum class Tab(val label: String, val icon: ImageVector) {
-    Home("Home", Icons.Filled.Home),
-    Library("Library", Icons.AutoMirrored.Filled.List),
-    Remote("Remote", RemoteIcon),
-    Devices("Devices", Icons.Filled.Phone),
-    Settings("Settings", Icons.Filled.Settings),
-}
-
 /**
- * A screen shown instead of the tabs. It paints the page colour (otherwise the dark theme would show black text on the
+ * A screen shown instead of the main page. It paints the page colour (otherwise the dark theme would show black text on the
  * light window) and stays clear of the status bar, the navigation bar and the keyboard.
  */
 @Composable
@@ -180,6 +193,7 @@ private fun FullScreenPage(content: @Composable () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CasterApp() {
     val context = LocalContext.current
@@ -198,7 +212,8 @@ fun CasterApp() {
     remember(context) { TvRemote.init(context); true }
     remember(context) { ShareSettings.init(context); true }   // returns a value, because remember must not return Unit
 
-    var tab by rememberSaveable { mutableIntStateOf(Tab.Home.ordinal) }
+    var showRemote by rememberSaveable { mutableStateOf(false) } // the TV remote, as a page that floats over Home
+    var showSettings by rememberSaveable { mutableStateOf(false) }
     var picking by rememberSaveable { mutableStateOf(false) }
     var castPicking by rememberSaveable { mutableStateOf(false) }
 
@@ -317,7 +332,7 @@ fun CasterApp() {
     }
 
     // A new connection request is urgent: bring the approval card into view.
-    LaunchedEffect(request?.id) { if (request != null) tab = Tab.Home.ordinal }
+    LaunchedEffect(request?.id) { if (request != null) { showSettings = false; showRemote = false } }
 
     if (picking) {
         FullScreenPage {
@@ -352,110 +367,137 @@ fun CasterApp() {
         return
     }
 
-    // From any other tab, the back gesture returns to Home before it leaves the app.
-    BackHandler(enabled = tab != Tab.Home.ordinal) { tab = Tab.Home.ordinal }
+    // Settings has a page of its own, opened by the gear on Home; the back gesture comes back to Home.
+    if (showSettings) {
+        BackHandler { showSettings = false }
+        FullScreenPage {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(start = 8.dp, end = 20.dp, top = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = { showSettings = false }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                    Text("Settings", style = MaterialTheme.typography.headlineMedium)
+                }
+                SettingsScreen(
+                    state = state,
+                    preferredPort = selection.port,
+                    onSavePort = ShareSettings::setPort,
+                    preferredName = selection.hostname,
+                    onSaveName = ShareSettings::setHostname,
+                    shareExtras = selection.shareExtras,
+                    onShareExtras = { on ->
+                        ShareSettings.setShareExtras(on)
+                        val needed = EXTRAS_PERMISSIONS.filter { !granted(it) }
+                        if (on && needed.isNotEmpty()) extrasPermission.launch(needed.toTypedArray())
+                    },
+                    autoStopMinutes = selection.autoStopMinutes,
+                    onAutoStop = ShareSettings::setAutoStopMinutes,
+                    onCopy = { copyToClipboard(context, it) },
+                    onShare = { shareAddress(context, it) },
+                    modifier = Modifier.weight(1f).imePadding(),
+                )
+            }
+        }
+        return
+    }
 
     Scaffold(
         contentWindowInsets = ScaffoldDefaults.contentWindowInsets.union(WindowInsets.displayCutout),
         bottomBar = {
+            // The Remote is one wide button along the bottom, always in reach. (A bar given to the Scaffold has to keep clear of
+            // the system navigation bar itself.)
             val haptic = LocalHapticFeedback.current
-            val scheme = MaterialTheme.colorScheme
-            NavigationBar(
-                containerColor = scheme.surfaceContainer,
-                windowInsets = NavigationBarDefaults.windowInsets.union(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal)),
+            val connected = tvState is TvRemote.State.Connected
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.background)
+                    .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal)))
+                    .padding(horizontal = 20.dp, vertical = 6.dp),
             ) {
-                Tab.entries.forEach { entry ->
-                    NavigationBarItem(
-                        selected = tab == entry.ordinal,
-                        onClick = {
-                            if (tab != entry.ordinal) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                            tab = entry.ordinal
-                        },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = scheme.primary,
-                            selectedTextColor = scheme.primary,
-                            indicatorColor = scheme.primary.copy(alpha = 0.16f),
-                            unselectedIconColor = scheme.onSurfaceVariant,
-                            unselectedTextColor = scheme.onSurfaceVariant,
-                        ),
-                        icon = {
-                            if (entry == Tab.Devices && devices.isNotEmpty()) {
-                                BadgedBox(badge = { Badge { Text(devices.size.toString()) } }) { Icon(entry.icon, contentDescription = null) }
-                            } else {
-                                Icon(entry.icon, contentDescription = null)
-                            }
-                        },
-                        label = { Text(entry.label) },
-                    )
+                Button(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        showRemote = true
+                    },
+                    modifier = Modifier.fillMaxWidth().height(42.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 0.dp),
+                ) {
+                    BadgedBox(badge = { if (connected) Badge(containerColor = LiveGreen) }) {
+                        Icon(RemoteIcon, contentDescription = null, modifier = Modifier.size(20.dp))
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Text(if (connected) "TV remote · connected" else "TV remote", style = MaterialTheme.typography.labelLarge)
                 }
             }
         },
     ) { padding ->
-        // The keyboard shrinks the page (beyond the bar it already covers) so a focused text box stays in view.
-        val screenModifier = Modifier.padding(padding).consumeWindowInsets(padding).imePadding()
-        AnimatedContent(
-            targetState = tab,
-            transitionSpec = {
-                val forward = targetState > initialState
-                (fadeIn(tween(220)) + slideInHorizontally(tween(220)) { if (forward) it / 12 else -it / 12 }) togetherWith
-                    (fadeOut(tween(120)) + slideOutHorizontally(tween(220)) { if (forward) -it / 12 else it / 12 })
+        HomeScreen(
+            state = state,
+            request = request,
+            batteryUnrestricted = unrestricted,
+            devices = devices,
+            selection = selection,
+            hasStorage = hasStorage,
+            warnings = buildList {
+                if (!notificationsOn) {
+                    add(
+                        SetupWarning(
+                            title = "Notifications are off",
+                            text = "Without them you won't see a TV asking to connect while another app is open, and the request runs out.",
+                            button = "Turn on",
+                            onClick = { openNotificationSettings(context) },
+                        ),
+                    )
+                }
+                if (!localNetworkOk) {
+                    add(
+                        SetupWarning(
+                            title = "Local network access is off",
+                            text = "Android is blocking this phone from other devices on your Wi-Fi, so TVs and Chromecasts can't reach it.",
+                            button = "Allow",
+                            onClick = { openAppSettings(context) },
+                        ),
+                    )
+                }
             },
-            label = "tabs",
-        ) { current ->
-        when (Tab.entries[current]) {
-            Tab.Home -> HomeScreen(
-                state = state,
-                request = request,
-                batteryUnrestricted = unrestricted,
-                warnings = buildList {
-                    if (!notificationsOn) {
-                        add(
-                            SetupWarning(
-                                title = "Notifications are off",
-                                text = "Without them you won't see a TV asking to connect while another app is open, and the request runs out.",
-                                button = "Turn on",
-                                onClick = { openNotificationSettings(context) },
-                            ),
-                        )
-                    }
-                    if (!localNetworkOk) {
-                        add(
-                            SetupWarning(
-                                title = "Local network access is off",
-                                text = "Android is blocking this phone from other devices on your Wi-Fi, so TVs and Chromecasts can't reach it.",
-                                button = "Allow",
-                                onClick = { openAppSettings(context) },
-                            ),
-                        )
-                    }
-                },
-                onStart = { if (granted(STORAGE_PERMISSION)) startAfterStorage() else storagePermission.launch(STORAGE_PERMISSION) },
-                onStop = { MediaServerService.stop(context) },
-                onCopy = { copyToClipboard(context, it) },
-                onApprove = { PairingManager.approve() },
-                onDeny = { PairingManager.deny() },
-                onAllowBackground = { requestBatteryExemption(context) },
-                onAppSettings = { openBatteryScreen(context) },
-                watching = watching,
-                remotes = remotes,
-                onRemote = RemoteControl::send,
-                onShare = { shareAddress(context, it) },
-                onCastChoose = { withLocalNetwork(runIfDenied = true) { castPicking = true } },
-                modifier = screenModifier,
-            )
-            Tab.Library -> LibraryScreen(
-                selection = selection,
-                hasStorageAccess = hasStorage,
-                onAll = { ShareSettings.setMode(ShareMode.ALL) },
-                onSelected = {
-                    // With nothing chosen yet the picker opens first, and "selected" starts when videos are confirmed:
-                    // cancelling it must not leave the phone sharing nothing.
-                    if (selection.ids.isEmpty()) openPicker() else ShareSettings.setMode(ShareMode.SELECTED)
-                },
-                onChoose = { openPicker() },
-                modifier = screenModifier,
-            )
-            Tab.Remote -> RemoteScreen(
+            onStart = { if (granted(STORAGE_PERMISSION)) startAfterStorage() else storagePermission.launch(STORAGE_PERMISSION) },
+            onStop = { MediaServerService.stop(context) },
+            onCopy = { copyToClipboard(context, it) },
+            onApprove = { PairingManager.approve() },
+            onDeny = { PairingManager.deny() },
+            onAllowBackground = { requestBatteryExemption(context) },
+            onAppSettings = { openBatteryScreen(context) },
+            watching = watching,
+            remotes = remotes,
+            onRemote = RemoteControl::send,
+            onShare = { shareAddress(context, it) },
+            onCastChoose = { withLocalNetwork(runIfDenied = true) { castPicking = true } },
+            onDisconnect = PairingManager::revoke,
+            onDisconnectAll = PairingManager::revokeAll,
+            onAll = { ShareSettings.setMode(ShareMode.ALL) },
+            onSelected = {
+                // With nothing chosen yet the picker opens first, and "selected" starts when videos are confirmed:
+                // cancelling it must not leave the phone sharing nothing.
+                if (selection.ids.isEmpty()) openPicker() else ShareSettings.setMode(ShareMode.SELECTED)
+            },
+            onChoose = { openPicker() },
+            onOpenSettings = { showSettings = true },
+            modifier = Modifier.padding(padding).consumeWindowInsets(padding),
+        )
+    }
+
+    // The TV remote floats over Home as a page of its own, so it is one tap away from anywhere and closes with a swipe down.
+    if (showRemote) {
+        ModalBottomSheet(
+            onDismissRequest = { showRemote = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        ) {
+            RemoteScreen(
                 state = tvState,
                 savedHost = tvHost,
                 found = tvFound,
@@ -482,31 +524,8 @@ fun CasterApp() {
                     }
                 },
                 onVoiceEnd = TvRemote::voiceEnd,
-                modifier = screenModifier,
+                modifier = Modifier.imePadding(),
             )
-            Tab.Devices -> DevicesScreen(
-                devices = devices,
-                onDisconnect = PairingManager::revoke,
-                onDisconnectAll = PairingManager::revokeAll,
-                modifier = screenModifier,
-            )
-            Tab.Settings -> SettingsScreen(
-                state = state,
-                preferredPort = selection.port,
-                onSavePort = ShareSettings::setPort,
-                preferredName = selection.hostname,
-                onSaveName = ShareSettings::setHostname,
-                shareExtras = selection.shareExtras,
-                onShareExtras = { on ->
-                    ShareSettings.setShareExtras(on)
-                    val needed = EXTRAS_PERMISSIONS.filter { !granted(it) }
-                    if (on && needed.isNotEmpty()) extrasPermission.launch(needed.toTypedArray())
-                },
-                autoStopMinutes = selection.autoStopMinutes,
-                onAutoStop = ShareSettings::setAutoStopMinutes,
-                modifier = screenModifier,
-            )
-        }
         }
     }
 }

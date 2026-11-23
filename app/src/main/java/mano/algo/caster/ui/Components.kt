@@ -93,13 +93,18 @@ val HeroBrush: Brush
 
 /** The app logo; [rings] adds expanding signal rings behind it while sharing is live. */
 @Composable
-fun PulsingLogo(rings: Boolean, modifier: Modifier = Modifier, ringColor: Color = MaterialTheme.colorScheme.primary) {
-    Box(modifier = modifier.size(176.dp), contentAlignment = Alignment.Center) {
+fun PulsingLogo(
+    rings: Boolean,
+    modifier: Modifier = Modifier,
+    ringColor: Color = MaterialTheme.colorScheme.primary,
+    size: androidx.compose.ui.unit.Dp = 176.dp,
+) {
+    Box(modifier = modifier.size(size), contentAlignment = Alignment.Center) {
         if (rings) Rings(ringColor)
         Image(
             painter = painterResource(R.drawable.ic_caster_logo),
             contentDescription = "Caster",
-            modifier = Modifier.size(88.dp),
+            modifier = Modifier.size(size / 2),
         )
     }
 }
@@ -208,39 +213,6 @@ fun GlassButton(label: String, onClick: () -> Unit, modifier: Modifier = Modifie
                 Spacer(Modifier.width(6.dp))
             }
             Text(label, style = MaterialTheme.typography.labelLarge, maxLines = 1)
-        }
-    }
-}
-
-/** The address to type on the other screen, with Copy / QR / Share under it. Meant for the dark gradient card. */
-@Composable
-fun AddressBox(url: String, compact: Boolean = false, onShare: (() -> Unit)? = null, onQr: (() -> Unit)? = null, onCopy: () -> Unit) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        color = Color.White.copy(alpha = 0.12f),
-        contentColor = Color.White,
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
-    ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = if (compact) 10.dp else 14.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 12.dp),
-        ) {
-            SelectionContainer {
-                Text(
-                    url,
-                    style = if (compact) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.titleMedium,
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Medium,
-                    textAlign = TextAlign.Center,
-                )
-            }
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                GlassButton("Copy", onCopy, Modifier.weight(1f))
-                if (onQr != null) GlassButton("QR code", onQr, Modifier.weight(1f))
-                if (onShare != null) GlassButton("Share", onShare, Modifier.weight(1f), icon = Icons.Filled.Share)
-            }
         }
     }
 }

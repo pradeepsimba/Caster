@@ -23,6 +23,12 @@ import android.graphics.Bitmap
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontFamily
+import mano.algo.caster.server.ServerState
 
 /** Black-on-white QR code for [text]; white margin included so phone cameras can find the edges. */
 private fun qrBitmap(text: String, sizePx: Int = 512): ImageBitmap {
@@ -35,25 +41,61 @@ private fun qrBitmap(text: String, sizePx: Int = 512): ImageBitmap {
     return Bitmap.createBitmap(pixels, sizePx, sizePx, Bitmap.Config.ARGB_8888).asImageBitmap()
 }
 
-/** Scan with a TV, tablet or laptop camera app to open the page without typing the address. */
+/**
+ * Everything about reaching this phone from another screen, kept out of the Home page: a QR code for a TV, tablet or laptop
+ * camera, and the address to type, with the few notes that matter (a hotspot, a name or port that had to change).
+ */
 @Composable
-fun QrDialog(url: String, onDismiss: () -> Unit) {
+fun ConnectScreenDialog(state: ServerState.Running, onCopy: (String) -> Unit, onShare: (String) -> Unit, onDismiss: () -> Unit) {
+    // On a hotspot the name stops resolving once the screen turns off, the IP keeps working. (The address is never written out
+    // here: the QR code carries it, and Settings shows it.)
+    val url = if (state.hotspot) state.baseUrl else state.nameUrl ?: state.baseUrl
     val image = remember(url) { qrBitmap(url) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
-        title = { Text("Scan to open") },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+        dismissButton = {
+            Row {
+                TextButton(onClick = { onCopy(url) }) { Text("Copy link") }
+                TextButton(onClick = { onShare(url) }) { Text("Share") }
+            }
+        },
+        title = { Text("Connect a screen") },
         text = {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
+                Text(
+                    "Scan this with the camera of a TV, tablet or computer. To type the address instead, you will find it in Settings.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                )
                 Image(
                     bitmap = image,
                     contentDescription = "QR code for $url",
-                    modifier = Modifier.size(240.dp).background(Color.White).padding(4.dp),
+                    modifier = Modifier.size(220.dp).clip(RoundedCornerShape(16.dp)).background(Color.White).padding(6.dp),
                 )
-                Text(url, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center)
+                if (state.nameChanged) {
+                    Text(
+                        "${state.requestedName}.local was already used on this network, so this phone is ${state.announcedName}.",
+                        style = MaterialTheme.typography.bodySmall,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+                if (state.portChanged) {
+                    Text(
+                        "Port ${state.requestedPort} was busy, so Caster is using ${state.port}. You can change this in Settings.",
+                        style = MaterialTheme.typography.bodySmall,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+                Text(
+                    "Both devices must be on the same Wi-Fi. You approve each new screen on this phone.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
             }
         },
     )

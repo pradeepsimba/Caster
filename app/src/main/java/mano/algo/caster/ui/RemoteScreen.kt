@@ -154,7 +154,7 @@ private fun ConnectionCard(
     CasterCard(high = true) {
         Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             when (state) {
-                is TvRemote.State.Connected -> StatusPill("Connected to ${state.host}", Color(0xFF22C55E), pulsing = true)
+                is TvRemote.State.Connected -> StatusPill("Connected", Color(0xFF22C55E), pulsing = true)
                 is TvRemote.State.Connecting -> StatusPill("Connecting…", MaterialTheme.colorScheme.primary, pulsing = true)
                 is TvRemote.State.NeedsPin -> StatusPill("Waiting for the code", MaterialTheme.colorScheme.primary, pulsing = true)
                 else -> StatusPill("Not connected", MaterialTheme.colorScheme.outline, pulsing = false)
@@ -221,9 +221,7 @@ private fun ConnectionCard(
                 if (found.isEmpty() && !scanning) {
                     // Shown after a search that found nothing, and as the first-time help.
                     Text(
-                        "Turn the TV on and tap Connect. Fire TV, Android TV, Samsung and LG TVs work. The first time, a Fire TV " +
-                            "shows a 4-digit code and an Android TV a 6-character one: type it here. A Samsung or LG TV asks on its " +
-                            "screen to allow this phone: choose Allow. Nothing needs to be switched on in the TV's settings.",
+                        "Turn the TV on and tap Connect. The first time, the TV shows a code to type here, or asks you to choose Allow.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -360,7 +358,7 @@ private fun RemotePad(
             Text("Open Caster on the TV", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             if (shareUrl != null && fullRemote) {
                 Text(
-                    "Opens $shareUrl on the TV, so nobody has to type the address. The TV needs a web browser installed.",
+                    "Opens Caster in the TV's browser, so nobody has to type the address. The TV needs a web browser installed.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -369,7 +367,7 @@ private fun RemotePad(
                 }
             } else if (shareUrl != null) {
                 Text(
-                    "Open the TV's browser, then type this address with the keyboard below: $shareUrl",
+                    "Open the TV's browser, then type the address from Settings (the gear on the main page) with the keyboard below.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

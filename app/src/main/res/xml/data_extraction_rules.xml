@@ -11,6 +11,7 @@
         <!-- The choice of shared videos is a list of ids that mean other videos on another phone; the crash records are private. -->
         <exclude domain="sharedpref" path="caster_share.xml" />
         <exclude domain="sharedpref" path="caster_crash.xml" />
+        <exclude domain="sharedpref" path="caster_cast.xml" />
         <exclude domain="file" path="crash.log" />
         <exclude domain="file" path="activity.log" />
     </cloud-backup>
@@ -22,6 +23,7 @@
         <exclude domain="sharedpref" path="caster_tv.xml" />
         <exclude domain="sharedpref" path="caster_share.xml" />
         <exclude domain="sharedpref" path="caster_crash.xml" />
+        <exclude domain="sharedpref" path="caster_cast.xml" />
         <exclude domain="file" path="crash.log" />
         <exclude domain="file" path="activity.log" />
     </device-transfer>

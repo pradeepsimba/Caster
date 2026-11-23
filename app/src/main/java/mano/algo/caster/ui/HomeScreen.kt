@@ -24,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
@@ -57,13 +58,24 @@ import mano.algo.caster.server.RemoteState
 import mano.algo.caster.server.ServerState
 import mano.algo.caster.ui.theme.LiveGreen
 import mano.algo.caster.ui.theme.WarnAmber
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.IconButton
+import mano.algo.caster.server.PairedDevice
+import mano.algo.caster.server.ShareSelection
 
+/**
+ * The Home page, kept to what matters: whether sharing is on, one big button, how many screens are watching, and the
+ * Chromecast. The address and the QR code are one tap away behind "Connect a screen", not on the page.
+ */
 @Composable
 fun HomeScreen(
     state: ServerState,
     request: PairRequest?,
     batteryUnrestricted: Boolean,
     warnings: List<SetupWarning>,
+    devices: List<PairedDevice>,
+    selection: ShareSelection,
+    hasStorage: Boolean,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onCopy: (String) -> Unit,
@@ -76,24 +88,37 @@ fun HomeScreen(
     onRemote: (deviceId: String, command: String) -> Unit,
     onShare: (String) -> Unit,
     onCastChoose: () -> Unit,
+    onDisconnect: (String) -> Unit,
+    onDisconnectAll: () -> Unit,
+    onAll: () -> Unit,
+    onSelected: () -> Unit,
+    onChoose: () -> Unit,
+    onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val scheme = MaterialTheme.colorScheme
     val running = state is ServerState.Running
-    var qrUrl by remember { mutableStateOf<String?>(null) }
-    qrUrl?.let { QrDialog(it) { qrUrl = null } }
+    val screens = devices.size
+    var showConnect by remember { mutableStateOf(false) }
+    LaunchedEffect(running) { if (!running) showConnect = false } // a closed-and-reopened share starts without the dialog
+    if (showConnect && state is ServerState.Running) {
+        ConnectScreenDialog(state, onCopy = onCopy, onShare = onShare) { showConnect = false }
+    }
 
     Column(
         modifier = modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Caster", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.weight(1f))
+            Text("Caster", style = MaterialTheme.typography.headlineLarge, modifier = Modifier.weight(1f))
             when (state) {
                 is ServerState.Running -> StatusPill("Live", LiveGreen, pulsing = true)
                 is ServerState.Error -> StatusPill("Problem", scheme.error, pulsing = false)
                 ServerState.Starting -> StatusPill("Starting", WarnAmber, pulsing = true)
                 ServerState.Stopped -> StatusPill("Off", scheme.outline, pulsing = false)
+            }
+            IconButton(onClick = onOpenSettings) {
+                Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = scheme.onSurfaceVariant)
             }
         }
 
@@ -106,11 +131,11 @@ fun HomeScreen(
             ) { PairingCard(request, onApprove, onDeny) }
         }
 
-        // The big card: a deep gradient while sharing, so "live" is obvious at a glance; plain when off.
+        // The big card: a deep gradient while sharing, so "live" is obvious at a glance; soft and plain when off.
         val background: Brush = when (state) {
             is ServerState.Running -> HeroBrush
             is ServerState.Error -> SolidColor(scheme.errorContainer)
-            else -> Brush.verticalGradient(listOf(scheme.primary.copy(alpha = 0.12f), scheme.surfaceContainerLow))
+            else -> Brush.verticalGradient(listOf(scheme.primary.copy(alpha = 0.14f), scheme.surfaceContainerLow))
         }
         Card(
             modifier = Modifier.fillMaxWidth().animateContentSize(),
@@ -126,106 +151,85 @@ fun HomeScreen(
             border = if (running) null else BorderStroke(1.dp, scheme.outlineVariant.copy(alpha = 0.6f)),
         ) {
             Column(
-                modifier = Modifier.fillMaxWidth().background(background).padding(horizontal = 20.dp, vertical = 16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxWidth().background(background).padding(18.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                PulsingLogo(rings = running, ringColor = Color.White)
-                Text(
-                    when (state) {
-                        is ServerState.Running -> "Sharing is on"
-                        is ServerState.Error -> "Can't share right now"
-                        ServerState.Starting -> "Starting…"
-                        ServerState.Stopped -> "Ready to share"
-                    },
-                    style = MaterialTheme.typography.headlineSmall,
-                )
-                Text(
-                    when (state) {
-                        is ServerState.Running -> "Open this on your TV or computer"
-                        is ServerState.Error -> state.message
-                        ServerState.Starting -> "Getting your Wi-Fi address ready…"
-                        ServerState.Stopped -> "Stream the videos on this phone to any screen on your Wi-Fi. Nothing leaves your home network."
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.alpha(0.85f),
-                )
-
-                if (state is ServerState.Running) {
-                    // On a hotspot the name stops resolving once the screen turns off, the IP keeps working.
-                    val primaryUrl = if (state.hotspot) state.baseUrl else state.nameUrl ?: state.baseUrl
-                    AddressBox(primaryUrl, onShare = { onShare(primaryUrl) }, onQr = { qrUrl = primaryUrl }) { onCopy(primaryUrl) }
-                    if (state.hotspot) {
+                // The logo, a title and one line, side by side: the card stays small.
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    PulsingLogo(rings = running, ringColor = Color.White, size = 84.dp)
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(
-                            "You're sharing from your hotspot. Use this IP address: the name stops working when the screen is off.",
-                            style = MaterialTheme.typography.bodySmall,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.alpha(0.8f),
+                            when (state) {
+                                is ServerState.Running -> "Sharing is on"
+                                is ServerState.Error -> "Can't share right now"
+                                ServerState.Starting -> "Starting…"
+                                ServerState.Stopped -> "Share your videos"
+                            },
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.SemiBold,
                         )
-                    } else if (state.nameUrl != null) {
                         Text(
-                            "Name not opening? Android and Fire TV can't resolve it. Use the IP address:",
-                            style = MaterialTheme.typography.bodySmall,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.alpha(0.8f),
-                        )
-                        AddressBox(state.baseUrl, compact = true, onQr = { qrUrl = state.baseUrl }) { onCopy(state.baseUrl) }
-                    }
-                    if (state.nameChanged) {
-                        Text(
-                            "${state.requestedName}.local was already used on this network, so this phone is ${state.announcedName}.",
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.Medium,
-                            textAlign = TextAlign.Center,
+                            when (state) {
+                                is ServerState.Running -> when (screens) {
+                                    0 -> "Ready for a screen to connect"
+                                    1 -> "1 screen is connected"
+                                    else -> "$screens screens are connected"
+                                }
+                                is ServerState.Error -> state.message
+                                ServerState.Starting -> "Getting ready…"
+                                ServerState.Stopped -> "On any TV or computer"
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.alpha(0.85f),
                         )
                     }
-                    if (state.portChanged) {
-                        Text(
-                            "Port ${state.requestedPort} was busy, so Caster is using ${state.port}. You can change this in Settings.",
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.Medium,
-                            textAlign = TextAlign.Center,
-                        )
-                    }
-                    Text(
-                        "Both devices must be on the same Wi-Fi. You'll approve each new connection here.",
-                        style = MaterialTheme.typography.bodySmall,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.alpha(0.8f),
-                    )
                 }
 
-                if (state is ServerState.Stopped || state is ServerState.Error) {
-                    Button(
-                        onClick = onStart,
-                        modifier = Modifier.fillMaxWidth().height(56.dp),
-                        shape = RoundedCornerShape(18.dp),
-                    ) {
-                        Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Start sharing", style = MaterialTheme.typography.titleSmall)
+                when (state) {
+                    ServerState.Stopped, is ServerState.Error -> {
+                        Button(
+                            onClick = onStart,
+                            modifier = Modifier.fillMaxWidth().height(50.dp),
+                            shape = RoundedCornerShape(16.dp),
+                        ) {
+                            Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Start sharing", style = MaterialTheme.typography.titleSmall)
+                        }
+                        // After an error (Wi-Fi lost, say) the service may still be alive and holding the phone awake: it can be stopped here.
+                        if (state is ServerState.Error) {
+                            TextButton(onClick = onStop, modifier = Modifier.fillMaxWidth()) { Text("Stop sharing") }
+                        }
                     }
-                    // After an error (Wi-Fi lost, say) the service may still be alive and holding the phone awake: it can be stopped here.
-                    if (state is ServerState.Error) {
-                        TextButton(onClick = onStop, modifier = Modifier.fillMaxWidth()) { Text("Stop sharing") }
+                    is ServerState.Running -> {
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Button(
+                                onClick = { showConnect = true },
+                                modifier = Modifier.weight(1.6f).height(46.dp),
+                                shape = RoundedCornerShape(16.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color.White, contentColor = Color(0xFF1E3A8A)),
+                            ) { Text("Connect a screen", style = MaterialTheme.typography.titleSmall) }
+                            GlassButton("Stop", onStop, Modifier.weight(1f), icon = Icons.Filled.Close)
+                        }
                     }
-                } else if (state is ServerState.Running) {
-                    GlassButton("Stop sharing", onStop, Modifier.fillMaxWidth(), icon = Icons.Filled.Close)
-                } else {
-                    FilledTonalButton(
-                        onClick = onStop,
-                        modifier = Modifier.fillMaxWidth().height(52.dp),
-                        shape = RoundedCornerShape(18.dp),
-                    ) {
-                        Icon(Icons.Filled.Close, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Cancel", style = MaterialTheme.typography.titleSmall)
+                    ServerState.Starting -> {
+                        FilledTonalButton(
+                            onClick = onStop,
+                            modifier = Modifier.fillMaxWidth().height(46.dp),
+                            shape = RoundedCornerShape(16.dp),
+                        ) {
+                            Icon(Icons.Filled.Close, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Cancel", style = MaterialTheme.typography.titleSmall)
+                        }
                     }
                 }
-                Spacer(Modifier.height(4.dp))
             }
         }
+
+        ConnectedScreensSection(devices, running, onDisconnect, onDisconnectAll)
+
+        LibrarySection(selection, hasStorage, onAll, onSelected, onChoose)
 
         if (running) CastCard(onChooseVideo = onCastChoose)
 

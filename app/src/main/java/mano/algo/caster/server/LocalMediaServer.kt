@@ -118,6 +118,14 @@ class LocalMediaServer(
                 }
                 serveVideo(uri, session.headers["range"], head = method == Method.HEAD, stillAllowed)
             }
+            path.startsWith("/fill/") -> {
+                val rest = path.removePrefix("/fill/")
+                val id = rest.substringBefore('-').toLongOrNull() ?: return error(Response.Status.NOT_FOUND, "not_found")
+                val token = session.parameters["t"]?.firstOrNull()
+                serveConverted(rest, session.headers["range"], head = method == Method.HEAD) {
+                    PairingManager.isValid(token) && ShareSettings.isAllowed(id)
+                }
+            }
             else -> error(Response.Status.NOT_FOUND, "not_found")
         }
     }
@@ -408,6 +416,29 @@ class LocalMediaServer(
         } ?: return error(Response.Status.NOT_FOUND, "not_found")
 
         val mime = appContext.contentResolver.getType(uri) ?: "video/mp4"
+        return serveOpened(afd, mime, rangeHeader, head, stillAllowed)
+    }
+
+    /**
+     * The copy of a video that was re-encoded to fill a Chromecast's screen (see FillConverter). The name is only ever digits, a
+     * dash and "fill" or "stretch", so no other file can be named, and the video must still be one that is shared.
+     */
+    private fun serveConverted(name: String, rangeHeader: String?, head: Boolean, stillAllowed: () -> Boolean): Response {
+        val match = Regex("""(\d{1,18})-(fill|stretch)""").matchEntire(name) ?: return error(Response.Status.NOT_FOUND, "not_found")
+        val id = match.groupValues[1].toLong()
+        if (!ShareSettings.isAllowed(id)) return error(Response.Status.NOT_FOUND, "not_found")
+        val file = File(File(appContext.cacheDir, "cast"), "$id-${match.groupValues[2]}.mp4")
+        if (!file.isFile || file.length() == 0L) return error(Response.Status.NOT_FOUND, "not_found")
+        val afd = try {
+            AssetFileDescriptor(ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY), 0, file.length())
+        } catch (e: IOException) {
+            return error(Response.Status.NOT_FOUND, "not_found")
+        }
+        return serveOpened(afd, "video/mp4", rangeHeader, head, stillAllowed)
+    }
+
+    /** Answers with [afd] (closing it): the whole file, or the one range asked for. */
+    private fun serveOpened(afd: AssetFileDescriptor, mime: String, rangeHeader: String?, head: Boolean, stillAllowed: () -> Boolean): Response {
         val length = fileLength(afd)
         if (length < 0) {
             if (head) { afd.closeQuietly(); return mediaHeaders(newFixedLengthResponse(Response.Status.OK, mime, "")) }

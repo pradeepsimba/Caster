@@ -48,6 +48,8 @@ fun SettingsScreen(
     onShareExtras: (Boolean) -> Unit,
     autoStopMinutes: Int,
     onAutoStop: (Int) -> Unit,
+    onCopy: (String) -> Unit,
+    onShare: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // Re-seeded whenever the saved port changes, so Reset and external changes show up in the field.
@@ -76,7 +78,55 @@ fun SettingsScreen(
         modifier = modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        SectionTitle("Settings", "Tune how Caster shares")
+        // The address of this phone is shown here and nowhere else in the app.
+        AddressCard(state, onCopy, onShare)
+
+        // The everyday options first; the technical ones (port, name) below.
+        CasterCard(high = false) {
+            Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Photos and music", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "Also show every photo and song on this phone to approved screens. Videos keep following the Library choice.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(checked = shareExtras, onCheckedChange = onShareExtras)
+                }
+            }
+        }
+
+        CasterCard(high = false) {
+            Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Auto-stop timer", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Stop sharing by itself after this long, counted from when sharing started. Saves battery if you forget.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    listOf(0 to "Off", 30 to "30 min", 60 to "1 hour", 120 to "2 hours", 240 to "4 hours").forEach { (minutes, label) ->
+                        FilterChip(
+                            selected = autoStopMinutes == minutes,
+                            onClick = { onAutoStop(minutes) },
+                            label = { Text(label) },
+                        )
+                    }
+                }
+            }
+        }
+
+        Text(
+            "Advanced",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 4.dp, top = 8.dp),
+        )
 
         CasterCard(high = false) {
             Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -138,45 +188,6 @@ fun SettingsScreen(
         NameCard(state, preferredName, onSaveName)
 
         CasterCard(high = false) {
-            Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("Photos and music", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                        Text(
-                            "Also show every photo and song on this phone to approved screens. Videos keep following the Library choice.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Switch(checked = shareExtras, onCheckedChange = onShareExtras)
-                }
-            }
-        }
-
-        CasterCard(high = false) {
-            Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Auto-stop timer", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                Text(
-                    "Stop sharing by itself after this long, counted from when sharing started. Saves battery if you forget.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    listOf(0 to "Off", 30 to "30 min", 60 to "1 hour", 120 to "2 hours", 240 to "4 hours").forEach { (minutes, label) ->
-                        FilterChip(
-                            selected = autoStopMinutes == minutes,
-                            onClick = { onAutoStop(minutes) },
-                            label = { Text(label) },
-                        )
-                    }
-                }
-            }
-        }
-
-        CasterCard(high = false) {
             Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("About", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                 Text(
@@ -188,6 +199,56 @@ fun SettingsScreen(
         }
 
         DiagnosticsCard()
+    }
+}
+
+@Composable
+private fun AddressCard(state: ServerState, onCopy: (String) -> Unit, onShare: (String) -> Unit) {
+    CasterCard(high = false) {
+        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Address", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            if (state !is ServerState.Running) {
+                Text(
+                    "Start sharing to get the address of this phone.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                return@Column
+            }
+            Text(
+                "Type this in the browser of a TV or computer on the same Wi-Fi.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            // On a hotspot the name stops resolving once the screen turns off, so the numbers lead there.
+            val urls = if (state.hotspot) listOf(state.baseUrl) else listOfNotNull(state.nameUrl, state.baseUrl)
+            urls.forEachIndexed { index, url ->
+                androidx.compose.foundation.text.selection.SelectionContainer {
+                    Text(
+                        url,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                    )
+                }
+                if (index == 0 && urls.size > 1) {
+                    Text(
+                        "If the name doesn't open (Android and Fire TV can't resolve it), use the one with numbers:",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                androidx.compose.material3.OutlinedButton(
+                    onClick = { onCopy(urls.last()) },
+                    shape = RoundedCornerShape(14.dp),
+                ) { Text("Copy") }
+                androidx.compose.material3.OutlinedButton(
+                    onClick = { onShare(urls.first()) },
+                    shape = RoundedCornerShape(14.dp),
+                ) { Text("Share") }
+            }
+        }
     }
 }
 

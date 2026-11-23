@@ -242,7 +242,7 @@ class MediaServerService : Service() {
                 boundRequestedName = wantedName
                 publish(
                     running.copy(announcedName = announced, requestedName = wantedName),
-                    "Sharing videos at ${announced ?: host}:${running.port}",
+                    "Sharing your videos",
                 )
                 return@withLock
             }
@@ -273,11 +273,11 @@ class MediaServerService : Service() {
                         host, port, name, requestedPort = wanted, requestedName = wantedName,
                         hotspot = NetworkUtils.isHotspot(this@MediaServerService),
                     ),
-                    "Sharing videos at ${name ?: host}:$port" + if (port != wanted) " (port $wanted was busy)" else "",
+                    "Sharing your videos" + if (port != wanted) " (port $wanted was busy)" else "",
                 )
                 return@withLock
             }
-            publish(ServerState.Error("Couldn't open any port on $host. Try another port in Settings."), "Server failed to start")
+            publish(ServerState.Error("Couldn't open a port on this network. Try another port in Settings."), "Server failed to start")
         }
     }
 
