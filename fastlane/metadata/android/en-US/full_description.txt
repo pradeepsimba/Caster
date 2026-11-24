@@ -1,0 +1,16 @@
+Caster turns your phone into a small media server for your home network. Start sharing, then watch your videos, photos and music on a TV or any web browser on the same Wi-Fi. Nothing is uploaded to the internet.
+
+Features:
+• One-tap sharing from the app, a quick-settings tile, a home-screen widget or a shortcut
+• Find your phone from a TV browser: it announces itself as caster.local
+• Pairing: approve each new device on your phone by matching codes
+• Optional PIN lock for the app
+• Remembers where you stopped watching and finds subtitles automatically
+• Watch history and a diagnostics screen
+• Built-in browser that detects video on web pages
+• Remote control for Android TV, Fire TV and WebSocket TVs, with Wake-on-LAN and voice input
+• Keeps sharing with the screen off (asks to be excluded from battery optimisation)
+
+Permissions: network access, media access (to share your files), microphone (voice input for the TV remote), notifications and start at boot.
+
+No ads. No tracking.
