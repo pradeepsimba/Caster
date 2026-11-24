@@ -60,6 +60,12 @@ android {
         // docs/ is both the GitHub Pages folder and the copy of the page bundled into the app.
         getByName("main").assets.directories.add("../docs")
     }
+    // F-Droid: do not embed the Google-signed dependency metadata blob in the APK/AAB.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
+
     buildFeatures {
         compose = true
     }
