@@ -52,7 +52,7 @@ import java.net.URL
  * "Allow" this phone, which proves itself with its own key (made on first use, private to the app, left out of backups).
  */
 /** The Android TV hung up right after connecting: it doesn't accept this phone (any more). */
-private class AndroidTvDroppedUsException(cause: Throwable) : IOException("The TV hung up: ${cause.message ?: cause.javaClass.simpleName}", cause)
+private class AndroidTvDroppedUsException(cause: Throwable) : IOException("The TV hung up", cause)
 
 object TvRemote {
     /** How the phone talks to the TV. */
@@ -345,7 +345,7 @@ object TvRemote {
                 // A guess that didn't work (the TV is off, or it is another TV now): forget it, so the next try looks at the TV again.
                 if (guessed && mine == generation && _state.value is State.Failed) store.edit().remove(KEY_KIND_PREFIX + host).apply()
             } catch (e: Throwable) {
-                if (isActive && mine == generation) _state.value = State.Failed("Couldn't connect to the TV: ${e.message ?: e.javaClass.simpleName}")
+                if (isActive && mine == generation) _state.value = State.Failed("Couldn't connect. Make sure the TV is on and connected to the same Wi-Fi.")
             }
         }
     }
@@ -453,7 +453,7 @@ object TvRemote {
                 // A TV that is only slow or away isn't forgotten; one that refuses this phone's certificate (it was reset,
                 // or this phone was removed from it) hangs up on it: pair again, which asks for a new code.
                 if (e !is SSLException && e !is EOFException && e !is AndroidTvDroppedUsException) {
-                    _state.value = State.Failed("Couldn't connect to the TV: ${e.message ?: e.javaClass.simpleName}")
+                    _state.value = State.Failed("Couldn't connect. Make sure the TV is on and connected to the same Wi-Fi.")
                     return
                 }
                 // (The saved pairing stays until a new one replaces it: a hiccup mustn't cost a good pairing.)
@@ -468,7 +468,7 @@ object TvRemote {
             AndroidTvPairing.begin(host, identity, DEVICE_NAME)
         } catch (e: IOException) {
             if (mine == generation) {
-                _state.value = State.Failed("The TV didn't start pairing: ${e.message ?: e.javaClass.simpleName}. Turn the TV on and try again.")
+                _state.value = State.Failed("The TV didn't start pairing. Make sure it's on and tap Connect again.")
             }
             return
         }
@@ -493,7 +493,7 @@ object TvRemote {
             try {
                 submitAndroidTvCodeNow(app, session, host, code, mine)
             } catch (e: Throwable) {
-                if (isActive && mine == generation) _state.value = State.Failed("Couldn't pair with the TV: ${e.message ?: e.javaClass.simpleName}")
+                if (isActive && mine == generation) _state.value = State.Failed("Couldn't pair with the TV. Turn it on and tap Connect again.")
             }
         }
     }
@@ -531,7 +531,7 @@ object TvRemote {
                 delay(1_000)
             }
         }
-        _state.value = State.Failed("Paired, but couldn't connect: ${last?.message ?: "the TV didn't answer"}. Tap Connect again.")
+        _state.value = State.Failed("Paired, but couldn't connect. Tap Connect again.")
     }
 
     /** Opens the remote connection to a paired Android TV and waits until the TV is ready for keys. Throws if it can't. */
@@ -592,7 +592,7 @@ object TvRemote {
             } else if (e is java.net.SocketTimeoutException) {
                 "The TV didn't answer. Check that it is on, and on the same Wi-Fi as this phone."
             } else {
-                "Couldn't connect to the TV: ${e.message ?: e.javaClass.simpleName}"
+                "Couldn't connect. Make sure the TV is on and connected to the same Wi-Fi."
             }) + hint,
         )
 
@@ -720,7 +720,7 @@ object TvRemote {
             val gaveUp = AtomicBoolean(false)
             try {
                 if (!reachable(target.host, target.port)) {
-                    if (isActive) _state.value = State.Failed("Couldn't reach $host. Is the TV on, with ADB debugging turned on?")
+                    if (isActive) _state.value = State.Failed("Couldn't reach the TV. Is it on, with ADB debugging turned on?")
                     return@launch
                 }
                 // Socket timeout 0: the connection may sit idle for a long time between button presses.
@@ -762,7 +762,7 @@ object TvRemote {
                     when {
                         gaveUp.get() -> "The TV didn't answer the \"Allow\" prompt in time. Try again and choose Allow on the TV."
                         e is AdbAuthException -> "The TV didn't accept this phone. Choose Allow when the TV asks."
-                        else -> "Couldn't connect to the TV: ${e.message ?: e.javaClass.simpleName}"
+                        else -> "Couldn't connect. Make sure ADB debugging is turned on in the TV's developer options."
                     },
                 )
             }
@@ -873,7 +873,7 @@ object TvRemote {
                     when {
                         gaveUp.get() -> "The TV didn't answer the \"Allow\" prompt in time. Try again and choose Allow on the TV."
                         e is AdbAuthException -> "The TV didn't accept this phone. Choose Allow when the TV asks."
-                        else -> "Couldn't turn on volume: ${e.message ?: e.javaClass.simpleName}"
+                        else -> "Couldn't turn on volume. Check that the TV is on and try again."
                     },
                 )
             }

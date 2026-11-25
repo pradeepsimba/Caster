@@ -457,7 +457,9 @@ internal class LgTvLink private constructor(
 
         private fun register(main: WebSocketClient, clientKey: String?): String {
             main.sendText(LgTvCommands.hello())
-            await(main, STEP_MS, "hello")
+            // Older webOS TVs respond to hello immediately; newer ones (webOS 4+, 2020+) skip it entirely and
+            // expect the register request directly. Use a short timeout so new TVs don't wait 10 s doing nothing.
+            try { await(main, 3_000, "hello") } catch (_: SocketTimeoutException) {}
             main.sendText(LgTvCommands.systemInfo())
             await(main, STEP_MS, "response", "error")
             main.sendText(LgTvCommands.register(clientKey, signed = true))

@@ -503,7 +503,14 @@ private fun ConnectionCard(
                     Box(modifier = Modifier.size(10.dp).background(LiveGreen, CircleShape))
                     Column {
                         Text(
-                            connectedLink?.name ?: "Smart TV",
+                            when (connectedLink) {
+                                TvRemote.Link.FireTv -> "Fire TV"
+                                TvRemote.Link.AndroidTv -> "Android TV"
+                                TvRemote.Link.Samsung -> "Samsung"
+                                TvRemote.Link.Lg -> "LG"
+                                TvRemote.Link.Adb -> "Android TV (ADB)"
+                                null -> "Smart TV"
+                            },
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.SemiBold,
                         )
