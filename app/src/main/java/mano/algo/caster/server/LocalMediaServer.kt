@@ -98,6 +98,16 @@ class LocalMediaServer(
         if (path == "/api/pair/disconnect") {
             return if (method == Method.POST) pairDisconnect(session) else error(Response.Status.METHOD_NOT_ALLOWED, "method_not_allowed")
         }
+        if (path == "/upnp/control/cds") {
+            if (method != Method.POST && method != Method.GET) return error(Response.Status.METHOD_NOT_ALLOWED, "method_not_allowed")
+            if (method == Method.POST) runCatching { session.parseBody(HashMap()) }
+            return upnpControlContentDirectory(session)
+        }
+        if (path == "/upnp/control/cm") {
+            if (method != Method.POST && method != Method.GET) return error(Response.Status.METHOD_NOT_ALLOWED, "method_not_allowed")
+            if (method == Method.POST) runCatching { session.parseBody(HashMap()) }
+            return upnpControlConnectionManager()
+        }
         if (method != Method.GET && method != Method.HEAD) return error(Response.Status.METHOD_NOT_ALLOWED, "method_not_allowed")
 
         when (path) {
@@ -109,30 +119,47 @@ class LocalMediaServer(
             )
             "/api/pair/status" -> return pairStatus(session.parameters["id"]?.firstOrNull().orEmpty())
             "/api/speed" -> return speedChunk()
+            "/upnp/desc.xml" -> return upnpDeviceDescription()
+            "/upnp/cds.xml" -> return upnpContentDirectoryScpd()
+            "/upnp/cm.xml" -> return upnpConnectionManagerScpd()
         }
 
-        if (!PairingManager.isValid(session.parameters["t"]?.firstOrNull())) {
+        val isUpnpVideo = path.startsWith("/video/") && session.parameters["upnp"]?.firstOrNull() == "1"
+        if (!isUpnpVideo && !PairingManager.isValid(session.parameters["t"]?.firstOrNull())) {
             return error(Response.Status.UNAUTHORIZED, "unauthorized")
         }
         val kind = session.parameters["k"]?.firstOrNull() ?: "v"
         val token = session.parameters["t"]?.firstOrNull()
+        val query = session.parameters["q"]?.firstOrNull()
+        val sort = session.parameters["sort"]?.firstOrNull()
         return when {
-            path == "/api/videos" -> listMedia("v", token)
-            path == "/api/list" -> listMedia(kind, token)
+            path == "/api/videos" -> listMedia("v", token, query, sort)
+            path == "/api/list" -> listMedia(kind, token, query, sort)
             path == "/api/remote" -> remote(session)
             path == "/api/resume" -> resumeList(token)
             path.startsWith("/api/thumb/") -> thumbnail(mediaUri(path.removePrefix("/api/thumb/"), kind, token), kind)
             path.startsWith("/api/info/") -> videoInfo(mediaUri(path.removePrefix("/api/info/"), "v", token))
             path.startsWith("/api/sub/") -> subtitles(mediaUri(path.removePrefix("/api/sub/"), "v", token))
             path.startsWith("/video/") -> {
-                val uri = mediaUri(path.removePrefix("/video/"), kind, token) ?: return error(Response.Status.NOT_FOUND, "not_found")
-                if (method == Method.GET && kind == "v") recordWatching(token, uri)
                 val id = path.removePrefix("/video/").substringBefore('/').toLongOrNull() ?: -1L
+                val uri = if (isUpnpVideo) {
+                    if (id < 0) return error(Response.Status.NOT_FOUND, "not_found")
+                    if (!ShareSettings.isAllowed(id)) return error(Response.Status.FORBIDDEN, "not_allowed")
+                    ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
+                } else {
+                    mediaUri(path.removePrefix("/video/"), kind, token) ?: return error(Response.Status.NOT_FOUND, "not_found")
+                }
+                val isDownload = session.parameters["download"]?.firstOrNull() == "1"
+                if (isDownload && !ShareSettings.state.value.allowDownload) {
+                    return error(Response.Status.FORBIDDEN, "downloads_disabled")
+                }
+                if (method == Method.GET && kind == "v") recordWatching(token, uri)
                 val stillAllowed = {
-                    PairingManager.isValid(token) &&
+                    if (isUpnpVideo) ShareSettings.isAllowed(id)
+                    else PairingManager.isValid(token) &&
                         (if (kind == "v") ShareSettings.isAllowed(id) && PairingManager.allows(token, id) else extrasAllowed(token))
                 }
-                serveVideo(uri, session.headers["range"], head = method == Method.HEAD, stillAllowed)
+                serveVideo(uri, session.headers["range"], head = method == Method.HEAD, isDownload = isDownload, stillAllowed = stillAllowed)
             }
             else -> error(Response.Status.NOT_FOUND, "not_found")
         }
@@ -168,6 +195,7 @@ class LocalMediaServer(
         when (val status = PairingManager.status(id)) {
             PairStatus.Pending -> body.put("status", "pending")
             is PairStatus.Approved -> body.put("status", "approved").put("token", status.token)
+                .put("allow_download", ShareSettings.state.value.allowDownload)
             PairStatus.Denied -> body.put("status", "denied")
             PairStatus.Expired -> body.put("status", "expired")
             PairStatus.Unknown -> return error(Response.Status.NOT_FOUND, "unknown_request")
@@ -226,12 +254,13 @@ class LocalMediaServer(
     }
 
     /** Lists videos ("v"), music ("a") or photos ("i"). */
-    private fun listMedia(kind: String, token: String?): Response {
+    private fun listMedia(kind: String, token: String?, query: String? = null, sort: String? = null): Response {
         val table = tableFor(kind) ?: return error(Response.Status.NOT_FOUND, "not_found")
         if (kind != "v" && !extrasAllowed(token)) return error(Response.Status.FORBIDDEN, "extras_off")
         val items = JSONArray()
         val limit = if (kind == "v") MAX_LISTED else MAX_LISTED * 3   // phones hold far more photos than videos
         var truncated = false // more than the limit exist: the page says so instead of silently missing the older ones
+        val filterQuery = query?.trim()?.lowercase()?.ifEmpty { null }
         try {
             val folderColumn = when (kind) {
                 "v" -> MediaStore.Video.Media.BUCKET_DISPLAY_NAME
@@ -253,10 +282,16 @@ class LocalMediaServer(
                 folderColumn,
                 bucketColumnName,
             ).toTypedArray()
+            val sortOrder = when (sort) {
+                "name" -> "${MediaStore.MediaColumns.DISPLAY_NAME} COLLATE NOCASE ASC"
+                "big" -> "${MediaStore.MediaColumns.SIZE} DESC"
+                "long" -> if (kind != "i") "${MediaStore.Video.Media.DURATION} DESC" else "${MediaStore.MediaColumns.DATE_ADDED} DESC"
+                else -> "${MediaStore.MediaColumns.DATE_ADDED} DESC"
+            }
             appContext.contentResolver.query(
                 // Music means music: ringtones, alarms, voice notes and call recordings are in the same table.
                 table, projection, if (kind == "a") "${MediaStore.Audio.Media.IS_MUSIC} != 0" else null, null,
-                "${MediaStore.MediaColumns.DATE_ADDED} DESC",
+                sortOrder,
             )?.use { c ->
                 val nameCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
                 val sizeCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
@@ -269,6 +304,8 @@ class LocalMediaServer(
                     if (kind == "v" && !(ShareSettings.isAllowed(id, bucket) && PairingManager.allows(token, id))) continue
                     if (kind == "i" && !ShareSettings.isPhotoAllowed(id, bucket)) continue
                     if (kind == "a" && !ShareSettings.isMusicAllowed(id, bucket)) continue
+                    val itemName = c.getString(nameCol) ?: "item"
+                    if (filterQuery != null && !itemName.lowercase().contains(filterQuery)) continue
                     if (items.length() >= limit) {
                         truncated = true
                         break
@@ -276,7 +313,7 @@ class LocalMediaServer(
                     items.put(
                         JSONObject()
                             .put("id", id.toString())
-                            .put("name", c.getString(nameCol) ?: "item")
+                            .put("name", itemName)
                             .put("size", c.getLong(sizeCol))
                             .put("durationMs", if (durCol >= 0) c.getLong(durCol) else 0L)
                             .put("folder", if (folderCol >= 0) c.getString(folderCol) ?: "" else ""),
@@ -289,6 +326,7 @@ class LocalMediaServer(
         val scope = if (ShareSettings.state.value.mode == ShareMode.ALL) "all" else "selected"
         return json(
             JSONObject().put("scope", scope).put("extras", ShareSettings.state.value.shareExtras)
+                .put("allow_download", ShareSettings.state.value.allowDownload)
                 .put("kind", kind).put("videos", items).put("truncated", truncated),
         )
     }
@@ -467,7 +505,13 @@ class LocalMediaServer(
 
     // ---- streaming (RFC 7233 single range) -----------------------------------------------------------
 
-    private fun serveVideo(uri: Uri, rangeHeader: String?, head: Boolean, stillAllowed: () -> Boolean): Response {
+    private fun serveVideo(
+        uri: Uri,
+        rangeHeader: String?,
+        head: Boolean,
+        isDownload: Boolean = false,
+        stillAllowed: () -> Boolean,
+    ): Response {
         val afd = try {
             appContext.contentResolver.openAssetFileDescriptor(uri, "r")
         } catch (e: SecurityException) {
@@ -477,7 +521,11 @@ class LocalMediaServer(
         } ?: return error(Response.Status.NOT_FOUND, "not_found")
 
         val mime = runCatching { appContext.contentResolver.getType(uri) }.getOrNull() ?: "video/mp4"
-        return serveOpened(afd, mime, rangeHeader, head, stillAllowed)
+        val response = serveOpened(afd, mime, rangeHeader, head, stillAllowed)
+        if (isDownload) {
+            response.addHeader("Content-Disposition", "attachment")
+        }
+        return response
     }
 
     /** Answers with [afd] (closing it): the whole file, or the one range asked for. */
@@ -715,5 +763,167 @@ class LocalMediaServer(
         fun AssetFileDescriptor.closeQuietly() {
             try { close() } catch (_: IOException) { }
         }
+    }
+
+    private fun upnpDeviceDescription(): Response {
+        val name = ShareSettings.state.value.hostname.ifEmpty { Build.MODEL ?: "Caster" }
+        val xml = """<?xml version="1.0" encoding="utf-8"?>
+<root xmlns="urn:schemas-upnp-org:device-1-0">
+  <specVersion><major>1</major><minor>0</minor></specVersion>
+  <device>
+    <deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType>
+    <friendlyName>Caster ($name)</friendlyName>
+    <manufacturer>Caster</manufacturer>
+    <modelName>Caster DLNA Media Server</modelName>
+    <UDN>uuid:${ShareSettings.instanceId}</UDN>
+    <serviceList>
+      <service>
+        <serviceType>urn:schemas-upnp-org:service:ContentDirectory:1</serviceType>
+        <serviceId>urn:upnp-org:serviceId:ContentDirectory</serviceId>
+        <SCPDURL>/upnp/cds.xml</SCPDURL>
+        <controlURL>/upnp/control/cds</controlURL>
+        <eventSubURL>/upnp/event/cds</eventSubURL>
+      </service>
+      <service>
+        <serviceType>urn:schemas-upnp-org:service:ConnectionManager:1</serviceType>
+        <serviceId>urn:upnp-org:serviceId:ConnectionManager</serviceId>
+        <SCPDURL>/upnp/cm.xml</SCPDURL>
+        <controlURL>/upnp/control/cm</controlURL>
+        <eventSubURL>/upnp/event/cm</eventSubURL>
+      </service>
+    </serviceList>
+  </device>
+</root>"""
+        return newFixedLengthResponse(Response.Status.OK, "text/xml; charset=utf-8", xml)
+    }
+
+    private fun upnpContentDirectoryScpd(): Response {
+        val xml = """<?xml version="1.0" encoding="utf-8"?>
+<scpd xmlns="urn:schemas-upnp-org:service-1-0">
+  <specVersion><major>1</major><minor>0</minor></specVersion>
+  <actionList>
+    <action>
+      <name>Browse</name>
+      <argumentList>
+        <argument><name>ObjectID</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_ObjectID</relatedStateVariable></argument>
+        <argument><name>BrowseFlag</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_BrowseFlag</relatedStateVariable></argument>
+        <argument><name>Filter</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_Filter</relatedStateVariable></argument>
+        <argument><name>StartingIndex</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_Index</relatedStateVariable></argument>
+        <argument><name>RequestedCount</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_Count</relatedStateVariable></argument>
+        <argument><name>SortCriteria</name><direction>in</direction><relatedStateVariable>A_ARG_TYPE_SortCriteria</relatedStateVariable></argument>
+        <argument><name>Result</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_Result</relatedStateVariable></argument>
+        <argument><name>NumberReturned</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_Count</relatedStateVariable></argument>
+        <argument><name>TotalMatches</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_Count</relatedStateVariable></argument>
+        <argument><name>UpdateID</name><direction>out</direction><relatedStateVariable>A_ARG_TYPE_UpdateID</relatedStateVariable></argument>
+      </argumentList>
+    </action>
+    <action><name>GetSystemUpdateID</name><argumentList><argument><name>Id</name><direction>out</direction><relatedStateVariable>SystemUpdateID</relatedStateVariable></argument></argumentList></action>
+    <action><name>GetSortCapabilities</name><argumentList><argument><name>SortCaps</name><direction>out</direction><relatedStateVariable>SortCapabilities</relatedStateVariable></argument></argumentList></action>
+    <action><name>GetSearchCapabilities</name><argumentList><argument><name>SearchCaps</name><direction>out</direction><relatedStateVariable>SearchCapabilities</relatedStateVariable></argument></argumentList></action>
+  </actionList>
+  <serviceStateTable>
+    <stateVariable sendEvents="no"><name>A_ARG_TYPE_ObjectID</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>A_ARG_TYPE_Result</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>A_ARG_TYPE_BrowseFlag</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>A_ARG_TYPE_Filter</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>A_ARG_TYPE_SortCriteria</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>A_ARG_TYPE_Index</name><dataType>ui4</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>A_ARG_TYPE_Count</name><dataType>ui4</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>A_ARG_TYPE_UpdateID</name><dataType>ui4</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>SortCapabilities</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="no"><name>SearchCapabilities</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="yes"><name>SystemUpdateID</name><dataType>ui4</dataType></stateVariable>
+  </serviceStateTable>
+</scpd>"""
+        return newFixedLengthResponse(Response.Status.OK, "text/xml; charset=utf-8", xml)
+    }
+
+    private fun upnpConnectionManagerScpd(): Response {
+        val xml = """<?xml version="1.0" encoding="utf-8"?>
+<scpd xmlns="urn:schemas-upnp-org:service-1-0">
+  <specVersion><major>1</major><minor>0</minor></specVersion>
+  <actionList>
+    <action>
+      <name>GetProtocolInfo</name>
+      <argumentList>
+        <argument><name>Source</name><direction>out</direction><relatedStateVariable>SourceProtocolInfo</relatedStateVariable></argument>
+        <argument><name>Sink</name><direction>out</direction><relatedStateVariable>SinkProtocolInfo</relatedStateVariable></argument>
+      </argumentList>
+    </action>
+    <action>
+      <name>GetCurrentConnectionIDs</name>
+      <argumentList>
+        <argument><name>ConnectionIDs</name><direction>out</direction><relatedStateVariable>CurrentConnectionIDs</relatedStateVariable></argument>
+      </argumentList>
+    </action>
+  </actionList>
+  <serviceStateTable>
+    <stateVariable sendEvents="yes"><name>SourceProtocolInfo</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="yes"><name>SinkProtocolInfo</name><dataType>string</dataType></stateVariable>
+    <stateVariable sendEvents="yes"><name>CurrentConnectionIDs</name><dataType>string</dataType></stateVariable>
+  </serviceStateTable>
+</scpd>"""
+        return newFixedLengthResponse(Response.Status.OK, "text/xml; charset=utf-8", xml)
+    }
+
+    private fun upnpControlConnectionManager(): Response {
+        val soap = """<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:GetProtocolInfoResponse xmlns:u="urn:schemas-upnp-org:service:ConnectionManager:1">
+      <Source>http-get:*:video/mp4:*,http-get:*:video/*:*,http-get:*:audio/*:*</Source>
+      <Sink></Sink>
+    </u:GetProtocolInfoResponse>
+  </s:Body>
+</s:Envelope>"""
+        return newFixedLengthResponse(Response.Status.OK, "text/xml; charset=utf-8", soap)
+    }
+
+    private fun upnpControlContentDirectory(session: IHTTPSession): Response {
+        val host = session.headers["host"] ?: "127.0.0.1"
+        val didlItems = StringBuilder()
+        var count = 0
+        try {
+            val projection = arrayOf(
+                MediaStore.MediaColumns._ID,
+                MediaStore.MediaColumns.DISPLAY_NAME,
+                MediaStore.MediaColumns.SIZE,
+                MediaStore.Video.Media.BUCKET_ID,
+            )
+            appContext.contentResolver.query(
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                projection, null, null, "${MediaStore.MediaColumns.DATE_ADDED} DESC",
+            )?.use { c ->
+                val bucketCol = c.getColumnIndex(MediaStore.Video.Media.BUCKET_ID)
+                while (c.moveToNext() && count < 100) {
+                    val id = c.getLong(0)
+                    val bucket = if (bucketCol >= 0) c.getLong(bucketCol) else null
+                    if (!ShareSettings.isAllowed(id, bucket)) continue
+                    val name = (c.getString(1) ?: "video_$id").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
+                    val size = c.getLong(2)
+                    didlItems.append(
+                        """<item id="$id" parentID="0" restricted="1"><dc:title>$name</dc:title><upnp:class>object.item.videoItem</upnp:class><res protocolInfo="http-get:*:video/mp4:*" size="$size">http://$host/video/$id?upnp=1</res></item>""",
+                    )
+                    count++
+                }
+            }
+        } catch (_: Exception) {}
+
+        val didlEscaped = ("<DIDL-Lite xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\">" +
+            didlItems.toString() + "</DIDL-Lite>")
+            .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
+
+        val soap = """<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:BrowseResponse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1">
+      <Result>$didlEscaped</Result>
+      <NumberReturned>$count</NumberReturned>
+      <TotalMatches>$count</TotalMatches>
+      <UpdateID>1</UpdateID>
+    </u:BrowseResponse>
+  </s:Body>
+</s:Envelope>"""
+        return newFixedLengthResponse(Response.Status.OK, "text/xml; charset=utf-8", soap)
     }
 }

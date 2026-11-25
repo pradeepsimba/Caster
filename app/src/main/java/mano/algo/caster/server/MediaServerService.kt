@@ -94,6 +94,7 @@ class MediaServerService : Service() {
     private var boundRequestedPort = 0
     private var boundRequestedName = ""
     private var mdns: MdnsResponder? = null
+    private var upnp: UpnpServer? = null
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -197,6 +198,8 @@ class MediaServerService : Service() {
         // Cancelled scope means no new reconcile; stop synchronously (closing sockets is quick).
         mdns?.stop()
         mdns = null
+        upnp?.stop()
+        upnp = null
         server?.stop()
         server = null
         boundHost = null
@@ -272,6 +275,10 @@ class MediaServerService : Service() {
                 boundRequestedPort = wanted
                 boundRequestedName = wantedName
                 val name = startMdns(ip!!, wantedName)
+                upnp?.stop()
+                upnp = runCatching {
+                    UpnpServer(ip, port, wantedName, ShareSettings.instanceId).also { it.start() }
+                }.getOrNull()
                 if (destroyed) { // the service ended while this was binding
                     stopServerLocked()
                     return@withLock
@@ -292,6 +299,8 @@ class MediaServerService : Service() {
     private fun stopServerLocked() {
         mdns?.stop()
         mdns = null
+        upnp?.stop()
+        upnp = null
         server?.stop()
         server = null
         boundHost = null

@@ -37,6 +37,8 @@ data class ShareSelection(
     val stopOnWifiLost: Boolean = false,
     /** Optional password a connecting screen must send before the pairing code is shown; empty means no password. */
     val password: String = "",
+    /** Whether connected screens/browsers are permitted to download media files. */
+    val allowDownload: Boolean = true,
 )
 
 /**
@@ -63,6 +65,7 @@ object ShareSettings {
     private const val KEY_WIFI_STOP = "wifi_stop"
     private const val KEY_INSTANCE_ID = "instance_id"
     private const val KEY_PASSWORD = "password"
+    private const val KEY_ALLOW_DOWNLOAD = "allow_download"
 
     const val DEFAULT_HOSTNAME = MdnsResponder.DEFAULT_HOSTNAME
     private val HOSTNAME = Regex("^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$")
@@ -120,6 +123,7 @@ object ShareSettings {
                 wifiOffer = p.getBoolean(KEY_WIFI_OFFER, false),
                 stopOnWifiLost = p.getBoolean(KEY_WIFI_STOP, false),
                 password = p.getString(KEY_PASSWORD, "").orEmpty(),
+                allowDownload = p.getBoolean(KEY_ALLOW_DOWNLOAD, true),
             )
             instanceId = p.getString(KEY_INSTANCE_ID, null) ?: ByteArray(6).also(java.security.SecureRandom()::nextBytes)
                 .joinToString("") { "%02x".format(it) }
@@ -210,6 +214,11 @@ object ShareSettings {
 
     fun setPassword(password: String) {
         _state.update { it.copy(password = password) }
+        persist()
+    }
+
+    fun setAllowDownload(allowed: Boolean) {
+        _state.update { it.copy(allowDownload = allowed) }
         persist()
     }
 
@@ -313,6 +322,7 @@ object ShareSettings {
             ?.putBoolean(KEY_WIFI_OFFER, s.wifiOffer)
             ?.putBoolean(KEY_WIFI_STOP, s.stopOnWifiLost)
             ?.putString(KEY_PASSWORD, s.password)
+            ?.putBoolean(KEY_ALLOW_DOWNLOAD, s.allowDownload)
             ?.apply()
     }
 }

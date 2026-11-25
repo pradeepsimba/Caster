@@ -2,11 +2,14 @@ package mano.algo.caster
 
 import android.content.Intent
 import android.os.Bundle
+import android.view.KeyEvent
 import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.fragment.app.FragmentActivity
 import mano.algo.caster.cast.ShareIntake
+import mano.algo.caster.tv.TvKey
+import mano.algo.caster.tv.TvRemote
 import mano.algo.caster.ui.CasterApp
 import mano.algo.caster.ui.theme.CasterTheme
 
@@ -28,6 +31,37 @@ class MainActivity : FragmentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         takeShared(intent)
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (TvRemote.state.value is TvRemote.State.Connected) {
+            when (keyCode) {
+                KeyEvent.KEYCODE_VOLUME_UP -> {
+                    TvRemote.key(TvKey.VOLUME_UP, repeating = (event?.repeatCount ?: 0) > 0)
+                    return true
+                }
+                KeyEvent.KEYCODE_VOLUME_DOWN -> {
+                    TvRemote.key(TvKey.VOLUME_DOWN, repeating = (event?.repeatCount ?: 0) > 0)
+                    return true
+                }
+                KeyEvent.KEYCODE_VOLUME_MUTE -> {
+                    TvRemote.key(TvKey.MUTE)
+                    return true
+                }
+            }
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        if (TvRemote.state.value is TvRemote.State.Connected) {
+            when (keyCode) {
+                KeyEvent.KEYCODE_VOLUME_UP,
+                KeyEvent.KEYCODE_VOLUME_DOWN,
+                KeyEvent.KEYCODE_VOLUME_MUTE -> return true
+            }
+        }
+        return super.onKeyUp(keyCode, event)
     }
 
     /** A video sent here with "Share" from the gallery waits for a Chromecast; anything else sent is explained. */

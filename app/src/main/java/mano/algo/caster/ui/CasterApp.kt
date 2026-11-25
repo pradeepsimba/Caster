@@ -674,6 +674,8 @@ fun CasterApp() {
                     },
                     password = selection.password,
                     onSetPassword = ShareSettings::setPassword,
+                    allowDownload = selection.allowDownload,
+                    onAllowDownload = ShareSettings::setAllowDownload,
                     modifier = Modifier.weight(1f).imePadding(),
                 )
             }
@@ -881,6 +883,8 @@ fun CasterApp() {
                 saved = tvSaved,
                 scanning = tvScanning,
                 shareUrl = (state as? ServerState.Running)?.baseUrl,
+                remotes = remotes,
+                onRemote = RemoteControl::send,
                 onWake = { address, mac ->
                     withLocalNetwork(runIfDenied = false) {
                         if (TvRemote.wake(context, address, mac)) {

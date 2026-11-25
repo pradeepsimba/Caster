@@ -1202,6 +1202,42 @@ object TvRemote {
         enqueue { shellGuarded(adb, TvCommands.openUrl(url)) }
     }
 
+    /** Launches a popular streaming app on the connected TV. */
+    fun launchApp(app: TvApp) {
+        val remote = socketRemote
+        if (remote != null) {
+            val isSamsung = (state.value as? State.Connected)?.link == Link.Samsung
+            val appId = if (isSamsung) app.samsungAppId else app.lgAppId
+            enqueue { remote.launchApp(appId) }
+            return
+        }
+        val androidTv = atv
+        if (androidTv != null) {
+            enqueue { androidTv.openLink(app.url) }
+            return
+        }
+        val adb = connection
+        if (adb != null) {
+            enqueue {
+                shellGuarded(adb, "monkey -p ${app.androidPackage} -c android.intent.category.LAUNCHER 1 || " + TvCommands.openUrl(app.url))
+            }
+            return
+        }
+        openUrl(app.url)
+    }
+
+    /** Moves the pointer on a pointer-capable TV (such as LG webOS). */
+    fun pointerMove(dx: Int, dy: Int, drag: Boolean = false) {
+        val remote = socketRemote ?: return
+        enqueue { remote.pointerMove(dx, dy, drag) }
+    }
+
+    /** Clicks at the current pointer position. */
+    fun pointerClick() {
+        val remote = socketRemote ?: return
+        enqueue { remote.pointerClick() }
+    }
+
     /** Fire TV: opens the TV's browser; the address then has to be typed with the keyboard. */
     fun openBrowser() {
         val link = fire ?: return

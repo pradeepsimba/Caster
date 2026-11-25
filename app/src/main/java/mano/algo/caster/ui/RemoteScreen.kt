@@ -4,12 +4,15 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
@@ -23,15 +26,22 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Slider
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
@@ -56,6 +66,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancelAndJoin
@@ -75,6 +86,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.clickable
 import mano.algo.caster.tv.WakeOnLan
 import mano.algo.caster.cast.CastController
+import mano.algo.caster.server.RemoteControl
+import mano.algo.caster.server.RemoteState
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.foundation.shape.CircleShape
@@ -132,6 +145,8 @@ fun RemoteScreen(
     saved: List<TvRemote.SavedTv>,
     scanning: Boolean,
     shareUrl: String?,
+    remotes: List<RemoteState> = emptyList(),
+    onRemote: (String, String) -> Unit = { _, _ -> },
     onWake: (address: String, mac: String?) -> Unit,
     onForget: (String) -> Unit,
     onConnect: (String) -> Unit,
@@ -151,11 +166,28 @@ fun RemoteScreen(
     modifier: Modifier = Modifier,
 ) {
     val castState by CastController.state.collectAsStateWithLifecycle()
+
+    // Automatically connect to the saved TV if remote is opened while idle
+    LaunchedEffect(savedHost) {
+        if (state is TvRemote.State.Idle && savedHost.isNotBlank()) {
+            onConnect(savedHost)
+        }
+    }
+
+    // Automatically scan for smart TVs on the local Wi-Fi in the background
+    LaunchedEffect(Unit) {
+        if (state is TvRemote.State.Idle && found.isEmpty() && !scanning) {
+            onScan()
+        }
+    }
+
     Column(
         modifier = modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         SectionTitle("Remote", "Control connected devices and playback from this phone.")
+
+        // 1. Any active Chromecast remote
         if (castState.device != null) {
             ChromecastRemoteCard(
                 state = castState,
@@ -165,10 +197,20 @@ fun RemoteScreen(
                 onStop = { CastController.stop() },
             )
         }
+
+        // 2. Any active Paired Web Screen / Device remotes
+        val now = System.currentTimeMillis()
+        val liveRemotes = remotes.filter { now - it.reportedAt < RemoteControl.FRESH_MS * 2 }
+        liveRemotes.forEach { r ->
+            WebDeviceRemoteCard(remote = r, onRemote = onRemote)
+        }
+
         if (!TvRemote.supported) {
             EmptyState("Needs Android 8 or newer", "The TV remote can't run on this version of Android.")
             return@Column
         }
+
+        // 3. Smart TV connection & remote
         ConnectionCard(state, savedHost, found, saved, scanning, onWake, onForget, onConnect, onConnectAdb, onSubmitPin, onDisconnect, onScan)
         if (state is TvRemote.State.Connected) {
             RemotePad(state.link, volume, onEnableVolume, onKey, onTyped, shareUrl, onOpenCaster, onOpenBrowser, voiceError, onVoiceStart, onVoiceEnd)
@@ -282,6 +324,150 @@ fun ChromecastRemoteCard(
 }
 
 @Composable
+fun WebDeviceRemoteCard(
+    remote: RemoteState,
+    onRemote: (String, String) -> Unit,
+) {
+    val scheme = MaterialTheme.colorScheme
+    fun clock(sec: Int) =
+        if (sec >= 3600) "%d:%02d:%02d".format(sec / 3600, sec % 3600 / 60, sec % 60)
+        else "%d:%02d".format(sec / 60, sec % 60)
+
+    CasterCard(high = true) {
+        Column(
+            modifier = Modifier.padding(18.dp).fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Box(
+                    modifier = Modifier.size(42.dp).background(LiveGreen.copy(alpha = 0.16f), CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(RemoteIcon, contentDescription = null, tint = LiveGreen, modifier = Modifier.size(24.dp))
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        remote.deviceLabel,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        if (remote.playing) "Playing on screen" else "Paused on screen",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (remote.playing) LiveGreen else scheme.onSurfaceVariant,
+                    )
+                }
+                TextButton(onClick = { onRemote(remote.deviceId, "stop") }) {
+                    Text("Stop")
+                }
+            }
+
+            if (remote.title.isNotBlank()) {
+                Text(
+                    remote.title,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
+            if (remote.durationSec > 0) {
+                var dragging by remember(remote.deviceId) { mutableStateOf<Float?>(null) }
+                var sent by remember(remote.deviceId) { mutableStateOf<Float?>(null) }
+                LaunchedEffect(sent) { if (sent != null) { delay(2_500); sent = null } }
+                val shown = dragging ?: sent ?: remote.positionSec.toFloat()
+
+                Slider(
+                    value = shown.coerceIn(0f, remote.durationSec.toFloat()),
+                    onValueChange = { dragging = it },
+                    onValueChangeFinished = {
+                        dragging?.let { onRemote(remote.deviceId, "seekto:${it.toInt()}"); sent = it }
+                        dragging = null
+                    },
+                    valueRange = 0f..remote.durationSec.toFloat(),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(clock(shown.toInt()), style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant)
+                    Text(clock(remote.durationSec), style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant)
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedButton(
+                    onClick = { onRemote(remote.deviceId, "seek:-10") },
+                    shape = CircleShape,
+                    modifier = Modifier.size(54.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                ) {
+                    Text("-10s", style = MaterialTheme.typography.labelMedium)
+                }
+
+                Button(
+                    onClick = { onRemote(remote.deviceId, "toggle") },
+                    shape = CircleShape,
+                    modifier = Modifier.size(64.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                ) {
+                    Icon(
+                        if (remote.playing) PauseIcon else Icons.Filled.PlayArrow,
+                        contentDescription = if (remote.playing) "Pause" else "Play",
+                        modifier = Modifier.size(32.dp),
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = { onRemote(remote.deviceId, "seek:10") },
+                    shape = CircleShape,
+                    modifier = Modifier.size(54.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                ) {
+                    Text("+10s", style = MaterialTheme.typography.labelMedium)
+                }
+
+                OutlinedButton(
+                    onClick = { onRemote(remote.deviceId, "next") },
+                    shape = CircleShape,
+                    modifier = Modifier.size(54.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                ) {
+                    Icon(SkipNextIcon, contentDescription = "Next")
+                }
+            }
+
+            if (remote.volume >= 0) {
+                var volDrag by remember(remote.deviceId) { mutableStateOf<Float?>(null) }
+                var volSent by remember(remote.deviceId) { mutableStateOf<Float?>(null) }
+                LaunchedEffect(volSent) { if (volSent != null) { delay(2_500); volSent = null } }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Volume", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(end = 8.dp))
+                    Slider(
+                        value = (volDrag ?: volSent ?: remote.volume.toFloat()).coerceIn(0f, 100f),
+                        onValueChange = { volDrag = it },
+                        onValueChangeFinished = {
+                            volDrag?.let { onRemote(remote.deviceId, "volume:${"%.2f".format(java.util.Locale.US, it / 100f)}"); volSent = it }
+                            volDrag = null
+                        },
+                        valueRange = 0f..100f,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ConnectionCard(
     state: TvRemote.State,
     savedHost: String,
@@ -296,15 +482,47 @@ private fun ConnectionCard(
     onDisconnect: () -> Unit,
     onScan: () -> Unit,
 ) {
-    var host by rememberSaveable(savedHost) { mutableStateOf(savedHost) }
-    val needsPin = state as? TvRemote.State.NeedsPin
-    val androidTvCode = needsPin?.androidTv == true // an Android TV shows 6 letters and digits, a Fire TV 4 digits
-    val pinLength = if (androidTvCode) 6 else 4
-    var pin by rememberSaveable(needsPin != null) { mutableStateOf("") } // a fresh box for every pairing
     val connected = state is TvRemote.State.Connected
     val connecting = state is TvRemote.State.Connecting
-    val busy = connected || connecting || needsPin != null
-    // The TV that is being asked for its MAC address, to switch it on.
+    val needsPin = state as? TvRemote.State.NeedsPin
+    val androidTvCode = needsPin?.androidTv == true
+    val pinLength = if (androidTvCode) 6 else 4
+    var pin by rememberSaveable(needsPin != null) { mutableStateOf("") }
+
+    // When connected to the TV, show a clean compact status banner instead of manual IP entry
+    if (connected) {
+        val connectedLink = (state as? TvRemote.State.Connected)?.link
+        val host = (state as? TvRemote.State.Connected)?.host.orEmpty()
+        CasterCard(high = false) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Box(modifier = Modifier.size(10.dp).background(LiveGreen, CircleShape))
+                    Column {
+                        Text(
+                            connectedLink?.name ?: "Smart TV",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(host, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                TextButton(onClick = onDisconnect) {
+                    Text("Disconnect")
+                }
+            }
+        }
+        return
+    }
+
+    val primaryTv = saved.firstOrNull() ?: if (savedHost.isNotBlank()) TvRemote.SavedTv(savedHost, null, null) else null
+    var showManualDialog by rememberSaveable { mutableStateOf(false) }
+    var manualHost by rememberSaveable { mutableStateOf(savedHost) }
+    val busy = connecting || needsPin != null
+
     var macFor by rememberSaveable { mutableStateOf<String?>(null) }
     macFor?.let { address ->
         var mac by rememberSaveable(address) { mutableStateOf(saved.firstOrNull { it.address == address }?.mac.orEmpty()) }
@@ -316,7 +534,7 @@ private fun ConnectionCard(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
                         "Type the TV's MAC address once (in the TV's network settings, like aa:bb:cc:dd:ee:ff). " +
-                            "The TV must allow being turned on from the network (often called Wake on LAN or \"Turn on with mobile\").",
+                            "The TV must allow being turned on from the network (Wake-on-LAN).",
                         style = MaterialTheme.typography.bodySmall,
                     )
                     OutlinedTextField(
@@ -334,27 +552,78 @@ private fun ConnectionCard(
         )
     }
 
+    if (showManualDialog) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showManualDialog = false },
+            title = { Text("Connect TV by IP") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "If your TV was not automatically detected on Wi-Fi, enter its IP address from the TV's network settings.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedTextField(
+                        value = manualHost,
+                        onValueChange = { manualHost = it.trim() },
+                        label = { Text("TV IP address") },
+                        placeholder = { Text("192.168.1.50") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    if (TvRemote.adbSupported) {
+                        TextButton(
+                            onClick = {
+                                onConnectAdb(manualHost)
+                                showManualDialog = false
+                            },
+                            enabled = manualHost.isNotBlank(),
+                        ) {
+                            Text("Connect via ADB (developer mode)")
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onConnect(manualHost)
+                        showManualDialog = false
+                    },
+                    enabled = manualHost.isNotBlank(),
+                ) {
+                    Text("Connect")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showManualDialog = false }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
     CasterCard(high = true) {
-        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            when (state) {
-                is TvRemote.State.Connected -> StatusPill("Connected", Color(0xFF22C55E), pulsing = true)
-                is TvRemote.State.Connecting -> StatusPill("Connecting…", MaterialTheme.colorScheme.primary, pulsing = true)
-                is TvRemote.State.NeedsPin -> StatusPill("Waiting for the code", MaterialTheme.colorScheme.primary, pulsing = true)
-                else -> StatusPill("Not connected", MaterialTheme.colorScheme.outline, pulsing = false)
-            }
-            OutlinedTextField(
-                value = host,
-                onValueChange = { host = it },
-                label = { Text("TV address") },
-                placeholder = { Text("192.168.0.50") },
-                singleLine = true,
-                enabled = !busy,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), // has the dot and the colon of 192.168.0.50:5555
-                modifier = Modifier.fillMaxWidth(),
-            )
-            if (needsPin != null) {
+        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            if (connecting) {
+                StatusPill("Connecting…", MaterialTheme.colorScheme.primary, pulsing = true)
                 Text(
-                    if (androidTvCode) "Look at the TV: it shows a 6-character code (numbers and the letters A to F). Type it here."
+                    when {
+                        state.viaAdb -> "Look at the TV and choose Allow (tick \"Always allow\")."
+                        state.needsAllow -> "Look at the TV and choose Allow when it asks to connect."
+                        else -> "Connecting to the TV…"
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                )
+                OutlinedButton(onClick = onDisconnect, shape = RoundedCornerShape(14.dp)) {
+                    Text("Cancel")
+                }
+            } else if (needsPin != null) {
+                StatusPill("Waiting for code", MaterialTheme.colorScheme.primary, pulsing = true)
+                Text(
+                    if (androidTvCode) "Look at the TV: it shows a 6-character code. Type it here."
                     else "Look at the TV: it shows a 4-digit code. Type it here.",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
@@ -365,7 +634,7 @@ private fun ConnectionCard(
                         pin = if (androidTvCode) {
                             typed.filter { c -> c in '0'..'9' || c in 'a'..'f' || c in 'A'..'F' }.take(pinLength).uppercase()
                         } else {
-                            typed.filter { it in '0'..'9' }.take(pinLength) // plain digits only: other scripts' digits are not what the TV shows
+                            typed.filter { it in '0'..'9' }.take(pinLength)
                         }
                     },
                     label = { Text("Code from the TV") },
@@ -381,77 +650,212 @@ private fun ConnectionCard(
                     keyboardActions = KeyboardActions(onDone = { onSubmitPin(pin) }),
                     modifier = Modifier.fillMaxWidth(),
                 )
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                if (needsPin != null) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { onSubmitPin(pin) }, enabled = pin.length == pinLength, shape = RoundedCornerShape(14.dp)) { Text("Pair") }
                     OutlinedButton(onClick = onDisconnect, shape = RoundedCornerShape(14.dp)) { Text("Cancel") }
-                } else if (connected || connecting) {
-                    OutlinedButton(onClick = onDisconnect, shape = RoundedCornerShape(14.dp)) {
-                        Text(if (connecting) "Cancel" else "Disconnect")
-                    }
-                } else {
-                    Button(onClick = { onConnect(host) }, shape = RoundedCornerShape(14.dp)) { Text("Connect") }
-                    OutlinedButton(onClick = onScan, enabled = !scanning, shape = RoundedCornerShape(14.dp)) {
-                        Text(if (scanning) "Searching…" else "Find on network")
-                    }
                 }
-            }
-            if (!busy && saved.isNotEmpty()) {
-                Text("Your TVs", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                saved.forEach { tv ->
+            } else {
+                // Not connected yet: display paired and discovered devices automatically
+                if (primaryTv != null) {
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(MaterialTheme.colorScheme.surfaceContainerLow, RoundedCornerShape(14.dp))
-                            .padding(start = 14.dp, top = 2.dp, bottom = 2.dp, end = 2.dp),
+                        modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
                     ) {
-                        Column(
-                            modifier = Modifier.weight(1f).clickable { host = tv.address; onConnect(tv.address) }.padding(vertical = 8.dp),
+                        Box(
+                            modifier = Modifier.size(46.dp).background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
+                            contentAlignment = Alignment.Center,
                         ) {
-                            Text(tv.address, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                            Icon(RemoteIcon, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(24.dp))
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                tv.kind ?: "Tap to connect",
+                                primaryTv.kind ?: "Smart TV",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                "Saved device",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        TextButton(onClick = { if (tv.mac != null) onWake(tv.address, null) else macFor = tv.address }) { Text("Turn on") }
-                        // The MAC address is read once and remembered: this is how a wrong one is put right.
-                        TextButton(onClick = { macFor = tv.address }) { Text("MAC") }
-                        TextButton(onClick = { onForget(tv.address) }) { Text("Forget") }
+                        Button(
+                            onClick = { onConnect(primaryTv.address) },
+                            shape = RoundedCornerShape(12.dp),
+                        ) {
+                            Text("Connect")
+                        }
+                        IconButton(
+                            onClick = { onForget(primaryTv.address) },
+                            modifier = Modifier.size(36.dp),
+                        ) {
+                            Icon(Icons.Filled.Close, contentDescription = "Forget saved TV", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    if (primaryTv.mac != null) {
+                        OutlinedButton(
+                            onClick = { onWake(primaryTv.address, null) },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                        ) {
+                            Text("Turn on with Wake-on-LAN")
+                        }
                     }
                 }
-            }
-            if (!busy) {
-                found.forEach { device ->
-                    TextButton(onClick = { host = device.address; onConnect(device.address) }) {
-                        Text(if (device.kind != null) "${device.kind} · ${device.address}" else "Device · ${device.address}")
-                    }
-                }
-                if (found.isEmpty() && !scanning) {
-                    // Shown after a search that found nothing, and as the first-time help.
+
+                // Additional saved TVs (if more than one is saved)
+                val otherSaved = saved.filter { it.address != primaryTv?.address }
+                if (otherSaved.isNotEmpty()) {
                     Text(
-                        "Turn the TV on and tap Connect. The first time, the TV shows a code to type here, or asks you to choose Allow.",
-                        style = MaterialTheme.typography.bodySmall,
+                        "Other saved TVs",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    otherSaved.forEach { device ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        ) {
+                            Box(
+                                modifier = Modifier.size(42.dp).background(MaterialTheme.colorScheme.surfaceVariant, CircleShape),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(RemoteIcon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    device.kind ?: "Smart TV",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Medium,
+                                )
+                                Text(
+                                    "Saved device",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Button(
+                                onClick = { onConnect(device.address) },
+                                shape = RoundedCornerShape(12.dp),
+                            ) {
+                                Text("Connect")
+                            }
+                            IconButton(
+                                onClick = { onForget(device.address) },
+                                modifier = Modifier.size(36.dp),
+                            ) {
+                                Icon(Icons.Filled.Close, contentDescription = "Forget saved TV", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+
+                // Discovered TVs on Wi-Fi (excluding any TV already saved)
+                val allSavedAddresses = saved.map { it.address }.toSet() + listOfNotNull(primaryTv?.address)
+                val discoveredOther = found.filter { it.address !in allSavedAddresses }
+                if (discoveredOther.isNotEmpty()) {
+                    if (primaryTv != null || otherSaved.isNotEmpty()) {
+                        Text(
+                            "Discovered TVs on Wi-Fi",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    discoveredOther.forEach { device ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        ) {
+                            Box(
+                                modifier = Modifier.size(42.dp).background(MaterialTheme.colorScheme.surfaceVariant, CircleShape),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(RemoteIcon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    device.kind ?: "Smart TV",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Medium,
+                                )
+                                Text(
+                                    "Discovered on Wi-Fi",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Button(
+                                onClick = { onConnect(device.address) },
+                                shape = RoundedCornerShape(12.dp),
+                            ) {
+                                Text("Connect")
+                            }
+                        }
+                    }
+                }
+
+                // Wi-Fi discovery scanning status
+                if (scanning) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Text(
+                            "Searching for TVs on Wi-Fi…",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+
+                // Empty state when no device has been saved or found yet and not scanning
+                if (primaryTv == null && found.isEmpty() && !scanning) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            "No smart TVs found",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            "Make sure your TV is on and connected to the same Wi-Fi network.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                        )
+                        Button(
+                            onClick = onScan,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.padding(top = 4.dp),
+                        ) {
+                            Text("Search Wi-Fi for TVs")
+                        }
+                    }
+                }
+
+                // Subtle option for manual IP in case of complex network subnets
+                TextButton(
+                    onClick = { showManualDialog = true },
+                    modifier = Modifier.align(Alignment.CenterHorizontally),
+                ) {
+                    Text(
+                        "Add TV by IP address",
+                        style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-            }
-            if (!busy) {
-                if (TvRemote.adbSupported) TextButton(onClick = { onConnectAdb(host) }) { Text("Connect with ADB instead (advanced)") }
-            }
-            if (state is TvRemote.State.Connecting) {
-                Text(
-                    when {
-                        state.viaAdb -> "Look at the TV and choose Allow (tick \"Always allow\" so it doesn't ask again)."
-                        state.needsAllow -> "Look at the TV and choose Allow (or Yes) when it asks to connect this phone."
-                        else -> "Connecting to the TV…"
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium,
-                )
             }
             (state as? TvRemote.State.Failed)?.let {
                 Text(it.message, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
@@ -483,6 +887,7 @@ private fun RemotePad(
     // Voice. An Android TV has its own assistant, which is talked to by holding the button. The others have no way in over the
     // network, so the phone listens itself (its own speech window) and what it hears is typed on the TV like the keyboard does.
     val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
     val holdToTalk = link == TvRemote.Link.AndroidTv
     val dictation = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val said = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.trim()
@@ -566,6 +971,74 @@ private fun RemotePad(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+    }
+
+    if (link == TvRemote.Link.Lg) {
+        CasterCard(high = true) {
+            Column(modifier = Modifier.padding(18.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Pointer Trackpad", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(140.dp)
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+                        .pointerInput(Unit) {
+                            var accX = 0f
+                            var accY = 0f
+                            detectDragGestures(
+                                onDragEnd = { accX = 0f; accY = 0f },
+                                onDragCancel = { accX = 0f; accY = 0f },
+                                onDrag = { change, dragAmount ->
+                                    change.consume()
+                                    accX += dragAmount.x
+                                    accY += dragAmount.y
+                                    val dx = accX.toInt()
+                                    val dy = accY.toInt()
+                                    if (dx != 0 || dy != 0) {
+                                        accX -= dx
+                                        accY -= dy
+                                        TvRemote.pointerMove(dx, dy, false)
+                                    }
+                                },
+                            )
+                        }
+                        .clickable {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            TvRemote.pointerClick()
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "Swipe to move pointer · Tap to click",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+
+    CasterCard(high = true) {
+        Column(modifier = Modifier.padding(18.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Quick Launch Apps", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                mano.algo.caster.tv.TvApp.entries.forEach { app ->
+                    OutlinedButton(
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            TvRemote.launchApp(app)
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                    ) {
+                        Text(app.title, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                    }
+                }
+            }
         }
     }
 

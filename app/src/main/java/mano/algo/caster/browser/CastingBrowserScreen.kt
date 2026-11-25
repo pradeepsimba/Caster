@@ -7,13 +7,17 @@ import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -43,6 +47,14 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 private const val MOBILE_USER_AGENT =
     "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) " +
         "Chrome/131.0.0.0 Mobile Safari/537.36"
+
+private val DEFAULT_BOOKMARKS = listOf(
+    "YouTube" to "https://m.youtube.com",
+    "Vimeo" to "https://vimeo.com/watch",
+    "Archive.org" to "https://archive.org/details/movies",
+    "Twitch" to "https://m.twitch.tv",
+    "Dailymotion" to "https://www.dailymotion.com",
+)
 
 private data class DetectedMedia(val url: String, val mimeType: String)
 
@@ -123,6 +135,21 @@ fun CastingBrowserScreen(
                         )
                     }
                 }
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            DEFAULT_BOOKMARKS.forEach { (title, url) ->
+                AssistChip(
+                    onClick = {
+                        addressText = url
+                        webView?.loadUrl(url)
+                    },
+                    label = { Text(title) },
+                )
             }
         }
 

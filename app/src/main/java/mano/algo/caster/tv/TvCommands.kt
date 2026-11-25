@@ -22,6 +22,20 @@ object TvKey {
     const val SEARCH = 84 // on an Android TV this opens the voice assistant
 }
 
+/** Pre-configured popular streaming apps to quick-launch on connected TVs. */
+enum class TvApp(
+    val title: String,
+    val url: String,
+    val androidPackage: String,
+    val lgAppId: String,
+    val samsungAppId: String,
+) {
+    YOUTUBE("YouTube", "https://www.youtube.com", "com.google.android.youtube.tv", "youtube.leanback.v4", "111299001912"),
+    NETFLIX("Netflix", "https://www.netflix.com", "com.netflix.ninja", "netflix", "11101200001"),
+    PRIME_VIDEO("Prime Video", "https://www.primevideo.com", "com.amazon.amazonvideo.livingroom", "amazon", "3201512006785"),
+    SPOTIFY("Spotify", "https://open.spotify.com", "com.spotify.tv.android", "spotify-medialink", "3201606009684"),
+}
+
 /**
  * Builds the shell commands that are sent to the TV. Everything that ends up inside a command goes through here,
  * so what the owner types (or the address Caster shares) can never turn into extra commands.

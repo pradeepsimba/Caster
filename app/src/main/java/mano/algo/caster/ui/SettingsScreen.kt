@@ -48,6 +48,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -95,6 +96,8 @@ fun SettingsScreen(
     onStopOnWifiLost: (Boolean) -> Unit,
     password: String,
     onSetPassword: (String) -> Unit,
+    allowDownload: Boolean = true,
+    onAllowDownload: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val focus = LocalFocusManager.current
@@ -117,6 +120,15 @@ fun SettingsScreen(
                 subtitle = "Share phone photos and music alongside videos",
                 checked = shareExtras,
                 onChange = onShareExtras,
+            )
+
+            SettingsDivider()
+
+            SettingsSwitchRow(
+                title = "Allow Downloads",
+                subtitle = "Permit connected screens and browsers to download media files",
+                checked = allowDownload,
+                onChange = onAllowDownload,
             )
 
             SettingsDivider()
@@ -639,7 +651,7 @@ private fun SpeedTestRow(
     scope: kotlinx.coroutines.CoroutineScope,
 ) {
     var speedResult by rememberSaveable { mutableStateOf<String?>(null) }
-    var speedTesting by rememberSaveable { mutableStateOf(false) }
+    var speedTesting by remember { mutableStateOf(false) }
 
     Row(
         modifier = Modifier

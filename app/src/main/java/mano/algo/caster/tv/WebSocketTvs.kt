@@ -22,6 +22,12 @@ internal interface TvSocketRemote : Closeable {
 
     fun openUrl(url: String)
 
+    fun launchApp(appId: String) {}
+
+    fun pointerMove(dx: Int, dy: Int, drag: Boolean = false) {}
+
+    fun pointerClick() {}
+
     /** Why the connection ended, if it did. */
     val failure: Throwable?
 }
@@ -78,6 +84,9 @@ object SamsungTvCommands {
 
     fun openBrowser(url: String): String =
         """{"method":"ms.channel.emit","params":{"event":"ed.apps.launch","to":"host","data":{"appId":"org.tizen.browser","action_type":"NATIVE_LAUNCH","metaTag":${FireTvCommands.jsonString(url)}}}}"""
+
+    fun launchApp(appId: String): String =
+        """{"method":"ms.channel.emit","params":{"event":"ed.apps.launch","to":"host","data":{"appId":"$appId","action_type":"DEEP_LINKING"}}}"""
 
     fun event(message: String): String? = Regex(""""event"\s*:\s*"([^"]{1,60})"""").find(message)?.groupValues?.get(1)
 
@@ -149,6 +158,10 @@ internal class SamsungTvLink private constructor(
     }
 
     override fun openUrl(url: String) = socket.sendText(SamsungTvCommands.openBrowser(url))
+
+    override fun launchApp(appId: String) {
+        socket.sendText(SamsungTvCommands.launchApp(appId))
+    }
 
     override fun close() {
         closed = true
@@ -267,6 +280,12 @@ object LgTvCommands {
 
     fun openUrl(url: String) = "system.launcher/open" to """{"target":${FireTvCommands.jsonString(url)}}"""
 
+    fun launchApp(appId: String) = "system.launcher/launch" to """{"id":${FireTvCommands.jsonString(appId)}}"""
+
+    fun move(dx: Int, dy: Int, drag: Boolean = false) = "type:move\ndx:$dx\ndy:$dy\ndown:${if (drag) 1 else 0}\n\n"
+
+    fun click() = "type:click\n\n"
+
     const val ENTER_KEY = "com.webos.service.ime/sendEnterKey"
 
     fun buttonName(code: Int): String? = when (code) {
@@ -331,6 +350,18 @@ internal class LgTvLink private constructor(
     }
 
     override fun openUrl(url: String) = request(LgTvCommands.openUrl(url))
+
+    override fun launchApp(appId: String) {
+        request(LgTvCommands.launchApp(appId))
+    }
+
+    override fun pointerMove(dx: Int, dy: Int, drag: Boolean) {
+        input.sendText(LgTvCommands.move(dx, dy, drag))
+    }
+
+    override fun pointerClick() {
+        input.sendText(LgTvCommands.click())
+    }
 
     private fun request(call: Pair<String, String>) = request(call.first, call.second)
 
