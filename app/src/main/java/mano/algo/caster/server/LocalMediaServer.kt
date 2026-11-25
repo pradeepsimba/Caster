@@ -51,6 +51,16 @@ class LocalMediaServer(
     init {
         // Reused worker threads instead of one new thread per connection: a TV opens many short requests.
         setAsyncRunner(PoolRunner())
+        // Small writes (the answer's header, the last piece of a range) go out at once instead of waiting to be joined (Nagle),
+        // so a player asking for many ranges is not held up. (The send buffer is left to the system: setting it by hand would
+        // turn off its automatic sizing.)
+        setServerSocketFactory {
+            object : java.net.ServerSocket() {
+                override fun accept(): java.net.Socket = super.accept().also { socket ->
+                    runCatching { socket.tcpNoDelay = true }
+                }
+            }
+        }
     }
     private val indexHtml: String by lazy {
         appContext.assets.open("index.html").bufferedReader().use { it.readText() }
@@ -535,8 +545,9 @@ class LocalMediaServer(
         private var remaining: Long,
         private val stillAllowed: () -> Boolean,
     ) : InputStream() {
+        // Read from storage in big pieces (the HTTP layer asks for 16 KB at a time, which is too slow for a 4K file).
         private val input: InputStream = try {
-            afd.createInputStream()
+            java.io.BufferedInputStream(afd.createInputStream(), minOf(remaining, READ_AHEAD_BYTES).toInt().coerceAtLeast(8 * 1024))
         } catch (e: IOException) {
             afd.closeQuietly()
             throw e
@@ -636,6 +647,7 @@ class LocalMediaServer(
         const val MAX_PAIR_BODY = 1024L
         const val MAX_CONNECTIONS = 128
         const val CHECK_EVERY_BYTES = 512L * 1024
+        const val READ_AHEAD_BYTES = 256L * 1024
 
         val PAYLOAD_TOO_LARGE = object : Response.IStatus {
             override fun getRequestStatus() = 413
