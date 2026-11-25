@@ -85,15 +85,20 @@ class LocalMediaServer(
         if (path == "/api/pair/request") {
             return if (method == Method.POST) pairRequest(session) else error(Response.Status.METHOD_NOT_ALLOWED, "method_not_allowed")
         }
+        if (path == "/api/pair/disconnect") {
+            return if (method == Method.POST) pairDisconnect(session) else error(Response.Status.METHOD_NOT_ALLOWED, "method_not_allowed")
+        }
         if (method != Method.GET && method != Method.HEAD) return error(Response.Status.METHOD_NOT_ALLOWED, "method_not_allowed")
 
         when (path) {
             "/", "/index.html" -> return newFixedLengthResponse(Response.Status.OK, "text/html; charset=utf-8", indexHtml)
             "/favicon.ico" -> return error(Response.Status.NOT_FOUND, "not_found") // not behind the token, so no 401 noise
             "/api/ping" -> return json(
-                JSONObject().put("app", "caster").put("name", Build.MODEL ?: "Android").put("id", ShareSettings.instanceId),
+                JSONObject().put("app", "caster").put("name", Build.MODEL ?: "Android").put("id", ShareSettings.instanceId)
+                    .put("pw", ShareSettings.state.value.password.isNotEmpty()),
             )
             "/api/pair/status" -> return pairStatus(session.parameters["id"]?.firstOrNull().orEmpty())
+            "/api/speed" -> return speedChunk()
         }
 
         if (!PairingManager.isValid(session.parameters["t"]?.firstOrNull())) {
@@ -130,6 +135,11 @@ class LocalMediaServer(
         val declared = session.headers["content-length"]?.trim()?.toLongOrNull() ?: 0L
         if (declared > MAX_PAIR_BODY) return error(PAYLOAD_TOO_LARGE, "too_large").also { it.closeConnection(true) }
         runCatching { session.parseBody(HashMap()) } // drain any body so a kept-alive connection stays in sync
+        // Check the sharing password before even creating a pairing request.
+        val pw = ShareSettings.state.value.password
+        if (pw.isNotEmpty() && session.parameters["pw"]?.firstOrNull().orEmpty() != pw) {
+            return error(Response.Status.UNAUTHORIZED, "wrong_password")
+        }
         // The page sends the random id it keeps for itself (letters and digits only), so screens with the same name stay apart.
         val clientId = session.parameters["cid"]?.firstOrNull()?.takeIf { Regex("[A-Za-z0-9]{8,40}").matches(it) }.orEmpty()
         return when (val result = PairingManager.request(describeClient(session.headers["user-agent"]), session.remoteIpAddress.orEmpty(), clientId)) {
@@ -153,6 +163,14 @@ class LocalMediaServer(
             PairStatus.Unknown -> return error(Response.Status.NOT_FOUND, "unknown_request")
         }
         return json(body)
+    }
+
+    private fun pairDisconnect(session: IHTTPSession): Response {
+        val token = session.parameters["t"]?.firstOrNull()
+        if (token != null) {
+            PairingManager.revokeByToken(token)
+        }
+        return json(JSONObject().put("status", "disconnected"))
     }
 
     /** A short human label for the approval prompt, e.g. "Fire TV" or "Windows PC (Chrome)". */
@@ -179,6 +197,15 @@ class LocalMediaServer(
         return if (browser != null) "$device ($browser)" else device
     }
 
+    // ---- speed test ----------------------------------------------------------------------------------
+
+    /** Serves 4 MB of zero bytes so the caller can measure the LAN throughput to this phone. */
+    private fun speedChunk(): Response {
+        val bytes = ByteArray(4 * 1024 * 1024)
+        return newFixedLengthResponse(Response.Status.OK, "application/octet-stream", ByteArrayInputStream(bytes), bytes.size.toLong())
+            .apply { addHeader("Cache-Control", "no-store") }
+    }
+
     // ---- gallery -------------------------------------------------------------------------------------
 
     private fun tableFor(kind: String): Uri? = when (kind) {
@@ -199,6 +226,13 @@ class LocalMediaServer(
             val folderColumn = when (kind) {
                 "v" -> MediaStore.Video.Media.BUCKET_DISPLAY_NAME
                 "i" -> MediaStore.Images.Media.BUCKET_DISPLAY_NAME
+                "a" -> MediaStore.Audio.Media.ALBUM
+                else -> null
+            }
+            val bucketColumnName = when (kind) {
+                "v" -> MediaStore.Video.Media.BUCKET_ID
+                "i" -> MediaStore.Images.Media.BUCKET_ID
+                "a" -> MediaStore.Audio.Media.ALBUM_ID
                 else -> null
             }
             val projection = listOfNotNull(
@@ -207,7 +241,7 @@ class LocalMediaServer(
                 MediaStore.MediaColumns.SIZE,
                 if (kind == "i") null else MediaStore.Video.Media.DURATION, // same column name for music
                 folderColumn,
-                if (kind == "v") MediaStore.Video.Media.BUCKET_ID else null,
+                bucketColumnName,
             ).toTypedArray()
             appContext.contentResolver.query(
                 // Music means music: ringtones, alarms, voice notes and call recordings are in the same table.
@@ -218,11 +252,13 @@ class LocalMediaServer(
                 val sizeCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
                 val durCol = c.getColumnIndex(MediaStore.Video.Media.DURATION)
                 val folderCol = folderColumn?.let { c.getColumnIndex(it) } ?: -1
-                val bucketCol = if (kind == "v") c.getColumnIndex(MediaStore.Video.Media.BUCKET_ID) else -1
+                val bucketCol = bucketColumnName?.let { c.getColumnIndex(it) } ?: -1
                 while (c.moveToNext()) {
                     val id = c.getLong(0)
                     val bucket = if (bucketCol >= 0) c.getLong(bucketCol) else null
                     if (kind == "v" && !(ShareSettings.isAllowed(id, bucket) && PairingManager.allows(token, id))) continue
+                    if (kind == "i" && !ShareSettings.isPhotoAllowed(id, bucket)) continue
+                    if (kind == "a" && !ShareSettings.isMusicAllowed(id, bucket)) continue
                     if (items.length() >= limit) {
                         truncated = true
                         break
@@ -258,7 +294,12 @@ class LocalMediaServer(
     private fun mediaUri(rawId: String, kind: String, token: String?): Uri? {
         val id = rawId.substringBefore('/').toLongOrNull() ?: return null
         val table = tableFor(kind) ?: return null
-        val allowed = if (kind == "v") ShareSettings.isAllowed(id) && PairingManager.allows(token, id) else extrasAllowed(token)
+        val allowed = when (kind) {
+            "v" -> ShareSettings.isAllowed(id) && PairingManager.allows(token, id)
+            "i" -> extrasAllowed(token) && ShareSettings.isPhotoAllowed(id)
+            "a" -> extrasAllowed(token) && ShareSettings.isMusicAllowed(id)
+            else -> false
+        }
         if (!allowed) return null
         return ContentUris.withAppendedId(table, id)
     }

@@ -48,6 +48,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import mano.algo.caster.server.ShareMode
+import mano.algo.caster.server.ShareSelection
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -228,10 +230,18 @@ fun GlassButton(label: String, onClick: () -> Unit, modifier: Modifier = Modifie
 }
 
 @Composable
-fun PairingCard(request: PairRequest, onApprove: (durationMs: Long) -> Unit, onDeny: () -> Unit) {
+fun PairingCard(
+    request: PairRequest,
+    selection: ShareSelection,
+    onApprove: (durationMs: Long, videoMode: ShareMode, photoMode: ShareMode?, musicMode: ShareMode?) -> Unit,
+    onDeny: () -> Unit,
+) {
     val haptic = LocalHapticFeedback.current
-    // How long this screen may watch: until it is disconnected, or for a time after which it has to ask again.
     var access by rememberSaveable { mutableStateOf(0L) }
+    var videoMode by rememberSaveable { mutableStateOf(selection.mode) }
+    var photoMode by rememberSaveable { mutableStateOf(selection.photoMode) }
+    var musicMode by rememberSaveable { mutableStateOf(selection.musicMode) }
+
     Card(
         shape = CardShape,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
@@ -244,7 +254,7 @@ fun PairingCard(request: PairRequest, onApprove: (durationMs: Long) -> Unit, onD
         ) {
             Text("Connection request", style = MaterialTheme.typography.labelLarge, modifier = Modifier.alpha(0.8f))
             Text(
-                "${request.label} wants to watch your videos",
+                "${request.label} wants to connect",
                 style = MaterialTheme.typography.titleMedium,
                 textAlign = TextAlign.Center,
             )
@@ -263,6 +273,49 @@ fun PairingCard(request: PairRequest, onApprove: (durationMs: Long) -> Unit, onD
                 textAlign = TextAlign.Center,
                 modifier = Modifier.alpha(0.85f),
             )
+
+            // Video sharing options
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Videos to share", style = MaterialTheme.typography.labelMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(ShareMode.ALL to "All", ShareMode.FOLDERS to "Folders", ShareMode.SELECTED to "Only some").forEach { (mode, label) ->
+                        androidx.compose.material3.FilterChip(
+                            selected = videoMode == mode,
+                            onClick = { videoMode = mode },
+                            label = { Text(label) },
+                        )
+                    }
+                }
+            }
+
+            // Photos & Music sharing options (without "All" option)
+            if (selection.shareExtras) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Photos to share", style = MaterialTheme.typography.labelMedium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(ShareMode.FOLDERS to "Folders", ShareMode.SELECTED to "Only some").forEach { (mode, label) ->
+                            androidx.compose.material3.FilterChip(
+                                selected = photoMode == mode,
+                                onClick = { photoMode = mode },
+                                label = { Text(label) },
+                            )
+                        }
+                    }
+                }
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Music to share", style = MaterialTheme.typography.labelMedium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(ShareMode.FOLDERS to "Folders", ShareMode.SELECTED to "Only some").forEach { (mode, label) ->
+                            androidx.compose.material3.FilterChip(
+                                selected = musicMode == mode,
+                                onClick = { musicMode = mode },
+                                label = { Text(label) },
+                            )
+                        }
+                    }
+                }
+            }
+
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(0L to "Always", 60 * 60_000L to "1 hour", 24 * 60 * 60_000L to "1 day").forEach { (ms, label) ->
                     androidx.compose.material3.FilterChip(selected = access == ms, onClick = { access = ms }, label = { Text(label) })
@@ -275,7 +328,10 @@ fun PairingCard(request: PairRequest, onApprove: (durationMs: Long) -> Unit, onD
                     shape = RoundedCornerShape(16.dp),
                 ) { Text("Deny") }
                 Button(
-                    onClick = { haptic.performHapticFeedback(HapticFeedbackType.Confirm); onApprove(access) },
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.Confirm)
+                        onApprove(access, videoMode, if (selection.shareExtras) photoMode else null, if (selection.shareExtras) musicMode else null)
+                    },
                     modifier = Modifier.weight(1f).height(52.dp),
                     shape = RoundedCornerShape(16.dp),
                 ) {

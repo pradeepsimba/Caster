@@ -269,6 +269,16 @@ object PairingManager {
         publishDevices()
     }
 
+    /** Disconnects the screen matching [token], if any. */
+    @Synchronized
+    fun revokeByToken(token: String?) {
+        if (token.isNullOrEmpty()) return
+        val client = clients.remove(token) ?: return
+        ActivityTracker.forget(client.id)
+        RemoteControl.idle(client.id)
+        publishDevices()
+    }
+
     @Synchronized
     fun revokeAll() {
         ActivityTracker.clear()

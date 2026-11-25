@@ -89,7 +89,7 @@ fun HomeScreen(
     hasStorage: Boolean,
     onStart: () -> Unit,
     onStop: () -> Unit,
-    onApprove: (durationMs: Long) -> Unit,
+    onApprove: (durationMs: Long, videoMode: mano.algo.caster.server.ShareMode, photoMode: mano.algo.caster.server.ShareMode?, musicMode: mano.algo.caster.server.ShareMode?) -> Unit,
     onDeny: () -> Unit,
     onAllowBackground: () -> Unit,
     onAppSettings: () -> Unit,
@@ -110,6 +110,18 @@ fun HomeScreen(
     onAllowAccess: () -> Unit,
     onLimitScreen: (KnownDevice) -> Unit,
     onOpenSettings: () -> Unit,
+    onPhotoFoldersMode: () -> Unit = {},
+    onPhotoSelectedMode: () -> Unit = {},
+    onChoosePhotos: () -> Unit = {},
+    onRemovePhoto: (Long) -> Unit = {},
+    onPlayPhoto: (id: Long, name: String) -> Unit = { _, _ -> },
+    onSavePhotoFolders: (Set<Long>) -> Unit = {},
+    onMusicFoldersMode: () -> Unit = {},
+    onMusicSelectedMode: () -> Unit = {},
+    onChooseMusic: () -> Unit = {},
+    onRemoveMusic: (Long) -> Unit = {},
+    onPlayMusic: (id: Long, name: String) -> Unit = { _, _ -> },
+    onSaveMusicFolders: (Set<Long>) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val scheme = MaterialTheme.colorScheme
@@ -144,7 +156,7 @@ fun HomeScreen(
             AnimatedVisibility(
                 visibleState = remember { MutableTransitionState(false).apply { targetState = true } },
                 enter = expandVertically() + fadeIn(),
-            ) { PairingCard(request, onApprove, onDeny) }
+            ) { PairingCard(request, selection, onApprove, onDeny) }
         }
 
         // The big card: a deep gradient while sharing, so "live" is obvious at a glance; soft and plain when off.
@@ -286,7 +298,30 @@ fun HomeScreen(
             }
         }
 
-        LibrarySection(selection, hasStorage, onAll, onSelected, onChoose, onRemoveChosen, onPlayChosen, onFoldersMode, onSaveFolders, onAllowAccess)
+        LibrarySection(
+            selection = selection,
+            hasStorageAccess = hasStorage,
+            onAll = onAll,
+            onSelected = onSelected,
+            onChoose = onChoose,
+            onRemove = onRemoveChosen,
+            onPlay = onPlayChosen,
+            onFoldersMode = onFoldersMode,
+            onSaveFolders = onSaveFolders,
+            onAllowAccess = onAllowAccess,
+            onPhotoFoldersMode = onPhotoFoldersMode,
+            onPhotoSelectedMode = onPhotoSelectedMode,
+            onChoosePhotos = onChoosePhotos,
+            onRemovePhoto = onRemovePhoto,
+            onPlayPhoto = onPlayPhoto,
+            onSavePhotoFolders = onSavePhotoFolders,
+            onMusicFoldersMode = onMusicFoldersMode,
+            onMusicSelectedMode = onMusicSelectedMode,
+            onChooseMusic = onChooseMusic,
+            onRemoveMusic = onRemoveMusic,
+            onPlayMusic = onPlayMusic,
+            onSaveMusicFolders = onSaveMusicFolders,
+        )
 
         YourScreensSection(
             known = known,

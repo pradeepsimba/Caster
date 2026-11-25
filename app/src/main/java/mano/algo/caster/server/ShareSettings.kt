@@ -21,14 +21,22 @@ data class ShareSelection(
     val folders: Set<Long> = emptySet(),
     val port: Int = ShareSettings.DEFAULT_PORT,
     val hostname: String = ShareSettings.DEFAULT_HOSTNAME,
-    /** Also list the phone's photos and music (videos follow [mode]; these are all-or-nothing). */
+    /** Also list the phone's photos and music. */
     val shareExtras: Boolean = false,
+    val photoMode: ShareMode = ShareMode.FOLDERS,
+    val photoFolders: Set<Long> = emptySet(),
+    val photoIds: Set<Long> = emptySet(),
+    val musicMode: ShareMode = ShareMode.FOLDERS,
+    val musicFolders: Set<Long> = emptySet(),
+    val musicIds: Set<Long> = emptySet(),
     /** Sharing stops by itself this many minutes after it starts; 0 means never. */
     val autoStopMinutes: Int = 0,
     /** Offer to start sharing (a notification) when the phone joins a Wi-Fi network. */
     val wifiOffer: Boolean = false,
     /** Stop sharing when the Wi-Fi is lost, so nothing keeps running away from home. */
     val stopOnWifiLost: Boolean = false,
+    /** Optional password a connecting screen must send before the pairing code is shown; empty means no password. */
+    val password: String = "",
 )
 
 /**
@@ -39,6 +47,12 @@ data class ShareSelection(
 object ShareSettings {
     private const val PREFS = "caster_share"
     private const val KEY_MODE = "mode"
+    private const val KEY_PHOTO_MODE = "photo_mode"
+    private const val KEY_PHOTO_FOLDERS = "photo_folders"
+    private const val KEY_PHOTO_IDS = "photo_ids"
+    private const val KEY_MUSIC_MODE = "music_mode"
+    private const val KEY_MUSIC_FOLDERS = "music_folders"
+    private const val KEY_MUSIC_IDS = "music_ids"
     private const val KEY_IDS = "ids"
     private const val KEY_FOLDERS = "folders"
     private const val KEY_PORT = "port"
@@ -48,6 +62,7 @@ object ShareSettings {
     private const val KEY_WIFI_OFFER = "wifi_offer"
     private const val KEY_WIFI_STOP = "wifi_stop"
     private const val KEY_INSTANCE_ID = "instance_id"
+    private const val KEY_PASSWORD = "password"
 
     const val DEFAULT_HOSTNAME = MdnsResponder.DEFAULT_HOSTNAME
     private val HOSTNAME = Regex("^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$")
@@ -85,13 +100,26 @@ object ShareSettings {
             val port = p.getInt(KEY_PORT, DEFAULT_PORT).takeIf(::isValidPort) ?: DEFAULT_PORT
             val hostname = p.getString(KEY_HOSTNAME, null)?.takeIf(::isValidHostname) ?: DEFAULT_HOSTNAME
             val folders = p.getStringSet(KEY_FOLDERS, emptySet()).orEmpty().mapNotNull { it.toLongOrNull() }.toSet()
+            val photoMode = runCatching { ShareMode.valueOf(p.getString(KEY_PHOTO_MODE, null).orEmpty()) }.getOrDefault(ShareMode.FOLDERS)
+            val photoFolders = p.getStringSet(KEY_PHOTO_FOLDERS, emptySet()).orEmpty().mapNotNull { it.toLongOrNull() }.toSet()
+            val photoIds = p.getStringSet(KEY_PHOTO_IDS, emptySet()).orEmpty().mapNotNull { it.toLongOrNull() }.toSet()
+            val musicMode = runCatching { ShareMode.valueOf(p.getString(KEY_MUSIC_MODE, null).orEmpty()) }.getOrDefault(ShareMode.FOLDERS)
+            val musicFolders = p.getStringSet(KEY_MUSIC_FOLDERS, emptySet()).orEmpty().mapNotNull { it.toLongOrNull() }.toSet()
+            val musicIds = p.getStringSet(KEY_MUSIC_IDS, emptySet()).orEmpty().mapNotNull { it.toLongOrNull() }.toSet()
             appContext = context.applicationContext
             _state.value = ShareSelection(
                 mode, ids, folders, port, hostname,
                 shareExtras = p.getBoolean(KEY_EXTRAS, false),
+                photoMode = photoMode,
+                photoFolders = photoFolders,
+                photoIds = photoIds,
+                musicMode = musicMode,
+                musicFolders = musicFolders,
+                musicIds = musicIds,
                 autoStopMinutes = p.getInt(KEY_AUTO_STOP, 0).coerceAtLeast(0),
                 wifiOffer = p.getBoolean(KEY_WIFI_OFFER, false),
                 stopOnWifiLost = p.getBoolean(KEY_WIFI_STOP, false),
+                password = p.getString(KEY_PASSWORD, "").orEmpty(),
             )
             instanceId = p.getString(KEY_INSTANCE_ID, null) ?: ByteArray(6).also(java.security.SecureRandom()::nextBytes)
                 .joinToString("") { "%02x".format(it) }
@@ -112,6 +140,36 @@ object ShareSettings {
 
     fun setSelected(ids: Set<Long>) {
         _state.update { it.copy(ids = ids) }
+        persist()
+    }
+
+    fun setPhotoMode(mode: ShareMode) {
+        _state.update { it.copy(photoMode = mode) }
+        persist()
+    }
+
+    fun setPhotoFolders(folders: Set<Long>) {
+        _state.update { it.copy(photoFolders = folders) }
+        persist()
+    }
+
+    fun setPhotoSelected(ids: Set<Long>) {
+        _state.update { it.copy(photoIds = ids) }
+        persist()
+    }
+
+    fun setMusicMode(mode: ShareMode) {
+        _state.update { it.copy(musicMode = mode) }
+        persist()
+    }
+
+    fun setMusicFolders(folders: Set<Long>) {
+        _state.update { it.copy(musicFolders = folders) }
+        persist()
+    }
+
+    fun setMusicSelected(ids: Set<Long>) {
+        _state.update { it.copy(musicIds = ids) }
         persist()
     }
 
@@ -150,6 +208,11 @@ object ShareSettings {
         persist()
     }
 
+    fun setPassword(password: String) {
+        _state.update { it.copy(password = password) }
+        persist()
+    }
+
     @Volatile private var appContext: Context? = null
     // The folder of the videos asked about lately (a plain map, so it also works in tests): the oldest is dropped past 4096.
     private class Folder(val bucket: Long, val at: Long)
@@ -185,18 +248,71 @@ object ShareSettings {
         }
     }
 
+    private fun photoBucketOf(id: Long): Long? {
+        val context = appContext ?: return null
+        return runCatching {
+            context.contentResolver.query(
+                android.content.ContentUris.withAppendedId(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id),
+                arrayOf(android.provider.MediaStore.Images.Media.BUCKET_ID), null, null, null,
+            )?.use { c -> if (c.moveToFirst()) c.getLong(0) else null }
+        }.getOrNull()
+    }
+
+    fun isPhotoAllowed(id: Long, bucketId: Long? = null): Boolean {
+        val s = state.value
+        if (!s.shareExtras) return false
+        return when (s.photoMode) {
+            ShareMode.ALL -> true
+            ShareMode.SELECTED -> id in s.photoIds
+            ShareMode.FOLDERS -> {
+                val b = bucketId ?: photoBucketOf(id)
+                b != null && b in s.photoFolders
+            }
+        }
+    }
+
+    private fun musicAlbumOf(id: Long): Long? {
+        val context = appContext ?: return null
+        return runCatching {
+            context.contentResolver.query(
+                android.content.ContentUris.withAppendedId(android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id),
+                arrayOf(android.provider.MediaStore.Audio.Media.ALBUM_ID), null, null, null,
+            )?.use { c -> if (c.moveToFirst()) c.getLong(0) else null }
+        }.getOrNull()
+    }
+
+    fun isMusicAllowed(id: Long, albumId: Long? = null): Boolean {
+        val s = state.value
+        if (!s.shareExtras) return false
+        return when (s.musicMode) {
+            ShareMode.ALL -> true
+            ShareMode.SELECTED -> id in s.musicIds
+            ShareMode.FOLDERS -> {
+                val a = albumId ?: musicAlbumOf(id)
+                a != null && a in s.musicFolders
+            }
+        }
+    }
+
     private fun persist() {
         val s = _state.value
         prefs?.edit()
             ?.putString(KEY_MODE, s.mode.name)
             ?.putStringSet(KEY_IDS, s.ids.map { it.toString() }.toSet())
             ?.putStringSet(KEY_FOLDERS, s.folders.map { it.toString() }.toSet())
+            ?.putString(KEY_PHOTO_MODE, s.photoMode.name)
+            ?.putStringSet(KEY_PHOTO_FOLDERS, s.photoFolders.map { it.toString() }.toSet())
+            ?.putStringSet(KEY_PHOTO_IDS, s.photoIds.map { it.toString() }.toSet())
+            ?.putString(KEY_MUSIC_MODE, s.musicMode.name)
+            ?.putStringSet(KEY_MUSIC_FOLDERS, s.musicFolders.map { it.toString() }.toSet())
+            ?.putStringSet(KEY_MUSIC_IDS, s.musicIds.map { it.toString() }.toSet())
             ?.putInt(KEY_PORT, s.port)
             ?.putString(KEY_HOSTNAME, s.hostname)
             ?.putBoolean(KEY_EXTRAS, s.shareExtras)
             ?.putInt(KEY_AUTO_STOP, s.autoStopMinutes)
             ?.putBoolean(KEY_WIFI_OFFER, s.wifiOffer)
             ?.putBoolean(KEY_WIFI_STOP, s.stopOnWifiLost)
+            ?.putString(KEY_PASSWORD, s.password)
             ?.apply()
     }
 }

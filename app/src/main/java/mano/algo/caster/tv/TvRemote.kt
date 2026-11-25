@@ -139,15 +139,18 @@ object TvRemote {
     /** A TV that was connected to before: its address as it was typed, the kind of TV, and its MAC address when known. */
     data class SavedTv(val address: String, val kind: String?, val mac: String?)
 
+    /** A device on the LAN that responded on a TV remote port during a scan. */
+    data class FoundDevice(val address: String, val kind: String?)
+
     private val _saved = MutableStateFlow<List<SavedTv>>(emptyList())
 
     /** The TVs used before, the newest first, so one tap connects again. */
     val saved: StateFlow<List<SavedTv>> = _saved.asStateFlow()
 
-    private val _found = MutableStateFlow<List<String>>(emptyList())
+    private val _found = MutableStateFlow<List<FoundDevice>>(emptyList())
 
-    /** Addresses on this network that answered like a TV remote service, after a search. */
-    val found: StateFlow<List<String>> = _found.asStateFlow()
+    /** Devices on this network that answered like a TV remote service, after a search. */
+    val found: StateFlow<List<FoundDevice>> = _found.asStateFlow()
 
     private val _scanning = MutableStateFlow(false)
     val scanning: StateFlow<Boolean> = _scanning.asStateFlow()
@@ -1224,17 +1227,32 @@ object TvRemote {
                     AndroidTvCommands.PAIR_PORT, FireTvCommands.WAKE_PORT, SamsungTvCommands.SECURE_PORT,
                     LgTvCommands.SECURE_PORT, LgTvCommands.PLAIN_PORT, TvCommands.DEFAULT_PORT,
                 )
+                val kindForPort = mapOf(
+                    FireTvCommands.WAKE_PORT to "Fire TV",
+                    AndroidTvCommands.PAIR_PORT to "Android TV",
+                    SamsungTvCommands.SECURE_PORT to "Samsung",
+                    LgTvCommands.SECURE_PORT to "LG",
+                    LgTvCommands.PLAIN_PORT to "LG",
+                    TvCommands.DEFAULT_PORT to "ADB",
+                )
+                val kindPriority = listOf("Fire TV", "Android TV", "Samsung", "LG", "ADB")
                 val hits = (1..254).flatMap { n ->
                     val host = "$prefix.$n"
                     if (host == own) emptyList() else ports.map { port ->
                         async {
-                            val found = gate.withPermit {
+                            val responded = gate.withPermit {
                                 reachable(host, port, 300) && (port != FireTvCommands.WAKE_PORT || answersPlainHttp(host, port))
                             }
-                            if (found) host else null
+                            if (responded) Pair(host, port) else null
                         }
                     }
-                }.awaitAll().filterNotNull().distinct()
+                }.awaitAll().filterNotNull()
+                    .groupBy { it.first }
+                    .map { (host, results) ->
+                        val kind = results.mapNotNull { kindForPort[it.second] }
+                            .minByOrNull { kindPriority.indexOf(it).takeIf { it >= 0 } ?: Int.MAX_VALUE }
+                        FoundDevice(host, kind)
+                    }
                 _found.value = hits
             } finally {
                 _scanning.value = false

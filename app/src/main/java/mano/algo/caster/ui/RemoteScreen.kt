@@ -74,6 +74,12 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.clickable
 import mano.algo.caster.tv.WakeOnLan
+import mano.algo.caster.cast.CastController
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.text.style.TextOverflow
+import mano.algo.caster.ui.theme.LiveGreen
 
 /** The Material "settings remote" glyph, which the core icon set doesn't include. */
 val RemoteIcon: ImageVector by lazy {
@@ -90,12 +96,39 @@ val RemoteIcon: ImageVector by lazy {
     }.build()
 }
 
+val SkipPreviousIcon: ImageVector by lazy {
+    ImageVector.Builder("SkipPrevious", 24.dp, 24.dp, 24f, 24f).apply {
+        addPath(
+            pathData = addPathNodes("M6,6h2v12H6zm3.5,6l8.5,6V6z"),
+            fill = SolidColor(Color.Black),
+        )
+    }.build()
+}
+
+val SkipNextIcon: ImageVector by lazy {
+    ImageVector.Builder("SkipNext", 24.dp, 24.dp, 24f, 24f).apply {
+        addPath(
+            pathData = addPathNodes("M6,18l8.5,-6L6,6v12zM16,6v12h2V6h-2z"),
+            fill = SolidColor(Color.Black),
+        )
+    }.build()
+}
+
+val PauseIcon: ImageVector by lazy {
+    ImageVector.Builder("Pause", 24.dp, 24.dp, 24f, 24f).apply {
+        addPath(
+            pathData = addPathNodes("M6,19h4V5H6v14zm8,-14v14h4V5h-4z"),
+            fill = SolidColor(Color.Black),
+        )
+    }.build()
+}
+
 /** Phone-as-remote for a Fire TV, Android TV, Samsung or LG TV: connect once, then use the buttons like the real remote. */
 @Composable
 fun RemoteScreen(
     state: TvRemote.State,
     savedHost: String,
-    found: List<String>,
+    found: List<TvRemote.FoundDevice>,
     saved: List<TvRemote.SavedTv>,
     scanning: Boolean,
     shareUrl: String?,
@@ -117,11 +150,21 @@ fun RemoteScreen(
     onVoiceEnd: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val castState by CastController.state.collectAsStateWithLifecycle()
     Column(
         modifier = modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        SectionTitle("TV remote", "Control a Fire TV, Android TV, Samsung or LG TV from this phone.")
+        SectionTitle("Remote", "Control connected devices and playback from this phone.")
+        if (castState.device != null) {
+            ChromecastRemoteCard(
+                state = castState,
+                onPrev = { CastController.prev() },
+                onNext = { CastController.next() },
+                onTogglePlay = { CastController.togglePlayback() },
+                onStop = { CastController.stop() },
+            )
+        }
         if (!TvRemote.supported) {
             EmptyState("Needs Android 8 or newer", "The TV remote can't run on this version of Android.")
             return@Column
@@ -134,10 +177,115 @@ fun RemoteScreen(
 }
 
 @Composable
+fun ChromecastRemoteCard(
+    state: CastController.State,
+    onPrev: () -> Unit,
+    onNext: () -> Unit,
+    onTogglePlay: () -> Unit,
+    onStop: () -> Unit,
+) {
+    val scheme = MaterialTheme.colorScheme
+    val kindLabel = when (state.kind) {
+        "i" -> "Slide"
+        "a" -> "Track"
+        else -> "Video"
+    }
+    CasterCard(high = true) {
+        Column(
+            modifier = Modifier.padding(18.dp).fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Box(
+                    modifier = Modifier.size(42.dp).background(LiveGreen.copy(alpha = 0.16f), CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(CastIcon, contentDescription = null, tint = LiveGreen, modifier = Modifier.size(24.dp))
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        state.device ?: "Chromecast",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        if (state.totalCount > 1) "$kindLabel ${state.currentIndex + 1} of ${state.totalCount}"
+                        else "Casting $kindLabel",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = scheme.onSurfaceVariant,
+                    )
+                }
+                TextButton(onClick = onStop) {
+                    Text("Disconnect")
+                }
+            }
+
+            state.title?.let { title ->
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
+            state.error?.let { err ->
+                Text(
+                    err,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = scheme.error,
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedButton(
+                    onClick = onPrev,
+                    shape = CircleShape,
+                    modifier = Modifier.size(54.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                ) {
+                    Icon(SkipPreviousIcon, contentDescription = "Previous $kindLabel")
+                }
+
+                Button(
+                    onClick = onTogglePlay,
+                    shape = CircleShape,
+                    modifier = Modifier.size(64.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                ) {
+                    Icon(
+                        if (state.playing) PauseIcon else Icons.Filled.PlayArrow,
+                        contentDescription = if (state.playing) "Pause" else "Play",
+                        modifier = Modifier.size(32.dp),
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = onNext,
+                    shape = CircleShape,
+                    modifier = Modifier.size(54.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                ) {
+                    Icon(SkipNextIcon, contentDescription = "Next $kindLabel")
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ConnectionCard(
     state: TvRemote.State,
     savedHost: String,
-    found: List<String>,
+    found: List<TvRemote.FoundDevice>,
     saved: List<TvRemote.SavedTv>,
     scanning: Boolean,
     onWake: (address: String, mac: String?) -> Unit,
@@ -277,8 +425,10 @@ private fun ConnectionCard(
                 }
             }
             if (!busy) {
-                found.forEach { address ->
-                    TextButton(onClick = { host = address; onConnect(address) }) { Text("Use $address") }
+                found.forEach { device ->
+                    TextButton(onClick = { host = device.address; onConnect(device.address) }) {
+                        Text(if (device.kind != null) "${device.kind} · ${device.address}" else "Device · ${device.address}")
+                    }
                 }
                 if (found.isEmpty() && !scanning) {
                     // Shown after a search that found nothing, and as the first-time help.

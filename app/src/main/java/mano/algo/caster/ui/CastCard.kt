@@ -43,7 +43,7 @@ import mano.algo.caster.ui.theme.LiveGreen
 import androidx.compose.runtime.LaunchedEffect
 
 /** The Material "cast" glyph, which the core icon set doesn't include. */
-private val CastIcon: ImageVector by lazy {
+internal val CastIcon: ImageVector by lazy {
     ImageVector.Builder("Cast", 24.dp, 24.dp, 24f, 24f).apply {
         addPath(
             pathData = addPathNodes(

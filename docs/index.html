@@ -41,8 +41,11 @@
     background:linear-gradient(135deg,var(--accent),var(--accent-2)); box-shadow:0 6px 16px color-mix(in srgb, var(--accent) 40%, transparent); }
   .chip { margin-left:auto; max-width:40vw; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; color:var(--dim);
     padding:6px 12px; border-radius:999px; background:var(--surface); border:1px solid var(--line); }
+  #disconnectBtn { margin-left:auto; }
+  .chip:not([hidden]) ~ #disconnectBtn { margin-left:0; }
   #back { margin-left:auto; }
   .chip:not([hidden]) ~ #back { margin-left:0; }
+  #disconnectBtn:not([hidden]) ~ #back { margin-left:0; }
 
   main { max-width:980px; margin:0 auto; padding:24px 16px 64px; }
 
@@ -278,12 +281,28 @@
   }
   /* Browsers without flexbox gap (see the script): a margin between neighbours instead. */
   html.no-gap .row > * + *, html.no-gap .transport > * + *, html.no-gap .extras > * + *, html.no-gap .code > * + *, html.no-gap .toolbar > * + *, html.no-gap .topbar > * + *, html.no-gap .brand > * + *, html.no-gap .player-row > * + *, html.no-gap .device > * + *, html.no-gap .tabs > * + *, html.no-gap .strip > * + *, html.no-gap .waiting > * + * { margin-left:10px; }
+
+  /* queue panel */
+  #queuePanel { position:absolute; right:0; top:0; bottom:0; width:min(340px,90vw); z-index:25; display:flex; flex-direction:column;
+    background:rgba(10,12,18,.96); border-left:1px solid rgba(255,255,255,.12); -webkit-backdrop-filter:blur(14px); backdrop-filter:blur(14px); }
+  #queueHeader { display:flex; align-items:center; justify-content:space-between; padding:18px 18px 12px; font-weight:700; font-size:1.1rem; border-bottom:1px solid rgba(255,255,255,.1); }
+  #queueList { flex:1; overflow-y:auto; padding:8px 0; }
+  .qi { display:flex; align-items:center; gap:10px; padding:10px 16px; cursor:pointer; transition:background .12s; }
+  .qi:hover { background:rgba(255,255,255,.07); }
+  .qi.active { background:rgba(124,131,255,.22); }
+  .qi-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; }
+  .qi-rm { flex:none; opacity:.5; font-size:16px; padding:4px 6px; border:0; background:none; color:#fff; cursor:pointer; border-radius:6px; }
+  .qi-rm:hover { opacity:1; background:rgba(255,255,255,.12); }
+  .enqueue { position:absolute; right:8px; top:8px; z-index:2; padding:3px 8px; font-size:12px; font-weight:700; border-radius:8px; border:0; color:#fff;
+    background:rgba(0,0,0,.55); cursor:pointer; opacity:0; transition:opacity .15s; -webkit-backdrop-filter:blur(4px); backdrop-filter:blur(4px); }
+  .video:hover .enqueue, .video:focus-visible .enqueue { opacity:1; }
 </style>
 </head>
 <body>
 <header class="topbar">
   <div class="brand"><span class="logo"><svg viewBox="0 0 24 24" aria-hidden="true" style="stroke-width:1.9"><path d="M6.3 7.4v9.2l7.2-4.6z" fill="currentColor"/><path d="M16.1 9.4a3.2 3.2 0 0 1 0 5.2"/><path d="M18.6 7.1a6.3 6.3 0 0 1 0 9.8" opacity=".75"/></svg></span>Caster</div>
   <span class="chip" id="title" hidden></span>
+  <button class="btn" id="disconnectBtn" hidden>Disconnect</button>
   <button class="btn" id="back" hidden>← Devices</button>
 </header>
 
@@ -326,14 +345,26 @@
 
   <!-- 2. Pairing -->
   <section id="pair" hidden>
-    <div class="card center">
-      <h2>Approve on your phone</h2>
+    <div class="card center" id="pairCard">
+      <h2 id="pairHeading">Connect to your phone</h2>
+      <p class="lead" id="pairPromptHint">Tap below to ask for approval on your phone.</p>
+      <div style="margin:20px 0 8px"><button class="btn primary lg" id="askApprovalBtn">Ask approval</button></div>
       <p class="lead" id="pairHint" hidden>Check that your phone shows the same code, then tap Approve.</p>
       <div class="code" id="pairCode" aria-live="polite"></div>
       <div class="waiting" id="pairWait" hidden><span class="spin dark"></span><span>Waiting for approval…</span></div>
       <p class="note" id="pairTimer"></p>
       <p class="err" id="pairError"></p>
       <button class="btn primary" id="retry" hidden>Try again</button>
+    </div>
+    <div class="card center" id="pairPasswordCard" hidden>
+      <h2>Password required</h2>
+      <p class="lead">This phone requires a password to connect.</p>
+      <input type="password" id="pwInput" placeholder="Enter password" autocomplete="off" style="max-width:280px">
+      <p class="err" id="pwError"></p>
+      <div class="row" style="justify-content:center;margin-top:16px">
+        <button class="btn primary" id="pwSubmit">Connect</button>
+        <button class="btn" id="pwCancel">Cancel</button>
+      </div>
     </div>
   </section>
 
@@ -380,6 +411,7 @@
           <button class="pbtn main" id="pp" aria-label="Play or pause"></button>
           <button class="pbtn" id="fwd" aria-label="Forward 10 seconds">+10s</button>
           <button class="pbtn" id="next">Next</button>
+          <button class="pbtn sm" id="showQueue" aria-label="Queue" title="Queue">≡</button>
           <button class="pbtn" id="subs" aria-label="Subtitles">CC</button>
         </div>
         <div class="extras">
@@ -391,6 +423,10 @@
         <span class="time end" id="tDur">0:00</span>
       </div>
     </div>
+  </div>
+  <div id="queuePanel" hidden>
+    <div id="queueHeader"><span>Queue</span><button class="pbtn sm" id="closeQueue">✕</button></div>
+    <div id="queueList"></div>
   </div>
 </div>
 
@@ -461,6 +497,8 @@
   const base = d => 'http://' + d.host;
   const tokenKey = d => 'caster.token.' + d.host;
   const token = d => store.get(tokenKey(d), null);
+  const pwKey = () => current ? 'caster.pw.' + current.host : null;
+  const savedPw = () => { const k = pwKey(); return k ? store.get(k, null) : null; };
 
   // Static markup only; never built from device or file names.
   const ICONS = {
@@ -484,7 +522,10 @@
 
   let currentView = 'devices';
   function show(view) {
-    if (view !== 'videos') loadSeq++; // leaving the list: an answer still on its way is no longer wanted
+    if (view !== 'videos') {
+      loadSeq++; // leaving the list: an answer still on its way is no longer wanted
+      stopRemoteSync();
+    }
     if (view !== 'pair') stopPairPoll();
     currentView = view;
     for (const id of ['devices', 'pair', 'videos']) $(id).hidden = id !== view;
@@ -492,6 +533,7 @@
     $('title').hidden = view === 'devices' || !current;
     $('title').textContent = current ? current.name || current.host : '';
     $('title').classList.toggle('live', view === 'videos');
+    $('disconnectBtn').hidden = view !== 'videos';
     // One history entry per drill-down so the remote's Back button steps out instead of leaving the page.
     if (view !== 'devices' && !(history.state && (history.state.cv || history.state.pl))) history.pushState({ cv: 1 }, '');
     if (TV && view === 'devices') setTimeout(() => ($('deviceList').querySelector('.btn.primary') || $('scan')).focus(), 0);
@@ -521,7 +563,7 @@
       if (SECURE_PAGE) init.targetAddressSpace = 'local';
       const r = await fetch('http://' + host + '/api/ping', init);
       const j = await r.json();
-      return j && j.app === 'caster' ? { host, name: j.name, id: j.id } : null;
+      return j && j.app === 'caster' ? { host, name: j.name, id: j.id, pw: !!j.pw } : null;
     } catch (_e) { return null; } finally { clearTimeout(timer); }
   }
 
@@ -732,9 +774,10 @@
     if (SECURE_PAGE) { location.href = base(d) + '/'; return; } // top-level navigation to HTTP is allowed
     const found = await ping(d.host);
     if (!found) { $('scanStatus').textContent = d.host + ' is not reachable.'; return; }
-    current = Object.assign({}, d, { name: found.name });
+    current = Object.assign({}, d, { name: found.name, pw: found.pw });
     saveDevice(current);
-    if (token(current)) loadVideos(); else openPairing();
+    if (current.pw && !savedPw()) { showPasswordPrompt(); return; }
+    if (token(current)) loadVideos(); else showPairPrompt();
   }
 
   // ---- pairing ----------------------------------------------------------------------------------------
@@ -774,18 +817,53 @@
     return id;
   }
 
-  // Asks the phone to connect, shows the code, and waits for the owner to approve it there.
-  async function openPairing(message = '') {
+  function showPasswordPrompt(msg = '') {
+    show('pair');
+    $('pairCard').hidden = true;
+    $('pairPasswordCard').hidden = false;
+    $('pwError').textContent = msg;
+    $('pwInput').value = savedPw() || '';
+    $('pwInput').focus();
+  }
+
+  function showPairPrompt(message = '') {
     stopPairPoll();
     show('pair');
+    $('pairPasswordCard').hidden = true;
+    $('pairCard').hidden = false;
+    $('pairHeading').textContent = current && (current.name || current.host) ? 'Connect to ' + (current.name || current.host) : 'Connect to your phone';
+    $('pairPromptHint').hidden = false;
+    $('pairPromptHint').textContent = message || 'Tap below to ask for approval on your phone.';
+    $('askApprovalBtn').hidden = false;
+    $('pairHint').hidden = true;
+    setChildren($('pairCode'));
+    $('pairWait').hidden = true;
+    $('pairTimer').textContent = '';
+    $('pairError').textContent = '';
+    $('retry').hidden = true;
+    if (TV) setTimeout(() => $('askApprovalBtn').focus(), 0);
+  }
+
+  // Asks the phone to connect, shows the code, and waits for the owner to approve it there.
+  async function openPairing(message = '', password = '') {
+    stopPairPoll();
+    show('pair');
+    $('pairPasswordCard').hidden = true;
+    $('pairCard').hidden = false;
+    $('pairHeading').textContent = 'Approve on your phone';
+    $('pairPromptHint').hidden = true;
+    $('askApprovalBtn').hidden = true;
     $('pairError').textContent = message;
     setChildren($('pairCode'));
     $('pairWait').hidden = true;
     $('pairHint').hidden = true;
     $('retry').hidden = true;
     try {
-      const r = await fetch(base(current) + '/api/pair/request?cid=' + encodeURIComponent(clientId()), { method: 'POST' });
+      const pw = password || savedPw() || '';
+      const pwParam = pw ? '&pw=' + encodeURIComponent(pw) : '';
+      const r = await fetch(base(current) + '/api/pair/request?cid=' + encodeURIComponent(clientId()) + pwParam, { method: 'POST' });
       if (r.status === 429) { finishPairing('Another request is waiting on the phone. Try again in a few seconds.'); return; }
+      if (r.status === 401) { const e = await r.json().catch(() => ({})); if (e.error === 'wrong_password') { showPasswordPrompt('Wrong password. Try again.'); return; } throw new Error('unauthorized'); }
       if (!r.ok) throw new Error('request failed');
       const { id, code, expiresInMs } = await r.json();
       setCode(code);
@@ -806,6 +884,25 @@
       };
       pairPoll = setTimeout(poll, 1200);
     } catch (_e) { finishPairing('Could not reach the phone.'); }
+  }
+
+  function handleRevoked(msg = 'Disconnected.') {
+    stopRemoteSync();
+    videos = [];
+    closePlayerNow();
+    if (current) store.del(tokenKey(current));
+    setChildren($('grid'));
+    setChildren($('continue'));
+    showPairPrompt(msg);
+  }
+
+  async function userDisconnect() {
+    if (current && token(current)) {
+      try {
+        fetch(base(current) + '/api/pair/disconnect?t=' + encodeURIComponent(token(current)), { method: 'POST' }).catch(() => {});
+      } catch (_e) {}
+    }
+    handleRevoked('Disconnected.');
   }
 
   // ---- videos -----------------------------------------------------------------------------------------
@@ -835,6 +932,7 @@
   async function loadVideos() {
     const seq = ++loadSeq;
     show('videos');
+    startRemoteSync();
     $('videoStatus').textContent = '';
     setChildren($('grid'), ...Array.from({ length: 8 }, () => {
       const sk = el('div', 'video skeleton');
@@ -846,7 +944,7 @@
       const path = kind === 'v' ? '/api/videos?' : '/api/list?k=' + kind + '&';
       const r = await fetch(base(current) + path + 't=' + encodeURIComponent(token(current)), { cache: 'no-store' });
       if (seq !== loadSeq) return; // another list was asked for (or the user left) while this one was on its way
-      if (r.status === 401) { store.del(tokenKey(current)); openPairing('Pairing expired. Approve the connection again.'); return; }
+      if (r.status === 401) { handleRevoked('Pairing expired.'); return; }
       if (r.status === 403) {
         const e = await r.json().catch(() => ({}));
         if (e.error === 'extras_off' && kind !== 'v') { kind = 'v'; loadVideos(); return; }
@@ -946,6 +1044,11 @@
     observeThumb(thumb, base(current) + '/api/thumb/' + v.id + '?t=' + t + '&k=' + kind);
     thumb.append(icon('play', 'play-badge'));
     if (v.durationMs > 0) thumb.append(el('span', 'duration', fmtDuration(v.durationMs)));
+    const enqBtn = el('button', 'enqueue', '+Q');
+    enqBtn.setAttribute('aria-label', 'Add to queue');
+    enqBtn.setAttribute('title', 'Add to queue');
+    enqBtn.onclick = e => { e.stopPropagation(); enqueueVideo(v); };
+    thumb.append(enqBtn);
     const saved = positions[pid(v)];
     if (saved && saved.d > 0) {
       const bar = el('div', 'progress');
@@ -996,7 +1099,7 @@
   const video = $('video');
   const playerEl = $('player');
   const isOpen = () => playerEl.classList.contains('open');
-  let queueIndex = -1, uiTimer = null, toastTimer = null, resumeAt = 0, lastSave = 0, currentId = null;
+  let queueIndex = -1, queueOpen = false, uiTimer = null, toastTimer = null, resumeAt = 0, lastSave = 0, currentId = null;
 
   const fmtClock = sec => {
     if (!isFinite(sec) || sec < 0) sec = 0;
@@ -1063,6 +1166,7 @@
     const v = playQueue[index];
     if (!v) return;
     queueIndex = index;
+    if (queueOpen) renderQueuePanel();
     currentId = pid(v);
     resumeAt = (readPositions()[currentId] || {}).t || 0;
     $('playerTitle').textContent = v.name;
@@ -1108,8 +1212,45 @@
     startRemoteSync();
   }
 
+  function renderQueuePanel() {
+    const list = $('queueList');
+    setChildren(list);
+    playQueue.forEach((v, i) => {
+      const row = el('div', 'qi' + (i === queueIndex ? ' active' : ''));
+      const name = el('span', 'qi-name', v.name);
+      const rm = el('button', 'qi-rm', '✕');
+      rm.setAttribute('aria-label', 'Remove from queue');
+      rm.onclick = e => { e.stopPropagation(); removeFromQueue(i); };
+      row.append(name, rm);
+      row.onclick = () => openVideo(i);
+      list.append(row);
+    });
+    // scroll active item into view
+    const active = list.querySelector('.qi.active');
+    if (active) active.scrollIntoView({ block: 'nearest' });
+  }
+
+  function removeFromQueue(i) {
+    if (i === queueIndex) return; // can't remove what's playing
+    playQueue.splice(i, 1);
+    if (i < queueIndex) queueIndex--;
+    $('next').disabled = queueIndex >= playQueue.length - 1;
+    renderQueuePanel();
+  }
+
+  function enqueueVideo(v) {
+    const alreadyAt = playQueue.findIndex(x => x.id === v.id);
+    if (alreadyAt >= 0) { toast('Already in queue'); return; }
+    playQueue.push(v);
+    if (queueOpen) renderQueuePanel();
+    $('next').disabled = queueIndex >= playQueue.length - 1;
+    toast('Added to queue');
+  }
+
   function closePlayerNow() {
     if (!isOpen()) return;
+    queueOpen = false;
+    $('queuePanel').hidden = true;
     savePosition(true);
     const id = currentId;
     video.pause();
@@ -1263,6 +1404,7 @@
   // ---- phone as remote: report what is playing, run what the phone owner pressed -----------------------
   let syncTimer = null, remoteOk = true;
   async function syncRemote(idle) {
+    if (!current || !token(current) || currentView !== 'videos') { stopRemoteSync(); return; }
     const v = playQueue[queueIndex];
     const state = idle || !isOpen() || !v ? 'idle' : kind === 'i' || video.paused ? 'paused' : 'playing';
     let q = '&s=' + state;
@@ -1273,17 +1415,20 @@
     try {
       const r = await fetch(base(current) + '/api/remote?t=' + encodeURIComponent(token(current)) + q, { cache: 'no-store' });
       if (r.status === 404) { remoteOk = false; stopRemoteSync(); return; }   // an older phone build
-      if (r.status === 401) { stopRemoteSync(); return; }                       // pairing was revoked
+      if (r.status === 401) {
+        handleRevoked('Disconnected by phone.');
+        return;
+      }
       if (!r.ok) return;
       for (const c of (await r.json()).cmds || []) runRemoteCommand(c);
     } catch (_e) { /* the phone is momentarily unreachable; the next tick tries again */ }
   }
   function startRemoteSync() {
     if (!remoteOk || syncTimer) return;
-    syncTimer = setInterval(() => syncRemote(false), 1000);
+    syncTimer = setInterval(() => syncRemote(false), 1200);
   }
   function stopRemoteSync() {
-    if (syncTimer) { clearInterval(syncTimer); syncTimer = null; syncRemote(true); }
+    if (syncTimer) { clearInterval(syncTimer); syncTimer = null; }
   }
   function runRemoteCommand(c) {
     if (!isOpen()) return; // the player was closed while this command was on its way
@@ -1536,7 +1681,25 @@
   // ---- wiring -----------------------------------------------------------------------------------------
   $('scan').onclick = scan;
   $('addForm').onsubmit = addManual;
+  $('askApprovalBtn').onclick = () => openPairing();
+  $('disconnectBtn').onclick = userDisconnect;
   $('retry').onclick = () => openPairing();
+  $('pwSubmit').onclick = () => {
+    const pw = $('pwInput').value.trim();
+    if (!pw) { $('pwError').textContent = 'Enter a password.'; return; }
+    const k = pwKey();
+    if (k) store.set(k, pw);
+    openPairing('', pw);
+  };
+  $('pwCancel').onclick = () => show('devices');
+  $('pwInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('pwSubmit').click(); });
+  $('showQueue').onclick = () => {
+    queueOpen = !queueOpen;
+    $('queuePanel').hidden = !queueOpen;
+    if (queueOpen) renderQueuePanel();
+    showUi();
+  };
+  $('closeQueue').onclick = () => { queueOpen = false; $('queuePanel').hidden = true; };
   $('filter').oninput = renderVideos;
   $('refresh').onclick = () => loadVideos();
   $('close').onclick = closePlayer;
@@ -1595,7 +1758,7 @@
         current = self;
         saveDevice(self);
         renderDevices();
-        if (token(self)) loadVideos(); else openPairing();
+        if (token(self)) loadVideos(); else showPairPrompt();
         return;
       }
     }

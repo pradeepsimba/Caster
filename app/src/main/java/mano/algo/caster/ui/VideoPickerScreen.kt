@@ -56,7 +56,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import mano.algo.caster.server.ShareSettings
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import mano.algo.caster.cast.CastController
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
 
 private data class PickerVideo(val id: Long, val name: String, val durationMs: Long, val size: Long)
 
@@ -202,18 +208,19 @@ private val thumbnailCache = object : LruCache<Long, Bitmap>(8 * 1024 * 1024) {
 
 @Suppress("DEPRECATION")
 @Composable
-internal fun Thumbnail(id: Long) {
+internal fun Thumbnail(id: Long, kind: String = "v") {
     val context = LocalContext.current
-    // Loaded lazily per visible row; older Android has no cheap thumbnail API, so it shows the placeholder.
+    val table = if (kind == "i") MediaStore.Images.Media.EXTERNAL_CONTENT_URI else MediaStore.Video.Media.EXTERNAL_CONTENT_URI
     val bitmap by produceState<ImageBitmap?>(initialValue = thumbnailCache.get(id)?.asImageBitmap(), id) {
         if (value == null) {
             value = withContext(Dispatchers.IO) {
                 runCatching {
                     val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        val uri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
+                        val uri = ContentUris.withAppendedId(table, id)
                         context.contentResolver.loadThumbnail(uri, Size(192, 108), null)
+                    } else if (kind == "i") {
+                        MediaStore.Images.Thumbnails.getThumbnail(context.contentResolver, id, MediaStore.Images.Thumbnails.MINI_KIND, null)
                     } else {
-                        // Android 9 and older: the old thumbnail store.
                         MediaStore.Video.Thumbnails.getThumbnail(context.contentResolver, id, MediaStore.Video.Thumbnails.MINI_KIND, null)
                     }
                     bitmap?.also { thumbnailCache.put(id, it) }?.asImageBitmap()
@@ -237,19 +244,55 @@ internal fun Thumbnail(id: Long) {
     }
 }
 
-/** Full-screen list of the videos that are shared; tapping one hands it to [onPick] (used to start it on a Chromecast). */
+data class PickerItem(val id: Long, val name: String, val detail: String, val kind: String = "v")
+
+/** Full-screen list of the media that are shared; tapping one hands it to [onPick] (used to start it on a Chromecast). */
 @Composable
 fun CastPickerScreen(
     onCancel: () -> Unit,
-    onPick: (id: Long, name: String) -> Unit,
-    onPlayAll: (videos: List<Pair<Long, String>>, shuffle: Boolean) -> Unit,
+    onPick: (id: Long, name: String, kind: String) -> Unit,
+    onPlayAll: (items: List<CastController.CastItem>, shuffle: Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    val videos by produceState<List<PickerVideo>?>(initialValue = null) {
-        // Only what the owner shares: the server refuses the rest, so the Chromecast could never fetch it.
-        value = withContext(Dispatchers.IO) { queryVideos(context).filter { ShareSettings.isAllowed(it.id) } }
+    val selection by mano.algo.caster.server.ShareSettings.state.collectAsStateWithLifecycle()
+    var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+    val tabs = buildList {
+        add("Videos")
+        if (selection.shareExtras) {
+            add("Photos")
+            add("Music")
+        }
     }
+
+    val videos by produceState<List<PickerItem>?>(initialValue = null) {
+        value = withContext(Dispatchers.IO) {
+            queryVideos(context).filter { mano.algo.caster.server.ShareSettings.isAllowed(it.id) }
+                .map { PickerItem(it.id, it.name, "${formatDuration(it.durationMs)} · ${formatSize(it.size)}", "v") }
+        }
+    }
+
+    val photos by produceState<List<PickerItem>?>(initialValue = null, selection.shareExtras) {
+        value = if (!selection.shareExtras) emptyList() else withContext(Dispatchers.IO) {
+            queryPhotos(context).filter { mano.algo.caster.server.ShareSettings.isPhotoAllowed(it.id) }
+                .map { PickerItem(it.id, it.name, formatSize(it.size), "i") }
+        }
+    }
+
+    val music by produceState<List<PickerItem>?>(initialValue = null, selection.shareExtras) {
+        value = if (!selection.shareExtras) emptyList() else withContext(Dispatchers.IO) {
+            queryMusic(context).filter { mano.algo.caster.server.ShareSettings.isMusicAllowed(it.id) }
+                .map { PickerItem(it.id, it.name, "${formatDuration(it.durationMs)} · ${formatSize(it.size)}", "a") }
+        }
+    }
+
+    val currentTab = tabs.getOrElse(selectedTab.coerceIn(0, tabs.size - 1)) { "Videos" }
+    val (items, currentKind) = when (currentTab) {
+        "Photos" -> photos to "i"
+        "Music" -> music to "a"
+        else -> videos to "v"
+    }
+
     BackHandler(onBack = onCancel)
 
     Column(modifier = modifier.fillMaxSize()) {
@@ -258,20 +301,51 @@ fun CastPickerScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = onCancel) { Icon(Icons.Filled.Close, contentDescription = "Cancel") }
-            Text("Choose a video to cast", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            Text(
+                when (currentKind) {
+                    "i" -> "Choose a photo to cast"
+                    "a" -> "Choose music to cast"
+                    else -> "Choose a video to cast"
+                },
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
         }
-        val list = videos
+
+        if (tabs.size > 1) {
+            TabRow(selectedTabIndex = selectedTab.coerceIn(0, tabs.size - 1)) {
+                tabs.forEachIndexed { index, title ->
+                    Tab(
+                        selected = selectedTab == index,
+                        onClick = { selectedTab = index },
+                        text = { Text(title) },
+                    )
+                }
+            }
+        }
+
+        val list = items
         if (!list.isNullOrEmpty()) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                val all = list.map { it.id to it.name }
-                androidx.compose.material3.FilledTonalButton(onClick = { onPlayAll(all, false) }, modifier = Modifier.weight(1f)) { Text("Play all") }
-                androidx.compose.material3.FilledTonalButton(onClick = { onPlayAll(all, true) }, modifier = Modifier.weight(1f)) { Text("Shuffle") }
+                val castItems = list.map { CastController.CastItem(it.id, it.name, currentKind) }
+                androidx.compose.material3.FilledTonalButton(
+                    onClick = { onPlayAll(castItems, false) },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(if (currentKind == "i") "Start slideshow" else "Play all")
+                }
+                androidx.compose.material3.FilledTonalButton(
+                    onClick = { onPlayAll(castItems, true) },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Shuffle")
+                }
             }
             Text(
-                "Plays up to ${mano.algo.caster.cast.CastController.QUEUE_MAX} videos, one after the other.",
+                "Plays up to ${mano.algo.caster.cast.CastController.QUEUE_MAX} items, one after the other.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 20.dp),
@@ -281,16 +355,229 @@ fun CastPickerScreen(
             when {
                 list == null -> CircularProgressIndicator()
                 list.isEmpty() -> Text(
-                    "No shared videos. Choose videos under \"Videos to share\" on the main page first.",
+                    "No shared ${currentTab.lowercase()}. Choose them on the main page first.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    items(list, key = { it.id }) { video ->
-                        VideoRow(video = video, checked = null, onToggle = { onPick(video.id, video.name) })
+                    items(list, key = { it.id }) { item ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onPick(item.id, item.name, currentKind) }
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (currentKind != "a") {
+                                Thumbnail(item.id, kind = currentKind)
+                                Spacer(Modifier.width(14.dp))
+                            }
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(item.name, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                Text(item.detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
                     }
                 }
             }
+        }
+    }
+}
+
+// ----------------- Photo Picker -----------------
+
+data class PickerPhoto(val id: Long, val name: String, val size: Long)
+
+fun queryPhotos(context: Context): List<PickerPhoto> {
+    val projection = arrayOf(
+        MediaStore.Images.Media._ID,
+        MediaStore.Images.Media.DISPLAY_NAME,
+        MediaStore.Images.Media.SIZE,
+    )
+    val result = ArrayList<PickerPhoto>()
+    try {
+        context.contentResolver.query(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI, projection, null, null,
+            "${MediaStore.Images.Media.DATE_ADDED} DESC",
+        )?.use { c ->
+            while (c.moveToNext()) {
+                result += PickerPhoto(c.getLong(0), c.getString(1) ?: "photo", c.getLong(2))
+            }
+        }
+    } catch (e: SecurityException) {
+    }
+    return result
+}
+
+@Composable
+fun PhotoPickerScreen(
+    initialSelection: Set<Long>,
+    onCancel: () -> Unit,
+    onDone: (Set<Long>) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val photos by produceState<List<PickerPhoto>?>(initialValue = null) {
+        value = withContext(Dispatchers.IO) { queryPhotos(context) }
+    }
+    val selected = rememberSaveable(
+        saver = listSaver<SnapshotStateSet<Long>, Long>(
+            save = { it.toList() },
+            restore = { mutableStateSetOf<Long>().apply { addAll(it) } },
+        ),
+    ) { mutableStateSetOf<Long>().apply { addAll(initialSelection) } }
+
+    LaunchedEffect(photos) {
+        photos?.takeIf { it.isNotEmpty() }?.let { list -> selected.retainAll(list.map { it.id }.toSet()) }
+    }
+    BackHandler(onBack = onCancel)
+
+    Column(modifier = modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onCancel) { Icon(Icons.Filled.Close, contentDescription = "Cancel") }
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Choose photos", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                Text("${selected.size} selected", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            TextButton(onClick = { photos?.let { list -> selected.addAll(list.map { it.id }) } }) { Text("All") }
+            TextButton(onClick = { selected.clear() }) { Text("None") }
+        }
+
+        val list = photos
+        Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+            when {
+                list == null -> CircularProgressIndicator()
+                list.isEmpty() -> Text("No photos found on this phone.", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    items(list, key = { it.id }) { photo ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { if (!selected.add(photo.id)) selected.remove(photo.id) }
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Thumbnail(photo.id, kind = "i")
+                            Spacer(Modifier.width(14.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(photo.name, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                Text(formatSize(photo.size), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Checkbox(checked = photo.id in selected, onCheckedChange = null)
+                        }
+                    }
+                }
+            }
+        }
+
+        Button(
+            onClick = { onDone(selected.toSet()) },
+            modifier = Modifier.fillMaxWidth().padding(16.dp).height(54.dp),
+            shape = RoundedCornerShape(16.dp),
+        ) {
+            Text(if (selected.isEmpty()) "Share no photos" else "Share ${selected.size} photo${if (selected.size == 1) "" else "s"}")
+        }
+    }
+}
+
+// ----------------- Music Picker -----------------
+
+data class PickerMusic(val id: Long, val name: String, val durationMs: Long, val size: Long)
+
+fun queryMusic(context: Context): List<PickerMusic> {
+    val projection = arrayOf(
+        MediaStore.Audio.Media._ID,
+        MediaStore.Audio.Media.TITLE,
+        MediaStore.Audio.Media.DURATION,
+        MediaStore.Audio.Media.SIZE,
+    )
+    val result = ArrayList<PickerMusic>()
+    try {
+        context.contentResolver.query(
+            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, projection,
+            "${MediaStore.Audio.Media.IS_MUSIC} != 0", null,
+            "${MediaStore.Audio.Media.DATE_ADDED} DESC",
+        )?.use { c ->
+            while (c.moveToNext()) {
+                result += PickerMusic(c.getLong(0), c.getString(1) ?: "track", c.getLong(2), c.getLong(3))
+            }
+        }
+    } catch (e: SecurityException) {
+    }
+    return result
+}
+
+@Composable
+fun MusicPickerScreen(
+    initialSelection: Set<Long>,
+    onCancel: () -> Unit,
+    onDone: (Set<Long>) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val music by produceState<List<PickerMusic>?>(initialValue = null) {
+        value = withContext(Dispatchers.IO) { queryMusic(context) }
+    }
+    val selected = rememberSaveable(
+        saver = listSaver<SnapshotStateSet<Long>, Long>(
+            save = { it.toList() },
+            restore = { mutableStateSetOf<Long>().apply { addAll(it) } },
+        ),
+    ) { mutableStateSetOf<Long>().apply { addAll(initialSelection) } }
+
+    LaunchedEffect(music) {
+        music?.takeIf { it.isNotEmpty() }?.let { list -> selected.retainAll(list.map { it.id }.toSet()) }
+    }
+    BackHandler(onBack = onCancel)
+
+    Column(modifier = modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onCancel) { Icon(Icons.Filled.Close, contentDescription = "Cancel") }
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Choose music", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                Text("${selected.size} selected", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            TextButton(onClick = { music?.let { list -> selected.addAll(list.map { it.id }) } }) { Text("All") }
+            TextButton(onClick = { selected.clear() }) { Text("None") }
+        }
+
+        val list = music
+        Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+            when {
+                list == null -> CircularProgressIndicator()
+                list.isEmpty() -> Text("No music found on this phone.", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    items(list, key = { it.id }) { track ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { if (!selected.add(track.id)) selected.remove(track.id) }
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(track.name, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                Text("${formatDuration(track.durationMs)} · ${formatSize(track.size)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Checkbox(checked = track.id in selected, onCheckedChange = null)
+                        }
+                    }
+                }
+            }
+        }
+
+        Button(
+            onClick = { onDone(selected.toSet()) },
+            modifier = Modifier.fillMaxWidth().padding(16.dp).height(54.dp),
+            shape = RoundedCornerShape(16.dp),
+        ) {
+            Text(if (selected.isEmpty()) "Share no music" else "Share ${selected.size} track${if (selected.size == 1) "" else "s"}")
         }
     }
 }

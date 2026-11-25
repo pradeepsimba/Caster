@@ -281,7 +281,7 @@ class MediaServerService : Service() {
                         host, port, name, requestedPort = wanted, requestedName = wantedName,
                         hotspot = NetworkUtils.isHotspot(this@MediaServerService),
                     ),
-                    "Sharing your videos" + if (port != wanted) " (the usual port was busy; see Settings)" else "",
+                    "$host:$port" + if (port != wanted) " (usual port was busy)" else "",
                 )
                 return@withLock
             }
@@ -443,7 +443,7 @@ class MediaServerService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         return NotificationCompat.Builder(this, PAIRING_CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_menu_share)
+            .setSmallIcon(R.drawable.ic_tile)
             .setContentTitle("Connect ${request.label}?")
             .setContentText("Approve only if the code on its screen is ${request.code}")
             .setStyle(NotificationCompat.BigTextStyle().bigText("Approve only if the code on its screen is ${request.code}"))
@@ -472,7 +472,7 @@ class MediaServerService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setSmallIcon(R.drawable.ic_tile)
             .setContentTitle(title)
             .setContentText(text)
             .setContentIntent(openApp)

@@ -23,6 +23,7 @@ import kotlinx.coroutines.launch
 import mano.algo.caster.MainActivity
 import mano.algo.caster.R
 import mano.algo.caster.server.MediaServerService
+import mano.algo.caster.server.NetworkUtils
 import mano.algo.caster.server.ServerState
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -75,8 +76,12 @@ class QuickActionActivity : ComponentActivity() {
         val restart = wantOn && MediaServerService.state.value is ServerState.Error
         if (wantOn && (!on || restart)) {
             if (canStartHere(this)) {
-                if (restart) MediaServerService.stop(this)
-                MediaServerService.start(this)
+                if (NetworkUtils.resolveLocalIpv4(this) == null) {
+                    Toast.makeText(this, "No Wi-Fi or hotspot. Turn on Mobile Hotspot to share.", Toast.LENGTH_LONG).show()
+                } else {
+                    if (restart) MediaServerService.stop(this)
+                    MediaServerService.start(this)
+                }
             } else {
                 // Something has to be allowed first, and only the app can ask.
                 Toast.makeText(this, "Open Caster once to allow access to your videos.", Toast.LENGTH_LONG).show()
@@ -113,6 +118,11 @@ class ShareTileService : TileService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var job: Job? = null
 
+    override fun onTileAdded() {
+        super.onTileAdded()
+        render(MediaServerService.state.value)
+    }
+
     override fun onStartListening() {
         super.onStartListening()
         job?.cancel()
@@ -133,6 +143,7 @@ class ShareTileService : TileService() {
         val tile = qsTile ?: return
         val on = QuickActionActivity.isOn(state)
         tile.state = if (on) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
+        tile.icon = android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_tile)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) tile.subtitle = if (on) "Sharing" else "Off"
         tile.updateTile()
     }

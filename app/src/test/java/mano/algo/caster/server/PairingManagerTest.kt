@@ -176,4 +176,15 @@ class PairingManagerTest {
         val other = approveWithToken("Laptop", "other3333other")
         assertEquals(true, PairingManager.allows(other, 42L)) // another name: not limited
     }
+
+    @Test
+    fun revokingByTokenDisconnectsTheScreen() {
+        PairingManager.clearKnown()
+        val token = approveWithToken("Web Browser", "browser1234")
+        assertEquals(true, PairingManager.isValid(token))
+        assertEquals(1, PairingManager.devices.value.size)
+        PairingManager.revokeByToken(token)
+        assertEquals(false, PairingManager.isValid(token))
+        assertEquals(0, PairingManager.devices.value.size)
+    }
 }

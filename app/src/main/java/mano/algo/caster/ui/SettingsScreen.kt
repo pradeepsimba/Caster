@@ -1,38 +1,75 @@
 package mano.algo.caster.ui
 
 import android.os.Build
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Button
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import mano.algo.caster.server.ServerState
 import mano.algo.caster.server.ShareSettings
+import mano.algo.caster.ui.theme.LiveGreen
 
 @Composable
 fun SettingsScreen(
@@ -56,259 +93,605 @@ fun SettingsScreen(
     onWifiOffer: (Boolean) -> Unit,
     stopOnWifiLost: Boolean,
     onStopOnWifiLost: (Boolean) -> Unit,
+    password: String,
+    onSetPassword: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    // Re-seeded whenever the saved port changes, so Reset and external changes show up in the field.
-    var text by rememberSaveable(preferredPort) { mutableStateOf(preferredPort.toString()) }
-    val parsed = text.toIntOrNull()
-    val valid = parsed != null && ShareSettings.isValidPort(parsed)
-    val changed = parsed != preferredPort
     val focus = LocalFocusManager.current
-
-    val error = when {
-        text.isEmpty() -> "Enter a port number"
-        parsed == null -> "Digits only"
-        parsed < ShareSettings.MIN_PORT -> "Android doesn't allow ports below ${ShareSettings.MIN_PORT}"
-        parsed > ShareSettings.MAX_PORT -> "Ports go up to ${ShareSettings.MAX_PORT}"
-        else -> null
-    }
-
-    fun apply() {
-        if (valid && changed) {
-            onSavePort(parsed!!)
-            focus.clearFocus()
-        }
-    }
+    val scope = rememberCoroutineScope()
 
     Column(
-        modifier = modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
+        modifier = modifier
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 18.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
-        // The address of this phone is shown here and nowhere else in the app.
-        AddressCard(state, onCopy, onShare)
+        // 1. TOP HERO: Web connection address & quick actions
+        AddressHeroCard(state = state, onCopy = onCopy, onShare = onShare)
 
-        // The everyday options first; the technical ones (port, name) below.
-        CasterCard(high = false) {
-            Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("Photos and music", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                        Text(
-                            "Also show every photo and song on this phone to approved screens. Videos keep following the \"Videos to share\" choice.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Switch(checked = shareExtras, onCheckedChange = onShareExtras)
-                }
-            }
+        // 2. SHARING & AUTOMATION
+        SectionHeader("Sharing & Automation")
+        SettingsGroup {
+            SettingsSwitchRow(
+                title = "Photos & Music",
+                subtitle = "Share phone photos and music alongside videos",
+                checked = shareExtras,
+                onChange = onShareExtras,
+            )
+
+            SettingsDivider()
+
+            AutoStopSection(
+                currentMinutes = autoStopMinutes,
+                onSelectMinutes = onAutoStop,
+            )
+
+            SettingsDivider()
+
+            SettingsSwitchRow(
+                title = "Offer to share on Wi-Fi",
+                subtitle = "Show notification to start sharing upon joining Wi-Fi",
+                checked = wifiOffer,
+                onChange = onWifiOffer,
+            )
+
+            SettingsDivider()
+
+            SettingsSwitchRow(
+                title = "Auto-disconnect on Wi-Fi loss",
+                subtitle = "Stop sharing if the connected Wi-Fi drops",
+                checked = stopOnWifiLost,
+                onChange = onStopOnWifiLost,
+            )
         }
 
-        CasterCard(high = false) {
-            Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Auto-stop timer", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                Text(
-                    "Stop sharing by itself after this long, counted from when sharing started. Saves battery if you forget.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    listOf(0 to "Off", 30 to "30 min", 60 to "1 hour", 120 to "2 hours", 240 to "4 hours").forEach { (minutes, label) ->
-                        FilterChip(
-                            selected = autoStopMinutes == minutes,
-                            onClick = { onAutoStop(minutes) },
-                            label = { Text(label) },
-                        )
-                    }
-                }
-            }
+        // 3. SECURITY & PRIVACY
+        SectionHeader("Security & Privacy")
+        SettingsGroup {
+            AppLockRow(
+                lockOn = lockOn,
+                onSetPin = onSetPin,
+                onRemovePin = onRemovePin,
+            )
+
+            SettingsDivider()
+
+            WebPasswordRow(
+                password = password,
+                onSetPassword = onSetPassword,
+            )
+
+            SettingsDivider()
+
+            HistoryRow(
+                onOpenHistory = onOpenHistory,
+                onClearResume = onClearResume,
+            )
         }
 
-        CasterCard(high = false) {
-            Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                SettingSwitch(
-                    "Offer to share on Wi-Fi",
-                    "When this phone joins a Wi-Fi network, show a notification with a button to start sharing.",
-                    wifiOffer,
-                    onWifiOffer,
-                )
-                SettingSwitch(
-                    "Stop when the Wi-Fi is lost",
-                    "Sharing stops by itself when you leave the Wi-Fi it started on.",
-                    stopOnWifiLost,
-                    onStopOnWifiLost,
-                )
-            }
+        // 4. NETWORK & ADVANCED
+        SectionHeader("Network & Advanced")
+        SettingsGroup {
+            SpeedTestRow(
+                state = state,
+                scope = scope,
+            )
+
+            SettingsDivider()
+
+            DeviceNameRow(
+                state = state,
+                preferredName = preferredName,
+                onSaveName = onSaveName,
+            )
+
+            SettingsDivider()
+
+            PortRow(
+                state = state,
+                preferredPort = preferredPort,
+                onSavePort = onSavePort,
+            )
         }
 
-        CasterCard(high = false) {
-            Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Privacy", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                Text(
-                    if (lockOn) "A PIN is needed to open Caster." else "Ask for a PIN to open Caster, so nobody else can change what is shared.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    androidx.compose.material3.OutlinedButton(onClick = onSetPin, shape = RoundedCornerShape(14.dp)) {
-                        Text(if (lockOn) "Change PIN" else "Set a PIN")
-                    }
-                    if (lockOn) TextButton(onClick = onRemovePin) { Text("Remove PIN") }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    androidx.compose.material3.OutlinedButton(onClick = onOpenHistory, shape = RoundedCornerShape(14.dp)) { Text("Watch history") }
-                    TextButton(onClick = onClearResume) { Text("Forget resume points") }
-                }
-            }
-        }
-
-        Text(
-            "Advanced",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(start = 4.dp, top = 8.dp),
-        )
-
-        CasterCard(high = false) {
-            Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Port", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                Text(
-                    "The number at the end of the address, like :$preferredPort. If it's already in use, " +
-                        "Caster automatically uses the next free one.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = { text = it.filter(Char::isDigit).take(5) },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Preferred port") },
-                    singleLine = true,
-                    isError = error != null,
-                    supportingText = { Text(error ?: "Between ${ShareSettings.MIN_PORT} and ${ShareSettings.MAX_PORT}") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
-                    keyboardActions = KeyboardActions(onDone = { apply() }),
-                    shape = RoundedCornerShape(14.dp),
-                )
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = ::apply,
-                        enabled = valid && changed,
-                        modifier = Modifier.height(48.dp),
-                        shape = RoundedCornerShape(14.dp),
-                    ) { Text("Apply") }
-                    TextButton(
-                        onClick = { text = ShareSettings.DEFAULT_PORT.toString(); onSavePort(ShareSettings.DEFAULT_PORT); focus.clearFocus() },
-                        enabled = preferredPort != ShareSettings.DEFAULT_PORT || text != ShareSettings.DEFAULT_PORT.toString(),
-                    ) { Text("Reset to ${ShareSettings.DEFAULT_PORT}") }
-                }
-
-                // What is happening right now, so the setting never feels like it silently did nothing.
-                val status = when (state) {
-                    is ServerState.Running -> when {
-                        state.portChanged -> "Port ${state.requestedPort} was busy, so Caster is using ${state.port}."
-                        else -> "Listening on port ${state.port}."
-                    }
-                    ServerState.Stopped -> "Saved. It takes effect the next time you start sharing."
-                    ServerState.Starting -> "Starting…"
-                    is ServerState.Error -> "Not running right now."
-                }
-                Text(status, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-                if (state is ServerState.Running) {
-                    Text(
-                        "Changing the port restarts sharing; connected screens may need to reconnect to the new address.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-
-        NameCard(state, preferredName, onSaveName)
-
-        CasterCard(high = false) {
-            Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("About", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                Text(
-                    "Caster shares your videos only over your own Wi-Fi. Every screen must be approved here first.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+        // 5. SYSTEM & DIAGNOSTICS
+        SectionHeader("System & About")
+        SettingsGroup {
+            AboutRow()
         }
 
         DiagnosticsCard()
+
+        Spacer(modifier = Modifier.height(16.dp))
     }
 }
 
+// ---------------------------------------------------------------------------
+// STYLED SECTION COMPONENTS & CONTAINERS
+// ---------------------------------------------------------------------------
+
 @Composable
-private fun SettingSwitch(title: String, text: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+private fun SectionHeader(title: String) {
+    Text(
+        text = title.uppercase(),
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 1.2.sp,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(start = 6.dp, top = 4.dp),
+    )
+}
+
+@Composable
+private fun SettingsGroup(content: @Composable ColumnScope.() -> Unit) {
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
+        modifier = Modifier.fillMaxWidth(),
+        content = content,
+    )
+}
+
+@Composable
+private fun SettingsDivider() {
+    HorizontalDivider(
+        modifier = Modifier.padding(horizontal = 16.dp),
+        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// 1. TOP HERO: ADDRESS CARD
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun AddressHeroCard(
+    state: ServerState,
+    onCopy: (String) -> Unit,
+    onShare: (String) -> Unit,
+) {
+    val isRunning = state is ServerState.Running
+    val urls = if (isRunning) {
+        val s = state as ServerState.Running
+        if (s.hotspot) listOf(s.baseUrl) else listOfNotNull(s.nameUrl, s.baseUrl)
+    } else emptyList()
+
+    Card(
+        shape = RoundedCornerShape(26.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isRunning) MaterialTheme.colorScheme.surfaceContainerHigh else MaterialTheme.colorScheme.surfaceContainerLow,
+        ),
+        border = BorderStroke(
+            width = if (isRunning) 1.5.dp else 1.dp,
+            color = if (isRunning) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+        ),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .background(if (isRunning) LiveGreen else MaterialTheme.colorScheme.outline, CircleShape),
+                    )
+                    Text(
+                        text = if (isRunning) "SERVER ACTIVE" else "SERVER IDLE",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp,
+                        color = if (isRunning) LiveGreen else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                if (isRunning && (state as ServerState.Running).hotspot) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                    ) {
+                        Text(
+                            "Hotspot",
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                        )
+                    }
+                }
+            }
+
+            if (!isRunning) {
+                Text(
+                    text = "Start sharing from the home screen to access your media link for TV or computer browsers.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = "Browser Access Link",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    SelectionContainer {
+                        Text(
+                            text = urls.last(),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    if (urls.size > 1) {
+                        Text(
+                            text = "Or local name: ${urls.first()}",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Button(
+                        onClick = { onCopy(urls.last()) },
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Copy Address")
+                    }
+                    FilledTonalButton(
+                        onClick = { onShare(urls.last()) },
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Share Link")
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 2. SHARING & AUTOMATION ROWS
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun SettingsSwitchRow(
+    title: String,
+    subtitle: String? = null,
+    checked: Boolean,
+    onChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+            if (subtitle != null) {
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         Switch(checked = checked, onCheckedChange = onChange)
     }
 }
 
 @Composable
-private fun AddressCard(state: ServerState, onCopy: (String) -> Unit, onShare: (String) -> Unit) {
-    CasterCard(high = false) {
-        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("Address", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            if (state !is ServerState.Running) {
-                Text(
-                    "Start sharing to get the address of this phone.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                return@Column
-            }
+private fun AutoStopSection(
+    currentMinutes: Int,
+    onSelectMinutes: (Int) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text("Auto-Stop Timer", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
             Text(
-                "Type this in the browser of a TV or computer on the same Wi-Fi.",
+                "Stop sharing after selected duration to preserve battery",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            // On a hotspot the name stops resolving once the screen turns off, so the numbers lead there.
-            val urls = if (state.hotspot) listOf(state.baseUrl) else listOfNotNull(state.nameUrl, state.baseUrl)
-            urls.forEachIndexed { index, url ->
-                androidx.compose.foundation.text.selection.SelectionContainer {
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            val options = listOf(0 to "Off", 30 to "30 min", 60 to "1 hour", 120 to "2 hours", 240 to "4 hours")
+            options.forEach { (minutes, label) ->
+                val selected = currentMinutes == minutes
+                FilterChip(
+                    selected = selected,
+                    onClick = { onSelectMinutes(minutes) },
+                    label = { Text(label, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal) },
+                    shape = RoundedCornerShape(12.dp),
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    ),
+                )
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 3. SECURITY & PRIVACY ROWS
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun AppLockRow(
+    lockOn: Boolean,
+    onSetPin: () -> Unit,
+    onRemovePin: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text("App Lock PIN", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = if (lockOn) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+                ) {
                     Text(
-                        url,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                    )
-                }
-                if (index == 0 && urls.size > 1) {
-                    Text(
-                        "If the name doesn't open (Android and Fire TV can't resolve it), use the one with numbers:",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        if (lockOn) "Active" else "Disabled",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (lockOn) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                     )
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                androidx.compose.material3.OutlinedButton(
-                    onClick = { onCopy(urls.last()) },
-                    shape = RoundedCornerShape(14.dp),
-                ) { Text("Copy") }
-                androidx.compose.material3.OutlinedButton(
-                    onClick = { onShare(urls.last()) },
-                    shape = RoundedCornerShape(14.dp),
-                ) { Text("Share") }
+            Text(
+                if (lockOn) "Requires PIN to open Caster" else "Protect app settings and sharing with a PIN",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedButton(
+                onClick = onSetPin,
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                Text(if (lockOn) "Change" else "Set PIN")
+            }
+            if (lockOn) {
+                TextButton(onClick = onRemovePin) {
+                    Text("Remove")
+                }
             }
         }
     }
 }
 
 @Composable
-private fun NameCard(state: ServerState, preferredName: String, onSaveName: (String) -> Unit) {
+private fun WebPasswordRow(
+    password: String,
+    onSetPassword: (String) -> Unit,
+) {
+    var passwordText by rememberSaveable(password) { mutableStateOf(password) }
+    val passwordChanged = passwordText != password
+    val focus = LocalFocusManager.current
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text("Web Access Password", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                if (password.isNotEmpty()) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = MaterialTheme.colorScheme.tertiaryContainer,
+                    ) {
+                        Text(
+                            "Protected",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
+                    }
+                }
+            }
+            Text(
+                if (password.isEmpty()) "Allow any screen on Wi-Fi to request pairing, or set a password to gate pairing."
+                else "Screens must enter this password before they can pair.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedTextField(
+                value = passwordText,
+                onValueChange = { passwordText = it.take(50) },
+                modifier = Modifier.weight(1f),
+                label = { Text("Password") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = {
+                    if (passwordChanged) {
+                        onSetPassword(passwordText)
+                        focus.clearFocus()
+                    }
+                }),
+                shape = RoundedCornerShape(14.dp),
+            )
+
+            Button(
+                onClick = {
+                    onSetPassword(passwordText)
+                    focus.clearFocus()
+                },
+                enabled = passwordChanged,
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                Text(if (password.isEmpty()) "Set" else "Update")
+            }
+
+            if (password.isNotEmpty()) {
+                TextButton(onClick = {
+                    passwordText = ""
+                    onSetPassword("")
+                }) {
+                    Text("Clear")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HistoryRow(
+    onOpenHistory: () -> Unit,
+    onClearResume: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text("Playback & History", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+            Text(
+                "Manage watched video log and saved resume positions",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            OutlinedButton(
+                onClick = onOpenHistory,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Watch History")
+            }
+            OutlinedButton(
+                onClick = onClearResume,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("Clear Resume")
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 4. NETWORK & ADVANCED ROWS
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun SpeedTestRow(
+    state: ServerState,
+    scope: kotlinx.coroutines.CoroutineScope,
+) {
+    var speedResult by rememberSaveable { mutableStateOf<String?>(null) }
+    var speedTesting by rememberSaveable { mutableStateOf(false) }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text("Local Wi-Fi Speed Test", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+            Text(
+                speedResult ?: if (state is ServerState.Running) "Benchmark throughput between phone and network" else "Start sharing first to test",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (speedResult != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                fontWeight = if (speedResult != null) FontWeight.Medium else FontWeight.Normal,
+            )
+        }
+
+        Button(
+            onClick = {
+                scope.launch {
+                    speedTesting = true
+                    speedResult = null
+                    try {
+                        val port = (state as? ServerState.Running)?.port ?: ShareSettings.DEFAULT_PORT
+                        val start = System.nanoTime()
+                        val bytes = withContext(Dispatchers.IO) {
+                            java.net.URL("http://127.0.0.1:$port/api/speed").readBytes()
+                        }
+                        val elapsed = (System.nanoTime() - start) / 1e9
+                        val mbps = bytes.size / elapsed / 1_000_000
+                        speedResult = "%.1f MB/s (%.0f Mbps)".format(mbps, mbps * 8)
+                    } catch (_: Exception) {
+                        speedResult = "Failed"
+                    }
+                    speedTesting = false
+                }
+            },
+            enabled = state is ServerState.Running && !speedTesting,
+            shape = RoundedCornerShape(12.dp),
+        ) {
+            Text(if (speedTesting) "Testing…" else "Run Test")
+        }
+    }
+}
+
+@Composable
+private fun DeviceNameRow(
+    state: ServerState,
+    preferredName: String,
+    onSaveName: (String) -> Unit,
+) {
     var text by rememberSaveable(preferredName) { mutableStateOf(preferredName) }
     val valid = ShareSettings.isValidHostname(text)
     val changed = text != preferredName
@@ -328,56 +711,182 @@ private fun NameCard(state: ServerState, preferredName: String, onSaveName: (Str
         }
     }
 
-    CasterCard(high = false) {
-        Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Device name", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text("Device Hostname", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
             Text(
-                "How other screens find this phone: http://$preferredName.local (announced on Android 16 and newer; on older phones use the IP address). If two phones on the same Wi-Fi " +
-                    "share, give each its own name. A name that's already taken gets -2, -3 and so on added.",
+                "Announced as http://$preferredName.local on local networks (Android 16+)",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
 
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             OutlinedTextField(
                 value = text,
-                onValueChange = { input -> text = input.lowercase().filter { it in 'a'..'z' || it in '0'..'9' || it == '-' }.take(32) },
-                modifier = Modifier.fillMaxWidth(),
+                onValueChange = { input ->
+                    text = input.lowercase().filter { it in 'a'..'z' || it in '0'..'9' || it == '-' }.take(32)
+                },
+                modifier = Modifier.weight(1f),
                 label = { Text("Name") },
                 suffix = { Text(".local") },
                 singleLine = true,
                 isError = error != null,
-                supportingText = { Text(error ?: "Up to 32 characters") },
+                supportingText = error?.let { { Text(it) } },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(onDone = { apply() }),
                 shape = RoundedCornerShape(14.dp),
             )
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = ::apply,
-                    enabled = valid && changed,
-                    modifier = Modifier.height(48.dp),
-                    shape = RoundedCornerShape(14.dp),
-                ) { Text("Apply") }
-                TextButton(
-                    onClick = { text = ShareSettings.DEFAULT_HOSTNAME; onSaveName(ShareSettings.DEFAULT_HOSTNAME); focus.clearFocus() },
-                    enabled = preferredName != ShareSettings.DEFAULT_HOSTNAME || text != ShareSettings.DEFAULT_HOSTNAME,
-                ) { Text("Reset to ${ShareSettings.DEFAULT_HOSTNAME}") }
+            Button(
+                onClick = ::apply,
+                enabled = valid && changed,
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                Text("Apply")
             }
 
-            val status = when (state) {
-                is ServerState.Running -> when {
-                    state.announcedName == null && Build.VERSION.SDK_INT < Build.VERSION_CODES.BAKLAVA ->
-                        "Names aren't announced on Android 15 and older (it could stop the Chromecast search from finding devices). Use the IP address."
-                    state.announcedName == null -> "Couldn't announce a name on this network. Use the IP address instead."
-                    state.nameChanged -> "${state.requestedName}.local is already used on this network, so this phone is ${state.announcedName}."
-                    else -> "This phone is reachable as ${state.announcedName}."
+            if (preferredName != ShareSettings.DEFAULT_HOSTNAME || text != ShareSettings.DEFAULT_HOSTNAME) {
+                TextButton(onClick = {
+                    text = ShareSettings.DEFAULT_HOSTNAME
+                    onSaveName(ShareSettings.DEFAULT_HOSTNAME)
+                    focus.clearFocus()
+                }) {
+                    Text("Reset")
                 }
-                ServerState.Stopped -> "Saved. It takes effect when you start sharing."
-                ServerState.Starting -> "Starting…"
-                is ServerState.Error -> "Not running right now."
             }
-            Text(status, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
         }
+    }
+}
+
+@Composable
+private fun PortRow(
+    state: ServerState,
+    preferredPort: Int,
+    onSavePort: (Int) -> Unit,
+) {
+    var text by rememberSaveable(preferredPort) { mutableStateOf(preferredPort.toString()) }
+    val parsed = text.toIntOrNull()
+    val valid = parsed != null && ShareSettings.isValidPort(parsed)
+    val changed = parsed != preferredPort
+    val focus = LocalFocusManager.current
+
+    val error = when {
+        text.isEmpty() -> "Enter port"
+        parsed == null -> "Digits only"
+        parsed < ShareSettings.MIN_PORT -> "Min ${ShareSettings.MIN_PORT}"
+        parsed > ShareSettings.MAX_PORT -> "Max ${ShareSettings.MAX_PORT}"
+        else -> null
+    }
+
+    fun apply() {
+        if (valid && changed) {
+            onSavePort(parsed!!)
+            focus.clearFocus()
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text("Listening Port", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+            val portStatus = when (state) {
+                is ServerState.Running -> if (state.portChanged) "Port ${state.requestedPort} busy; using :${state.port}" else "Listening on :${state.port}"
+                else -> "Default :${ShareSettings.DEFAULT_PORT}. Auto-adjusts if occupied."
+            }
+            Text(
+                portStatus,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it.filter(Char::isDigit).take(5) },
+                modifier = Modifier.weight(1f),
+                label = { Text("Port") },
+                singleLine = true,
+                isError = error != null,
+                supportingText = error?.let { { Text(it) } },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { apply() }),
+                shape = RoundedCornerShape(14.dp),
+            )
+
+            Button(
+                onClick = ::apply,
+                enabled = valid && changed,
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                Text("Apply")
+            }
+
+            if (preferredPort != ShareSettings.DEFAULT_PORT || text != ShareSettings.DEFAULT_PORT.toString()) {
+                TextButton(onClick = {
+                    text = ShareSettings.DEFAULT_PORT.toString()
+                    onSavePort(ShareSettings.DEFAULT_PORT)
+                    focus.clearFocus()
+                }) {
+                    Text("Reset")
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 5. SYSTEM & ABOUT ROWS
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun AboutRow() {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Caster Local Media Server", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.secondaryContainer,
+            ) {
+                Text(
+                    "v1.0",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                )
+            }
+        }
+        Text(
+            "Caster streams media exclusively across your local Wi-Fi network. No cloud, no tracking, and no external relay servers.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }

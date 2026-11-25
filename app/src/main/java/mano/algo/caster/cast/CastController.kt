@@ -47,7 +47,23 @@ object CastController {
         val error: String? = null,
         /** The id the Cast library gives the connected Chromecast (what [recent] remembers it by). */
         val deviceId: String? = null,
+        val kind: String = "v",
+        val currentIndex: Int = 0,
+        val totalCount: Int = 0,
     )
+
+    data class CastItem(val id: Long, val name: String, val kind: String = "v")
+
+    private val _playlist = MutableStateFlow<List<CastItem>>(emptyList())
+    val playlist: StateFlow<List<CastItem>> = _playlist.asStateFlow()
+
+    private val _currentIndex = MutableStateFlow(0)
+    val currentIndex: StateFlow<Int> = _currentIndex.asStateFlow()
+
+    private val _currentKind = MutableStateFlow("v")
+    val currentKind: StateFlow<String> = _currentKind.asStateFlow()
+
+    private var lastBaseUrl: String = ""
 
     /** A Chromecast that was connected before. */
     data class Recent(val id: String, val name: String)
@@ -138,13 +154,17 @@ object CastController {
         val status = c.mediaStatus
         val failed = status?.playerState == MediaStatus.PLAYER_STATE_IDLE &&
             status.idleReason == MediaStatus.IDLE_REASON_ERROR
+        val title = c.mediaInfo?.metadata?.getString(MediaMetadata.KEY_TITLE)
         _state.value = _state.value.copy(
-            title = c.mediaInfo?.metadata?.getString(MediaMetadata.KEY_TITLE),
+            title = title ?: _state.value.title,
+            kind = _currentKind.value,
+            currentIndex = _currentIndex.value,
+            totalCount = _playlist.value.size,
             // Buffering and loading count as playing, so the button reads "Pause" rather than "Play" while it starts.
             playing = status?.playerState.let {
                 it == MediaStatus.PLAYER_STATE_PLAYING || it == MediaStatus.PLAYER_STATE_BUFFERING || it == MediaStatus.PLAYER_STATE_LOADING
             },
-            error = if (failed) "The Chromecast couldn't play this video. Its format may not be supported." else null,
+            error = if (failed) "The Chromecast couldn't play this media. Its format may not be supported." else null,
         )
     }
 
@@ -152,88 +172,184 @@ object CastController {
      * Starts [name] on the connected Chromecast. [baseUrl] is the media server's address (an IP, because a
      * Chromecast can't resolve `.local` names). Returns false when no Chromecast is connected.
      */
-    fun cast(context: Context, id: Long, name: String, baseUrl: String): Boolean {
+    fun cast(context: Context, id: Long, name: String, baseUrl: String, kind: String = "v"): Boolean {
         val c = client
         if (c == null) {
             // The Chromecast went away (or never connected): say so instead of doing nothing.
             _state.value = _state.value.copy(error = "Not connected to a Chromecast. Choose one first.")
             return false
         }
-        load(context, id, name, baseUrl)
+        _playlist.value = listOf(CastItem(id, name, kind))
+        _currentIndex.value = 0
+        _currentKind.value = kind
+        lastBaseUrl = baseUrl
+        load(context, id, name, baseUrl, kind)
         return true
     }
 
-    /** Everything the Chromecast needs to fetch one video: the address (with the pass), a picture, and subtitles when there are any. */
-    private fun mediaInfo(context: Context, id: Long, name: String, baseUrl: String, token: String): MediaInfo {
-        val query = "?t=" + Uri.encode(token) + "&k=v"
-        val uri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
-        val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull() ?: "video/mp4"
-        val metadata = MediaMetadata(MediaMetadata.MEDIA_TYPE_MOVIE).apply {
-            putString(MediaMetadata.KEY_TITLE, name)
-            addImage(WebImage(Uri.parse(baseUrl + "api/thumb/" + id + query)))
+    /** Everything the Chromecast needs to fetch one item: the address (with the pass), a picture, and subtitles when there are any. */
+    private fun mediaInfo(context: Context, id: Long, name: String, baseUrl: String, token: String, kind: String = "v"): MediaInfo {
+        val query = "?t=" + Uri.encode(token) + "&k=" + Uri.encode(kind)
+        return when (kind) {
+            "i" -> {
+                val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+                val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull() ?: "image/jpeg"
+                val metadata = MediaMetadata(MediaMetadata.MEDIA_TYPE_PHOTO).apply {
+                    putString(MediaMetadata.KEY_TITLE, name)
+                    addImage(WebImage(Uri.parse(baseUrl + "api/thumb/" + id + query)))
+                }
+                MediaInfo.Builder(baseUrl + "video/" + id + query)
+                    .setStreamType(MediaInfo.STREAM_TYPE_BUFFERED)
+                    .setContentType(mime)
+                    .setMetadata(metadata)
+                    .build()
+            }
+            "a" -> {
+                val uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id)
+                val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull() ?: "audio/mpeg"
+                val metadata = MediaMetadata(MediaMetadata.MEDIA_TYPE_MUSIC_TRACK).apply {
+                    putString(MediaMetadata.KEY_TITLE, name)
+                    addImage(WebImage(Uri.parse(baseUrl + "api/thumb/" + id + query)))
+                }
+                MediaInfo.Builder(baseUrl + "video/" + id + query)
+                    .setStreamType(MediaInfo.STREAM_TYPE_BUFFERED)
+                    .setContentType(mime)
+                    .setMetadata(metadata)
+                    .build()
+            }
+            else -> {
+                val uri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
+                val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull() ?: "video/mp4"
+                val metadata = MediaMetadata(MediaMetadata.MEDIA_TYPE_MOVIE).apply {
+                    putString(MediaMetadata.KEY_TITLE, name)
+                    addImage(WebImage(Uri.parse(baseUrl + "api/thumb/" + id + query)))
+                }
+                val builder = MediaInfo.Builder(baseUrl + "video/" + id + query)
+                    .setStreamType(MediaInfo.STREAM_TYPE_BUFFERED)
+                    .setContentType(mime)
+                    .setMetadata(metadata)
+                // A .srt or .vtt next to the video: the phone serves it as WebVTT, which the Chromecast shows.
+                if (runCatching { SubtitleFinder.find(context, uri) }.getOrNull() != null) {
+                    builder.setMediaTracks(
+                        listOf(
+                            MediaTrack.Builder(SUBTITLE_TRACK, MediaTrack.TYPE_TEXT)
+                                .setContentId(baseUrl + "api/sub/" + id + query)
+                                .setContentType("text/vtt")
+                                .setSubtype(MediaTrack.SUBTYPE_SUBTITLES)
+                                .setName("Subtitles")
+                                .setLanguage("en")
+                                .build(),
+                        ),
+                    )
+                }
+                builder.build()
+            }
         }
-        val builder = MediaInfo.Builder(baseUrl + "video/" + id + query)
-            .setStreamType(MediaInfo.STREAM_TYPE_BUFFERED)
-            .setContentType(mime)
-            .setMetadata(metadata)
-        // A .srt or .vtt next to the video: the phone serves it as WebVTT, which the Chromecast shows.
-        if (runCatching { SubtitleFinder.find(context, uri) }.getOrNull() != null) {
-            builder.setMediaTracks(
-                listOf(
-                    MediaTrack.Builder(SUBTITLE_TRACK, MediaTrack.TYPE_TEXT)
-                        .setContentId(baseUrl + "api/sub/" + id + query)
-                        .setContentType("text/vtt")
-                        .setSubtype(MediaTrack.SUBTYPE_SUBTITLES)
-                        .setName("Subtitles")
-                        .setLanguage("en")
-                        .build(),
-                ),
-            )
-        }
-        return builder.build()
     }
 
-    /** Hands the Chromecast the address of the selected video and starts it (where it was stopped, when that is known). */
-    private fun load(context: Context, id: Long, name: String, baseUrl: String) {
+    /** Hands the Chromecast the address of the selected media and starts it (where it was stopped, when that is known). */
+    private fun load(context: Context, id: Long, name: String, baseUrl: String, kind: String = "v") {
         if (client == null) return
         val token = PairingManager.issueLocal(TOKEN_LABEL)
-        _state.value = _state.value.copy(title = name, error = null)
-        // Looking for subtitle files reads the phone's storage: not on the main thread. The Cast library is used on it again after.
+        _state.value = _state.value.copy(
+            title = name,
+            kind = kind,
+            error = null,
+            currentIndex = _currentIndex.value,
+            totalCount = _playlist.value.size.coerceAtLeast(1),
+        )
         background.launch {
-            val info = mediaInfo(context, id, name, baseUrl, token)
+            val info = mediaInfo(context, id, name, baseUrl, token, kind)
             val request = MediaLoadRequestData.Builder().setMediaInfo(info).setAutoplay(true)
-            ResumeStore.get(id)?.let { request.setCurrentTime(it.positionSec * 1000L) }
-            if (!info.mediaTracks.isNullOrEmpty()) request.setActiveTrackIds(longArrayOf(SUBTITLE_TRACK))
+            if (kind == "v") {
+                ResumeStore.get(id)?.let { request.setCurrentTime(it.positionSec * 1000L) }
+                if (!info.mediaTracks.isNullOrEmpty()) request.setActiveTrackIds(longArrayOf(SUBTITLE_TRACK))
+            }
             withContext(Dispatchers.Main) { client?.load(request.build()) }
         }
     }
 
     private val background = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    /** At most this many videos go to the Chromecast's queue at once (a long list is slow to hand over). */
+    /** At most this many items go to the Chromecast's queue at once (a long list is slow to hand over). */
     const val QUEUE_MAX = 20
 
-    /** Plays [videos] one after the other on the connected Chromecast, in this order or mixed. False when none is connected. */
-    fun castAll(context: Context, videos: List<Pair<Long, String>>, baseUrl: String, shuffle: Boolean): Boolean {
+    /** Plays [items] one after the other on the connected Chromecast. False when none is connected. */
+    fun castPlaylist(context: Context, items: List<CastItem>, startIndex: Int = 0, baseUrl: String): Boolean {
         val c = client
         if (c == null) {
             _state.value = _state.value.copy(error = "Not connected to a Chromecast. Choose one first.")
             return false
         }
-        val list = (if (shuffle) videos.shuffled() else videos).take(QUEUE_MAX)
-        if (list.isEmpty()) return false
+        val clamped = items.take(QUEUE_MAX)
+        if (clamped.isEmpty()) return false
+        val start = startIndex.coerceIn(0, clamped.size - 1)
+        _playlist.value = clamped
+        _currentIndex.value = start
+        val current = clamped[start]
+        _currentKind.value = current.kind
+        lastBaseUrl = baseUrl
         val token = PairingManager.issueLocal(TOKEN_LABEL)
-        _state.value = _state.value.copy(title = list.first().second, error = null)
+        _state.value = _state.value.copy(
+            title = current.name,
+            kind = current.kind,
+            error = null,
+            currentIndex = start,
+            totalCount = clamped.size,
+        )
+
         background.launch {
-            val items = list.map { (id, name) ->
-                MediaQueueItem.Builder(mediaInfo(context, id, name, baseUrl, token))
+            val queueItems = clamped.map { item ->
+                MediaQueueItem.Builder(mediaInfo(context, item.id, item.name, baseUrl, token, item.kind))
                     .setAutoplay(true)
                     .setPreloadTime(20.0)
-                    .apply { ResumeStore.get(id)?.let { setStartTime(it.positionSec.toDouble()) } }
+                    .apply { if (item.kind == "v") ResumeStore.get(item.id)?.let { setStartTime(it.positionSec.toDouble()) } }
                     .build()
             }
-            withContext(Dispatchers.Main) { client?.queueLoad(items.toTypedArray(), 0, MediaStatus.REPEAT_MODE_REPEAT_OFF, null) }
+            withContext(Dispatchers.Main) {
+                client?.queueLoad(queueItems.toTypedArray(), start, MediaStatus.REPEAT_MODE_REPEAT_OFF, null)
+            }
         }
+        return true
+    }
+
+    /** Plays [videos] one after the other on the connected Chromecast, in this order or mixed. False when none is connected. */
+    fun castAll(context: Context, videos: List<Pair<Long, String>>, baseUrl: String, shuffle: Boolean): Boolean {
+        val list = (if (shuffle) videos.shuffled() else videos).take(QUEUE_MAX)
+        if (list.isEmpty()) return false
+        val items = list.map { CastItem(it.first, it.second, "v") }
+        return castPlaylist(context, items, 0, baseUrl)
+    }
+
+    /** Switches to the next slide, video, or music track. */
+    fun next(context: Context? = appContext): Boolean {
+        val c = client ?: return false
+        val list = _playlist.value
+        val nextIdx = _currentIndex.value + 1
+        if (list.isNotEmpty() && nextIdx < list.size) {
+            _currentIndex.value = nextIdx
+            val item = list[nextIdx]
+            val ctx = context ?: appContext ?: return false
+            load(ctx, item.id, item.name, lastBaseUrl, item.kind)
+            return true
+        }
+        c.queueNext(null)
+        return true
+    }
+
+    /** Switches to the previous slide, video, or music track. */
+    fun prev(context: Context? = appContext): Boolean {
+        val c = client ?: return false
+        val list = _playlist.value
+        val prevIdx = _currentIndex.value - 1
+        if (list.isNotEmpty() && prevIdx >= 0) {
+            _currentIndex.value = prevIdx
+            val item = list[prevIdx]
+            val ctx = context ?: appContext ?: return false
+            load(ctx, item.id, item.name, lastBaseUrl, item.kind)
+            return true
+        }
+        c.queuePrev(null)
         return true
     }
 

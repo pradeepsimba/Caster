@@ -87,7 +87,9 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import mano.algo.caster.security.PinLock
 import mano.algo.caster.server.ResumeStore
 import mano.algo.caster.server.WatchLog
+import mano.algo.caster.server.NetworkUtils
 import mano.algo.caster.server.WifiWatcher
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.TextButton
 import mano.algo.caster.cast.ShareIntake
 import mano.algo.caster.quick.QuickActionActivity
@@ -237,7 +239,10 @@ fun CasterApp() {
     var showRemote by rememberSaveable { mutableStateOf(false) } // the TV remote, as a page that floats over Home
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var picking by rememberSaveable { mutableStateOf(false) }
+    var photoPicking by rememberSaveable { mutableStateOf(false) }
+    var musicPicking by rememberSaveable { mutableStateOf(false) }
     var castPicking by rememberSaveable { mutableStateOf(false) }
+    var showHotspotDialog by rememberSaveable { mutableStateOf(false) }
 
     fun granted(permission: String) =
         ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
@@ -295,7 +300,13 @@ fun CasterApp() {
             MediaServerService.start(context)
         }
     }
-    fun startAfterStorage() = withLocalNetwork(runIfDenied = true) { startAfterLocalNetwork() }
+    fun startAfterStorage() {
+        if (NetworkUtils.resolveLocalIpv4(context) == null) {
+            showHotspotDialog = true
+        } else {
+            withLocalNetwork(runIfDenied = true) { startAfterLocalNetwork() }
+        }
+    }
 
     // Everything the app can use is asked for as soon as it opens, so nothing fails later for a missing permission:
     // videos, photos and music (or the single storage permission on older Android), notifications, and the local network.
@@ -410,6 +421,17 @@ fun CasterApp() {
     // A video sent here from the gallery with "Share": start sharing if needed, then play it once a Chromecast is connected.
     val incoming by ShareIntake.pending.collectAsStateWithLifecycle()
     val castNow by CastController.state.collectAsStateWithLifecycle()
+
+    var lastCastItem by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(castNow.device, castNow.title) {
+        if (castNow.device != null && castNow.title != null) {
+            val key = "${castNow.device}:${castNow.title}"
+            if (lastCastItem != key) {
+                lastCastItem = key
+                showRemote = true
+            }
+        }
+    }
     LaunchedEffect(incoming, state, castNow.device) {
         val item = incoming ?: return@LaunchedEffect
         CastController.init(context)
@@ -523,23 +545,56 @@ fun CasterApp() {
         return
     }
 
+    if (photoPicking) {
+        FullScreenPage {
+            PhotoPickerScreen(
+                initialSelection = selection.photoIds,
+                onCancel = { photoPicking = false },
+                onDone = { ids ->
+                    ShareSettings.setPhotoSelected(ids)
+                    ShareSettings.setPhotoMode(ShareMode.SELECTED)
+                    photoPicking = false
+                },
+            )
+        }
+        return
+    }
+
+    if (musicPicking) {
+        FullScreenPage {
+            MusicPickerScreen(
+                initialSelection = selection.musicIds,
+                onCancel = { musicPicking = false },
+                onDone = { ids ->
+                    ShareSettings.setMusicSelected(ids)
+                    ShareSettings.setMusicMode(ShareMode.SELECTED)
+                    musicPicking = false
+                },
+            )
+        }
+        return
+    }
+
     if (castPicking) {
         FullScreenPage {
             CastPickerScreen(
                 onCancel = { castPicking = false },
-                onPick = { id, name ->
+                onPick = { id, name, kind ->
                     val running = state as? ServerState.Running
                     if (running != null) {
-                        CastController.cast(context, id, name, running.baseUrl)
+                        CastController.cast(context, id, name, running.baseUrl, kind)
+                        showRemote = true
                     } else {
-                        Toast.makeText(context, "Sharing has stopped. Start sharing, then choose the video again.", Toast.LENGTH_LONG).show()
+                        Toast.makeText(context, "Sharing has stopped. Start sharing, then choose again.", Toast.LENGTH_LONG).show()
                     }
                     castPicking = false
                 },
-                onPlayAll = { videos, shuffle ->
+                onPlayAll = { items, shuffle ->
                     val running = state as? ServerState.Running
                     if (running != null) {
-                        CastController.castAll(context, videos, running.baseUrl, shuffle)
+                        val list = if (shuffle) items.shuffled() else items
+                        CastController.castPlaylist(context, list, 0, running.baseUrl)
+                        showRemote = true
                     } else {
                         Toast.makeText(context, "Sharing has stopped. Start sharing, then choose again.", Toast.LENGTH_LONG).show()
                     }
@@ -617,6 +672,8 @@ fun CasterApp() {
                         ShareSettings.setStopOnWifiLost(on)
                         WifiWatcher.refresh(context)
                     },
+                    password = selection.password,
+                    onSetPassword = ShareSettings::setPassword,
                     modifier = Modifier.weight(1f).imePadding(),
                 )
             }
@@ -688,7 +745,12 @@ fun CasterApp() {
             },
             onStart = { if (granted(STORAGE_PERMISSION)) startAfterStorage() else storagePermission.launch(STORAGE_PERMISSION) },
             onStop = { MediaServerService.stop(context) },
-            onApprove = { duration -> PairingManager.approve(duration) },
+            onApprove = { duration, videoMode, photoMode, musicMode ->
+                ShareSettings.setMode(videoMode)
+                photoMode?.let { ShareSettings.setPhotoMode(it) }
+                musicMode?.let { ShareSettings.setMusicMode(it) }
+                PairingManager.approve(duration)
+            },
             onDeny = { PairingManager.deny() },
             onAllowBackground = { requestBatteryExemption(context) },
             onAppSettings = { openBatteryScreen(context) },
@@ -719,7 +781,10 @@ fun CasterApp() {
                         ShareIntake.offer(id, name)
                         CastController.requestChooser()
                     }
-                    CastController.cast(context, id, name, running.baseUrl) -> Toast.makeText(context, "Playing $name on ${castNow.device}", Toast.LENGTH_SHORT).show()
+                    CastController.cast(context, id, name, running.baseUrl) -> {
+                        Toast.makeText(context, "Playing $name on ${castNow.device}", Toast.LENGTH_SHORT).show()
+                        showRemote = true
+                    }
                 }
             },
             onFoldersMode = { ShareSettings.setMode(ShareMode.FOLDERS) },
@@ -728,9 +793,78 @@ fun CasterApp() {
                 ShareSettings.setFolders(ids)
                 ShareSettings.setMode(ShareMode.FOLDERS)
             },
+            onPhotoFoldersMode = { ShareSettings.setPhotoMode(ShareMode.FOLDERS) },
+            onPhotoSelectedMode = {
+                if (selection.photoIds.isEmpty()) photoPicking = true else ShareSettings.setPhotoMode(ShareMode.SELECTED)
+            },
+            onChoosePhotos = { photoPicking = true },
+            onRemovePhoto = { id -> ShareSettings.setPhotoSelected(selection.photoIds - id) },
+            onPlayPhoto = { id, name ->
+                val running = state as? ServerState.Running
+                CastController.init(context)
+                when {
+                    !CastController.state.value.available ->
+                        Toast.makeText(context, "Chromecast needs Google Play services, which this phone doesn't have.", Toast.LENGTH_LONG).show()
+                    running == null -> Toast.makeText(context, "Start sharing first.", Toast.LENGTH_SHORT).show()
+                    castNow.device == null -> CastController.requestChooser()
+                    CastController.cast(context, id, name, running.baseUrl, "i") -> {
+                        Toast.makeText(context, "Showing $name on ${castNow.device}", Toast.LENGTH_SHORT).show()
+                        showRemote = true
+                    }
+                }
+            },
+            onSavePhotoFolders = { ids ->
+                ShareSettings.setPhotoFolders(ids)
+                ShareSettings.setPhotoMode(ShareMode.FOLDERS)
+            },
+            onMusicFoldersMode = { ShareSettings.setMusicMode(ShareMode.FOLDERS) },
+            onMusicSelectedMode = {
+                if (selection.musicIds.isEmpty()) musicPicking = true else ShareSettings.setMusicMode(ShareMode.SELECTED)
+            },
+            onChooseMusic = { musicPicking = true },
+            onRemoveMusic = { id -> ShareSettings.setMusicSelected(selection.musicIds - id) },
+            onPlayMusic = { id, name ->
+                val running = state as? ServerState.Running
+                CastController.init(context)
+                when {
+                    !CastController.state.value.available ->
+                        Toast.makeText(context, "Chromecast needs Google Play services, which this phone doesn't have.", Toast.LENGTH_LONG).show()
+                    running == null -> Toast.makeText(context, "Start sharing first.", Toast.LENGTH_SHORT).show()
+                    castNow.device == null -> CastController.requestChooser()
+                    CastController.cast(context, id, name, running.baseUrl, "a") -> {
+                        Toast.makeText(context, "Playing $name on ${castNow.device}", Toast.LENGTH_SHORT).show()
+                        showRemote = true
+                    }
+                }
+            },
+            onSaveMusicFolders = { ids ->
+                ShareSettings.setMusicFolders(ids)
+                ShareSettings.setMusicMode(ShareMode.FOLDERS)
+            },
             onLimitScreen = { limitFor = it.clientId },
             onOpenSettings = { showSettings = true },
             modifier = Modifier.padding(padding).consumeWindowInsets(padding),
+        )
+    }
+
+    if (showHotspotDialog) {
+        AlertDialog(
+            onDismissRequest = { showHotspotDialog = false },
+            title = { Text("No Wi-Fi or hotspot") },
+            text = { Text("Connect to a Wi-Fi network, or turn on Mobile Hotspot so other devices can reach Caster.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showHotspotDialog = false
+                    try {
+                        context.startActivity(Intent("android.settings.TETHER_SETTINGS"))
+                    } catch (e: ActivityNotFoundException) {
+                        context.startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
+                    }
+                }) { Text("Open settings") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showHotspotDialog = false }) { Text("Cancel") }
+            },
         )
     }
 

@@ -13,6 +13,7 @@ import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import mano.algo.caster.R
 import mano.algo.caster.quick.QuickActionActivity
 
 /**
@@ -49,15 +50,24 @@ object WifiWatcher {
         // Registering reports the Wi-Fi that is already there as if it had just arrived: that one must not become an offer.
         app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putLong(KEY_QUIET_UNTIL, System.currentTimeMillis() + 8_000L).apply()
         runCatching {
-            cm.registerNetworkCallback(NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build(), intent)
-        }.onFailure { Log.w(TAG, "Couldn't watch the Wi-Fi", it) }
+            cm.registerNetworkCallback(
+                NetworkRequest.Builder()
+                    .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                    .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
+                    .build(),
+                intent,
+            )
+        }.onFailure { Log.w(TAG, "Couldn't watch the network", it) }
     }
 
     internal fun onWifi(context: Context): Boolean {
         val cm = context.getSystemService(ConnectivityManager::class.java) ?: return false
-        // Any Wi-Fi counts, not just the one Android uses by default (with mobile data on and a Wi-Fi that has no internet, the default is mobile).
+        // Any Wi-Fi or Ethernet counts, not just the one Android uses by default.
         @Suppress("DEPRECATION")
-        return cm.allNetworks.any { cm.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true }
+        return cm.allNetworks.any {
+            val caps = cm.getNetworkCapabilities(it) ?: return@any false
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+        }
     }
 
     internal fun offerNotification(context: Context) {
@@ -71,7 +81,7 @@ object WifiWatcher {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val notification = NotificationCompat.Builder(context, OFFER_CHANNEL)
-            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setSmallIcon(R.drawable.ic_tile)
             .setContentTitle("Share your videos on this Wi-Fi?")
             .setContentText("Tap to start sharing with the screens around you.")
             .setContentIntent(start)
