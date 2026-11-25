@@ -26,4 +26,28 @@ else
 fi
 echo "Using $SERIAL"
 
-chmod +x gradlew && ANDROID_SERIAL="$SERIAL" ./gradlew installDebug && adb -s "$SERIAL" shell am start -n mano.algo.caster/.MainActivity
+chmod +x gradlew && ANDROID_SERIAL="$SERIAL" ./gradlew installDebug || exit 1
+
+adb -s "$SERIAL" logcat -c
+adb -s "$SERIAL" shell am start -n mano.algo.caster/.MainActivity || exit 1
+
+# Live log of the app only (Ctrl+C stops it). It is followed by process id, so wait a moment for the app to start.
+PID=""
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    PID=$(adb -s "$SERIAL" shell pidof mano.algo.caster | tr -d '\r' | awk '{print $1}')
+    [ -n "$PID" ] && break
+    sleep 1
+done
+if [ -z "$PID" ]; then
+    echo "The app did not start; showing warnings and errors from the whole device instead."
+    exec adb -s "$SERIAL" logcat '*:W'
+fi
+echo "Logs of mano.algo.caster (pid $PID). Ctrl+C to stop."
+# If the app is restarted (a crash, or the system ends it), follow the new process too.
+while true; do
+    adb -s "$SERIAL" logcat --pid="$PID"
+    sleep 1
+    NEW=$(adb -s "$SERIAL" shell pidof mano.algo.caster | tr -d '\r' | awk '{print $1}')
+    [ -z "$NEW" ] && { echo "The app is no longer running."; break; }
+    PID="$NEW"
+done
