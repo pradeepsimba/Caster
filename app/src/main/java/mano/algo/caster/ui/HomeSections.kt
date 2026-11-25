@@ -218,6 +218,7 @@ fun LibrarySection(
     onPlay: (id: Long, name: String) -> Unit,
     onFoldersMode: () -> Unit,
     onSaveFolders: (Set<Long>) -> Unit,
+    onAllowAccess: () -> Unit,
 ) {
     val context = LocalContext.current
     // A COUNT query is far cheaper than loading rows; it only runs when access is granted or changes.
@@ -265,12 +266,13 @@ fun LibrarySection(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (!hasStorageAccess) TextButton(onClick = onAllowAccess) { Text("Allow video access") }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(selected = selection.mode == ShareMode.ALL, onClick = onAll, label = { Text("All") }, modifier = Modifier.weight(1f))
                 FilterChip(
                     selected = selection.mode == ShareMode.FOLDERS,
-                    onClick = { if (selection.folders.isEmpty()) showFolders = true else onFoldersMode() },
+                    onClick = { if (!hasStorageAccess) onAllowAccess() else if (selection.folders.isEmpty()) showFolders = true else onFoldersMode() },
                     label = { Text("Folders") },
                     modifier = Modifier.weight(1f),
                 )

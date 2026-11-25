@@ -107,6 +107,7 @@ fun HomeScreen(
     onPlayChosen: (id: Long, name: String) -> Unit,
     onFoldersMode: () -> Unit,
     onSaveFolders: (Set<Long>) -> Unit,
+    onAllowAccess: () -> Unit,
     onLimitScreen: (KnownDevice) -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
@@ -285,7 +286,7 @@ fun HomeScreen(
             }
         }
 
-        LibrarySection(selection, hasStorage, onAll, onSelected, onChoose, onRemoveChosen, onPlayChosen, onFoldersMode, onSaveFolders)
+        LibrarySection(selection, hasStorage, onAll, onSelected, onChoose, onRemoveChosen, onPlayChosen, onFoldersMode, onSaveFolders, onAllowAccess)
 
         YourScreensSection(
             known = known,

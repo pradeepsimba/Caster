@@ -172,7 +172,8 @@ class MediaServerService : Service() {
         try {
             acquireLocks()
             registerNetworkCallback()
-            _state.value = ServerState.Starting
+            // (A second start while already sharing must not show "Starting" again: nothing would change it back.)
+            if (_state.value !is ServerState.Running) _state.value = ServerState.Starting
             scope.launch { reconcile() }
             startAddressWatchdog()
         } catch (e: Exception) {
@@ -280,7 +281,7 @@ class MediaServerService : Service() {
                         host, port, name, requestedPort = wanted, requestedName = wantedName,
                         hotspot = NetworkUtils.isHotspot(this@MediaServerService),
                     ),
-                    "Sharing your videos" + if (port != wanted) " (port $wanted was busy)" else "",
+                    "Sharing your videos" + if (port != wanted) " (the usual port was busy; see Settings)" else "",
                 )
                 return@withLock
             }

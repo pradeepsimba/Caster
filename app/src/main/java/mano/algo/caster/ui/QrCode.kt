@@ -44,9 +44,9 @@ private fun qrBitmap(text: String, sizePx: Int = 512): ImageBitmap {
  */
 @Composable
 fun ConnectScreenDialog(state: ServerState.Running, onDismiss: () -> Unit) {
-    // On a hotspot the name stops resolving once the screen turns off, the IP keeps working. (The address is never written out
-    // here: the QR code carries it, and Settings shows it.)
-    val url = if (state.hotspot) state.baseUrl else state.nameUrl ?: state.baseUrl
+    // Always the numbers: a ".local" name can't be opened by Android or Fire TV, the numbers work everywhere. (The address is never
+    // written out here: the QR code carries it, and Settings shows it.)
+    val url = state.baseUrl
     val image = remember(url) { qrBitmap(url) }
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -67,16 +67,9 @@ fun ConnectScreenDialog(state: ServerState.Running, onDismiss: () -> Unit) {
                     contentDescription = "QR code to open Caster",
                     modifier = Modifier.size(220.dp).clip(RoundedCornerShape(16.dp)).background(Color.White).padding(6.dp),
                 )
-                if (state.nameChanged) {
+                if (state.nameChanged || state.portChanged) {
                     Text(
-                        "${state.requestedName}.local was already used on this network, so this phone is ${state.announcedName}.",
-                        style = MaterialTheme.typography.bodySmall,
-                        textAlign = TextAlign.Center,
-                    )
-                }
-                if (state.portChanged) {
-                    Text(
-                        "Port ${state.requestedPort} was busy, so Caster is using ${state.port}. You can change this in Settings.",
+                        "The usual name or port was busy on this network, so another one is used. Details are in Settings.",
                         style = MaterialTheme.typography.bodySmall,
                         textAlign = TextAlign.Center,
                     )

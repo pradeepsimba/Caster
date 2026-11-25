@@ -433,13 +433,21 @@ private fun RemotePad(
                 }
             } else if (shareUrl != null) {
                 Text(
-                    "Open the TV's browser, then type the address from Settings (the gear on the main page) with the keyboard below.",
+                    "Open the TV's browser, select its address bar, then tap \"Type the address on the TV\".",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Button(onClick = onOpenBrowser, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) {
                     Text("Open the TV's browser")
                 }
+                androidx.compose.material3.OutlinedButton(
+                    onClick = {
+                        onTyped("", shareUrl) // sent to the TV without being written out on this screen
+                        typed = ""
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                ) { Text("Type the address on the TV") }
             } else {
                 Text(
                     "Start sharing on the main page first.",

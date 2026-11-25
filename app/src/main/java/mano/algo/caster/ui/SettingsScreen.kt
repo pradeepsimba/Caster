@@ -299,7 +299,7 @@ private fun AddressCard(state: ServerState, onCopy: (String) -> Unit, onShare: (
                     shape = RoundedCornerShape(14.dp),
                 ) { Text("Copy") }
                 androidx.compose.material3.OutlinedButton(
-                    onClick = { onShare(urls.first()) },
+                    onClick = { onShare(urls.last()) },
                     shape = RoundedCornerShape(14.dp),
                 ) { Text("Share") }
             }

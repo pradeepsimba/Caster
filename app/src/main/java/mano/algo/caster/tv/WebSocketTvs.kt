@@ -311,7 +311,7 @@ internal class LgTvLink private constructor(
         when (code) {
             TvKey.ENTER -> request(LgTvCommands.ENTER_KEY, "{}")
             TvKey.DELETE -> request(LgTvCommands.deleteCharacters(1))
-            TvKey.POWER -> request("ssap://system/turnOff", "{}")
+            TvKey.POWER -> request("system/turnOff", "{}")
             TvKey.PLAY_PAUSE -> {
                 playing = !playing
                 input.sendText(LgTvCommands.button(if (playing) "PLAY" else "PAUSE"))
@@ -369,44 +369,57 @@ internal class LgTvLink private constructor(
             onClosed: (Throwable) -> Unit,
         ): Opened {
             var last: IOException? = null
+            val tried = mutableListOf<String>() // one line per port, so a failure says where each attempt stopped
+            var key = clientKey // once the TV has given a key, the next port reuses it instead of asking the owner again
             for (endpoint in endpoints) {
                 // A TV that was paired over TLS is never talked to without it: the key would go out in the clear.
                 if (pinned != null && !endpoint.secure) continue
                 val main = try {
-                    WebSocketClient.connect(host, endpoint.port, "/", endpoint.secure, if (endpoint.secure) pinned else null, onSocket)
+                    // (LG's own apps and every known remote library send no Origin header, so none is sent here.)
+                    WebSocketClient.connect(host, endpoint.port, "/", endpoint.secure, if (endpoint.secure) pinned else null, onSocket, sendOrigin = false)
                 } catch (e: IOException) {
                     if (isPinMismatch(e)) throw e
+                    tried += "port ${endpoint.port}: couldn't connect (${e.message ?: e.javaClass.simpleName})"
                     last = e
                     continue
                 }
                 var input: WebSocketClient? = null
+                var stage = "registering"
                 try {
-                    val key = register(main, clientKey)
+                    val registered = register(main, key)
+                    key = registered
+                    stage = "opening the button channel"
                     input = openInput(main, host, endpoint, pinned, onSocket)
                     val link = LgTvLink(main, input, onClosed)
                     startReader("caster-lg-reader", main, link::ended)
                     startReader("caster-lg-input", input, link::ended)
-                    return Opened(link, key, main.serverFingerprint)
+                    return Opened(link, registered, main.serverFingerprint)
                 } catch (e: Throwable) {
                     main.close()
                     input?.close()
                     if (canTryNextPort(e)) { // older webOS only has the plain port, and a TV may take the secure one and then hang up
+                        tried += "port ${endpoint.port}: stopped while $stage (${e.message ?: e.javaClass.simpleName})"
                         last = e as IOException
                         continue
                     }
                     throw e
                 }
             }
-            throw last ?: IOException("No connection")
+            val reason = last ?: throw IOException("No connection")
+            // With one port tried the error stays as it is (a timeout stays a timeout); with two, the text tells what happened on each.
+            throw if (tried.size > 1) IOException(tried.joinToString("; "), reason) else reason
         }
 
         /** The next message of one of the wanted [types] (others, such as notices, are skipped). */
         private fun await(ws: WebSocketClient, timeoutMs: Int, vararg types: String): String {
+            var complaint: String? = null
             repeat(MAX_SKIPPED) {
                 val message = ws.readText(timeoutMs)
-                if (LgTvCommands.type(message) in types) return message
+                val type = LgTvCommands.type(message)
+                if (type in types) return message
+                if (type == "error") complaint = message.take(120) // what the TV said it didn't like, for the record
             }
-            throw IOException("The TV didn't answer as expected")
+            throw IOException(complaint?.let { "The TV answered with an error: $it" } ?: "The TV didn't answer as expected")
         }
 
         private const val MAX_SKIPPED = 10
@@ -429,7 +442,7 @@ internal class LgTvLink private constructor(
                     throw OwnerWaitTimeout()
                 }
             }
-            if (LgTvCommands.type(answer) != "registered") throw TvRefusedException("The TV didn't accept this phone")
+            if (LgTvCommands.type(answer) != "registered") throw TvRefusedException("The TV didn't accept this phone (${answer.take(120)})")
             return LgTvCommands.clientKey(answer) ?: clientKey ?: throw TvRefusedException("The TV gave no key")
         }
 
@@ -442,10 +455,13 @@ internal class LgTvLink private constructor(
             }
             val match = Regex("""^(wss?)://[^/:]+(?::(\d+))?(/.*)$""").matchEntire(path ?: throw IOException("The TV gave no button socket"))
                 ?: throw IOException("The TV's button socket address wasn't understood")
+            // Whatever kind of connection the TV names is used: only button names go over it (the key was sent on the main one),
+            // and it can only ever lead to the TV that was connected to, because only the port and the path are taken from it.
             val secure = match.groupValues[1] == "wss"
-            if (secure != endpoint.secure) throw IOException("The TV's button socket used another kind of connection") // never a downgrade
             val port = match.groupValues[2].toIntOrNull()?.takeIf { it in 1..65_535 } ?: endpoint.port
-            return WebSocketClient.connect(host, port, match.groupValues[3], secure, if (secure) main.serverFingerprint ?: pinned else null, onSocket)
+            return WebSocketClient.connect(
+                host, port, match.groupValues[3], secure, if (secure) main.serverFingerprint ?: pinned else null, onSocket, sendOrigin = false,
+            )
         }
     }
 }

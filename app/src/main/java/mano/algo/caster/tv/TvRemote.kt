@@ -387,7 +387,8 @@ object TvRemote {
         if (mine == generation) {
             _state.value = State.Failed(
                 "The TV didn't answer on ${link.host}. Check that it's on (fully, not in standby), on the same Wi-Fi as this phone, " +
-                    "and not using a VPN. If it still fails, use \"Connect with ADB\" below.",
+                    "and not using a VPN. On an LG TV, turn on \"LG Connect Apps\" (Settings > Network); on a Samsung TV, allow " +
+                    "new devices (Settings > General > External Device Manager). If it still fails, use \"Connect with ADB\" below.",
             )
         }
     }
@@ -581,16 +582,21 @@ object TvRemote {
         if (!current) link.close() else link.failure?.let { linkClosed(mine, it) }
     }
 
-    private fun failedToConnect(e: IOException): State.Failed =
+    private fun failedToConnect(e: IOException, hint: String = ""): State.Failed =
         State.Failed(
-            if (e is OwnerWaitTimeout) {
+            (if (e is OwnerWaitTimeout) {
                 "The TV didn't answer in time. If it asked to allow this phone, choose Allow and tap Connect again."
             } else if (e is java.net.SocketTimeoutException) {
                 "The TV didn't answer. Check that it is on, and on the same Wi-Fi as this phone."
             } else {
                 "Couldn't connect to the TV: ${e.message ?: e.javaClass.simpleName}"
-            },
+            }) + hint,
         )
+
+    /** One line in the activity record (Settings > Diagnostics shows it), so a TV that won't connect can be traced. */
+    private fun note(text: String) {
+        appContext?.let { mano.algo.caster.CrashLog.note(it, text) }
+    }
 
     /**
      * A TV that already knows this phone connects at once. One that takes longer is most likely asking its owner (it forgot
@@ -658,7 +664,9 @@ object TvRemote {
             if (key == null) _state.value = State.Connecting(host, needsAllow = true)
             val hint = if (key != null) hintAllowSoon(host, mine) else null
             try {
+                note("LG: connecting to the TV")
                 val opened = LgTvLink.open(host, key, pinned, LgTvLink.ENDPOINTS, track(mine)) { e -> linkClosed(mine, e) }
+                note("LG: connected and registered")
                 store.edit().apply {
                     putString(KEY_LG_KEY + host, opened.clientKey)
                     opened.fingerprint?.let { putString(KEY_LG_PIN + host, it) }
@@ -672,6 +680,7 @@ object TvRemote {
                     store.edit().remove(KEY_LG_KEY + host).apply()
                     continue
                 }
+                note("LG: the TV did not accept this phone (${e.message ?: ""})")
                 _state.value = State.Failed("The TV didn't accept this phone. When it asks, choose Yes or Allow, then tap Connect again.")
                 return
             } catch (e: IOException) {
@@ -681,7 +690,8 @@ object TvRemote {
                     store.edit().remove(KEY_LG_KEY + host).remove(KEY_LG_PIN + host).apply()
                     continue
                 }
-                _state.value = failedToConnect(e)
+                note("LG: failed - ${e.message ?: e.javaClass.simpleName}")
+                _state.value = failedToConnect(e, " On an LG TV, make sure \"LG Connect Apps\" is on (Settings > Network).")
                 return
             } finally {
                 hint?.cancel()
@@ -1135,7 +1145,11 @@ object TvRemote {
                     return@launch
                 }
                 try {
-                    val keepGoing = { voiceHeld && mine == generation }
+                    val keepGoing = {
+                        val go = voiceHeld && mine == generation
+                        if (!go && serial == voiceSerial) voiceEnding = true // from here a new press starts its own session
+                        go
+                    }
                     if (keepGoing()) VoiceRecorder.record(keepGoing) { link.sendVoice(session, it) }
                 } finally {
                     if (serial == voiceSerial) voiceEnding = true

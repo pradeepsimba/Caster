@@ -317,7 +317,13 @@ fun CasterApp() {
     // The picker lists the gallery, so it needs the same storage permission as sharing does.
     val pickerPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         hasStorage = ok
-        if (ok) picking = true else storageDenied()
+        // (Asked from the "Only some" chip or from a screen's own limit: open the one that asked.)
+        if (ok) { if (limitFor != null) limitPicking = true else picking = true } else storageDenied()
+    }
+    // Only the permission, nothing opens afterwards (the library card's "Allow video access").
+    val accessPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        hasStorage = ok
+        if (!ok) storageDenied()
     }
     // Photos and music need their own permissions on Android 13+ (older versions use the one storage permission).
     // The microphone, asked for the first time the voice button of an Android TV remote is held.
@@ -357,7 +363,16 @@ fun CasterApp() {
     LaunchedEffect(state) { if (state !is ServerState.Running) castPicking = false }
 
     // A new connection request is urgent: bring the approval card into view.
-    LaunchedEffect(request?.id) { if (request != null) { showSettings = false; showRemote = false } }
+    // (Once per request: a rotation must not close a page the owner opened afterwards.)
+    var seenRequest by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(request?.id) {
+        val id = request?.id
+        if (id != null && id != seenRequest) {
+            seenRequest = id
+            showSettings = false; showRemote = false; showHistory = false
+            picking = false; castPicking = false; limitPicking = false; limitFor = null
+        }
+    }
 
     // Locked: nothing of the app shows until the PIN is typed.
     if (pinSet && !unlocked) {
@@ -708,6 +723,7 @@ fun CasterApp() {
                 }
             },
             onFoldersMode = { ShareSettings.setMode(ShareMode.FOLDERS) },
+            onAllowAccess = { if (!granted(STORAGE_PERMISSION)) accessPermission.launch(STORAGE_PERMISSION) },
             onSaveFolders = { ids ->
                 ShareSettings.setFolders(ids)
                 ShareSettings.setMode(ShareMode.FOLDERS)

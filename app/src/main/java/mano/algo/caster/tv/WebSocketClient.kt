@@ -186,6 +186,7 @@ internal class WebSocketClient private constructor(
             onSocket: (Closeable) -> Unit = {},
             connectMs: Int = 4_000,
             handshakeMs: Int = 10_000,
+            sendOrigin: Boolean = true,
         ): WebSocketClient {
             val socket: Socket = if (secure) {
                 val context = SSLContext.getInstance("TLS").apply { init(null, arrayOf<TrustManager>(PinnedTrust(pinned)), SecureRandom()) }
@@ -206,7 +207,8 @@ internal class WebSocketClient private constructor(
 
                 val key = Base64Lite.encode(ByteArray(16).also(random::nextBytes))
                 val request = "GET $path HTTP/1.1\r\nHost: $host:$port\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
-                    "Sec-WebSocket-Key: $key\r\nSec-WebSocket-Version: 13\r\nOrigin: ${if (secure) "https" else "http"}://$host:$port\r\n\r\n"
+                    "Sec-WebSocket-Key: $key\r\nSec-WebSocket-Version: 13\r\n" +
+                    (if (sendOrigin) "Origin: ${if (secure) "https" else "http"}://$host:$port\r\n" else "") + "\r\n"
                 socket.getOutputStream().apply {
                     write(request.toByteArray(Charsets.ISO_8859_1))
                     flush()
