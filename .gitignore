@@ -16,9 +16,3 @@
 local.properties
 .claude
 .kotlin
-
-# Signing secrets - never commit
-keystore.properties
-*.jks
-*.keystore
-/key/
