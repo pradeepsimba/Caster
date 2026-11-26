@@ -153,11 +153,23 @@ class LocalMediaServer(
                 if (isDownload && !ShareSettings.state.value.allowDownload) {
                     return error(Response.Status.FORBIDDEN, "downloads_disabled")
                 }
+                val isTranscode = !isDownload && kind == "v" && session.parameters["transcode"]?.firstOrNull() == "1"
                 if (method == Method.GET && kind == "v") recordWatching(token, uri)
                 val stillAllowed = {
                     if (isUpnpVideo) ShareSettings.isAllowed(id)
                     else PairingManager.isValid(token) &&
-                        (if (kind == "v") ShareSettings.isAllowed(id) && PairingManager.allows(token, id) else extrasAllowed(token))
+                        (if (kind == "v") isWebVideoAllowed(token, id) else extrasAllowed(token))
+                }
+                if (isTranscode) {
+                    val startSec = session.parameters["start"]?.firstOrNull()?.toLongOrNull() ?: 0L
+                    val sessionKey = (token ?: session.remoteIpAddress ?: "anon") + ":" + id
+                    if (method == Method.HEAD) {
+                        return newFixedLengthResponse(Response.Status.OK, "video/mp4", "")
+                            .apply { addHeader("Cache-Control", "no-store") }
+                    }
+                    val stream = VideoTranscoder.openStream(appContext, uri, startSec, sessionKey, stillAllowed)
+                    return newChunkedResponse(Response.Status.OK, "video/mp4", stream)
+                        .apply { addHeader("Cache-Control", "no-store") }
                 }
                 serveVideo(uri, session.headers["range"], head = method == Method.HEAD, isDownload = isDownload, stillAllowed = stillAllowed)
             }
@@ -301,7 +313,7 @@ class LocalMediaServer(
                 while (c.moveToNext()) {
                     val id = c.getLong(0)
                     val bucket = if (bucketCol >= 0) c.getLong(bucketCol) else null
-                    if (kind == "v" && !(ShareSettings.isAllowed(id, bucket) && PairingManager.allows(token, id))) continue
+                    if (kind == "v" && !isWebVideoAllowed(token, id, bucket)) continue
                     if (kind == "i" && !ShareSettings.isPhotoAllowed(id, bucket)) continue
                     if (kind == "a" && !ShareSettings.isMusicAllowed(id, bucket)) continue
                     val itemName = c.getString(nameCol) ?: "item"
@@ -323,7 +335,7 @@ class LocalMediaServer(
         } catch (e: SecurityException) {
             return error(Response.Status.FORBIDDEN, "storage_permission")
         }
-        val scope = if (ShareSettings.state.value.mode == ShareMode.ALL) "all" else "selected"
+        val scope = if (PairingManager.isLimited(token) || !PairingManager.isLocal(token) || ShareSettings.state.value.mode != ShareMode.ALL) "selected" else "all"
         return json(
             JSONObject().put("scope", scope).put("extras", ShareSettings.state.value.shareExtras)
                 .put("allow_download", ShareSettings.state.value.allowDownload)
@@ -331,19 +343,27 @@ class LocalMediaServer(
         )
     }
 
+    /**
+     * Local casting sees whatever is shared under "Videos to share".
+     * Web screens only see videos explicitly selected for that screen in "Limit" (and still shared).
+     */
+    private fun isWebVideoAllowed(token: String?, id: Long, bucketId: Long? = null): Boolean =
+        if (PairingManager.isLocal(token)) ShareSettings.isAllowed(id, bucketId)
+        else PairingManager.isLimited(token) && PairingManager.allows(token, id) && ShareSettings.isAllowed(id, bucketId)
+
     /** Photos and music are all-or-nothing, so a screen limited to some videos is not given them either. */
     private fun extrasAllowed(token: String?) = ShareSettings.state.value.shareExtras && !PairingManager.isLimited(token)
 
     /**
      * Only numeric MediaStore ids are accepted, so a client can never name an arbitrary file or Uri.
-     * Videos must be inside the owner's current selection, and music and photos need the owner's opt-in,
+     * Videos must be inside the owner's current selection (or the screen's own limit), and music and photos need the owner's opt-in,
      * so guessing ids can't reveal anything that isn't shared.
      */
     private fun mediaUri(rawId: String, kind: String, token: String?): Uri? {
         val id = rawId.substringBefore('/').toLongOrNull() ?: return null
         val table = tableFor(kind) ?: return null
         val allowed = when (kind) {
-            "v" -> ShareSettings.isAllowed(id) && PairingManager.allows(token, id)
+            "v" -> isWebVideoAllowed(token, id)
             "i" -> extrasAllowed(token) && ShareSettings.isPhotoAllowed(id)
             "a" -> extrasAllowed(token) && ShareSettings.isMusicAllowed(id)
             else -> false
@@ -359,6 +379,7 @@ class LocalMediaServer(
         val key = ContentUris.parseId(uri)
         infoCache.get(key)?.let { return jsonText(it) }
         val info = JSONObject().put("container", appContext.contentResolver.getType(uri) ?: JSONObject.NULL)
+        val audios = JSONArray()
         val extractor = MediaExtractor()
         try {
             extractor.setDataSource(appContext, uri, null)
@@ -369,10 +390,15 @@ class LocalMediaServer(
                     info.put("video", mime)
                     if (format.containsKey(MediaFormat.KEY_WIDTH)) info.put("width", format.getInteger(MediaFormat.KEY_WIDTH))
                     if (format.containsKey(MediaFormat.KEY_HEIGHT)) info.put("height", format.getInteger(MediaFormat.KEY_HEIGHT))
-                } else if (mime.startsWith("audio/") && !info.has("audio")) {
-                    info.put("audio", mime)
+                    if (format.containsKey(MediaFormat.KEY_DURATION)) info.put("durationMs", format.getLong(MediaFormat.KEY_DURATION) / 1000L)
+                } else if (mime.startsWith("audio/")) {
+                    audios.put(mime)
+                    if (!info.has("audio") || mime == MediaFormat.MIMETYPE_AUDIO_AAC) {
+                        info.put("audio", mime)
+                    }
                 }
             }
+            if (audios.length() > 0) info.put("audios", audios)
         } catch (e: Exception) {
             Log.w(TAG, "Cannot read track info for $uri", e)
         } finally {
@@ -481,7 +507,7 @@ class LocalMediaServer(
         val token = p["t"]?.firstOrNull()
         val reportedDuration = p["d"]?.firstOrNull()?.toDoubleOrNull()?.toInt() ?: 0
         if (videoId != null && reportedDuration > 0 && (p["k"]?.firstOrNull() ?: "v") == "v" && p["s"]?.firstOrNull() != "idle" &&
-            ShareSettings.isAllowed(videoId) && PairingManager.allows(token, videoId)
+            isWebVideoAllowed(token, videoId)
         ) {
             ResumeStore.record(
                 videoId,
@@ -497,7 +523,7 @@ class LocalMediaServer(
     /** Where each video was stopped, for the pages to offer "continue". Only videos this screen may see. */
     private fun resumeList(token: String?): Response {
         val items = JSONArray()
-        ResumeStore.all().filter { ShareSettings.isAllowed(it.id) && PairingManager.allows(token, it.id) }.take(60).forEach {
+        ResumeStore.all().filter { isWebVideoAllowed(token, it.id) }.take(60).forEach {
             items.put(JSONObject().put("id", it.id.toString()).put("pos", it.positionSec).put("dur", it.durationSec).put("at", it.updated))
         }
         return json(JSONObject().put("items", items))

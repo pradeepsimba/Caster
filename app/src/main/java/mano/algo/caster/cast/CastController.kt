@@ -406,7 +406,7 @@ object CastController {
         val selector = castContext?.mergedSelector ?: return
         val r = MediaRouter.getInstance(context.applicationContext)
         router = r
-        r.addCallback(selector, discoveryCallback, MediaRouter.CALLBACK_FLAG_REQUEST_DISCOVERY)
+        r.addCallback(selector, discoveryCallback, MediaRouter.CALLBACK_FLAG_PERFORM_ACTIVE_SCAN)
         refreshNearby()
     }
 
@@ -447,6 +447,25 @@ object CastController {
 
     fun togglePlayback() {
         client?.togglePlayback()
+    }
+
+    /** Seeks forward or backward by [deltaMs] milliseconds on the active Chromecast stream. */
+    fun seekBy(deltaMs: Long) {
+        val c = client ?: return
+        val target = (c.approximateStreamPosition + deltaMs).coerceAtLeast(0L)
+        c.seek(com.google.android.gms.cast.MediaSeekOptions.Builder().setPosition(target).build())
+    }
+
+    /** Adjusts the Chromecast receiver volume by [delta] (clamped to 0.0..1.0). */
+    fun adjustVolume(delta: Double) {
+        val session = castContext?.sessionManager?.currentCastSession ?: return
+        runCatching { session.volume = (session.volume + delta).coerceIn(0.0, 1.0) }
+    }
+
+    /** Toggles mute on the active Chromecast session. */
+    fun toggleMute() {
+        val session = castContext?.sessionManager?.currentCastSession ?: return
+        runCatching { session.isMute = !session.isMute }
     }
 
     /** Stops the video and disconnects from the Chromecast. */

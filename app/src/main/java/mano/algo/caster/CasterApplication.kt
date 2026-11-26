@@ -10,8 +10,9 @@ class CasterApplication : Application() {
         CrashLog.install(this)
         // Older versions kept re-encoded copies of videos here (a feature that was removed). They can be large and were
         // only cleaned up when sharing stopped normally, so clear whatever a killed app left behind.
-        // A widget left saying "on" after the app was ended by the system is corrected here.
+        // A widget or shortcut left saying "on" after the app was ended by the system is corrected here.
         mano.algo.caster.quick.ShareWidget.update(this)
+        mano.algo.caster.quick.ShareShortcut.update(this)
         val leftovers = File(cacheDir, "converted")
         if (leftovers.exists()) Thread { runCatching { leftovers.deleteRecursively() } }.start()
     }

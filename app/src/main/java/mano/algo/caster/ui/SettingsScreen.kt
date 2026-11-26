@@ -672,22 +672,31 @@ private fun SpeedTestRow(
 
         Button(
             onClick = {
+                val running = state as? ServerState.Running ?: return@Button
                 scope.launch {
                     speedTesting = true
                     speedResult = null
                     try {
-                        val port = (state as? ServerState.Running)?.port ?: ShareSettings.DEFAULT_PORT
                         val start = System.nanoTime()
                         val bytes = withContext(Dispatchers.IO) {
-                            java.net.URL("http://127.0.0.1:$port/api/speed").readBytes()
+                            (java.net.URL("${running.baseUrl}api/speed").openConnection() as java.net.HttpURLConnection).run {
+                                connectTimeout = 5_000
+                                readTimeout = 10_000
+                                try {
+                                    inputStream.readBytes()
+                                } finally {
+                                    disconnect()
+                                }
+                            }
                         }
-                        val elapsed = (System.nanoTime() - start) / 1e9
+                        val elapsed = ((System.nanoTime() - start) / 1e9).coerceAtLeast(1e-6)
                         val mbps = bytes.size / elapsed / 1_000_000
                         speedResult = "%.1f MB/s (%.0f Mbps)".format(mbps, mbps * 8)
                     } catch (_: Exception) {
                         speedResult = "Failed"
+                    } finally {
+                        speedTesting = false
                     }
-                    speedTesting = false
                 }
             },
             enabled = state is ServerState.Running && !speedTesting,

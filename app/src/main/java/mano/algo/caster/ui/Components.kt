@@ -278,7 +278,7 @@ fun PairingCard(
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("Videos to share", style = MaterialTheme.typography.labelMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(ShareMode.ALL to "All", ShareMode.FOLDERS to "Folders", ShareMode.SELECTED to "Only some").forEach { (mode, label) ->
+                    listOf(ShareMode.FOLDERS to "Folders", ShareMode.SELECTED to "Only some").forEach { (mode, label) ->
                         androidx.compose.material3.FilterChip(
                             selected = videoMode == mode,
                             onClick = { videoMode = mode },

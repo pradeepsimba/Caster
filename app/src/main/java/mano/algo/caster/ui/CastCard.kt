@@ -89,6 +89,7 @@ fun CastCard(onChooseVideo: () -> Unit, modifier: Modifier = Modifier) {
             AndroidView(
                 factory = { ctx ->
                     MediaRouteButton(ctx).also {
+                        it.setAlwaysVisible(true)
                         runCatching { CastButtonFactory.setUpMediaRouteButton(ctx, it) }
                         routeButton = it
                     }

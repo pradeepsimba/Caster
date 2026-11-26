@@ -15,7 +15,7 @@ enum class ShareMode { ALL, SELECTED, FOLDERS }
  * [hostname] is the `<name>.local` the phone announces; if another device uses it, a `-2`, `-3`... is added.
  */
 data class ShareSelection(
-    val mode: ShareMode = ShareMode.ALL,
+    val mode: ShareMode = ShareMode.SELECTED,
     val ids: Set<Long> = emptySet(),
     /** MediaStore bucket (folder) ids, for [ShareMode.FOLDERS]: every video in them is shared, new ones included. */
     val folders: Set<Long> = emptySet(),
@@ -98,7 +98,8 @@ object ShareSettings {
         synchronized(this) {
             if (prefs != null) return
             val p = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            val mode = runCatching { ShareMode.valueOf(p.getString(KEY_MODE, null).orEmpty()) }.getOrDefault(ShareMode.ALL)
+            val parsedMode = runCatching { ShareMode.valueOf(p.getString(KEY_MODE, null).orEmpty()) }.getOrDefault(ShareMode.SELECTED)
+            val mode = if (parsedMode == ShareMode.ALL) ShareMode.SELECTED else parsedMode
             val ids = p.getStringSet(KEY_IDS, emptySet()).orEmpty().mapNotNull { it.toLongOrNull() }.toSet()
             val port = p.getInt(KEY_PORT, DEFAULT_PORT).takeIf(::isValidPort) ?: DEFAULT_PORT
             val hostname = p.getString(KEY_HOSTNAME, null)?.takeIf(::isValidHostname) ?: DEFAULT_HOSTNAME

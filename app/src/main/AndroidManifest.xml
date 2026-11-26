@@ -65,9 +65,6 @@
 
                 <data android:mimeType="video/*" />
             </intent-filter>
-            <meta-data
-                android:name="android.app.shortcuts"
-                android:resource="@xml/shortcuts" />
         </activity>
 
         <!-- Start or stop sharing without the app screen: shortcuts, the tile, the widget and the Wi-Fi offer use it. -->

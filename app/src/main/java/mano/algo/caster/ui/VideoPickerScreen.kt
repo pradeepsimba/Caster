@@ -64,7 +64,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 
-private data class PickerVideo(val id: Long, val name: String, val durationMs: Long, val size: Long)
+private data class PickerVideo(val id: Long, val name: String, val durationMs: Long, val size: Long, val bucketId: Long)
 
 private fun queryVideos(context: Context): List<PickerVideo> {
     val projection = arrayOf(
@@ -72,6 +72,7 @@ private fun queryVideos(context: Context): List<PickerVideo> {
         MediaStore.Video.Media.DISPLAY_NAME,
         MediaStore.Video.Media.DURATION,
         MediaStore.Video.Media.SIZE,
+        MediaStore.Video.Media.BUCKET_ID,
     )
     val result = ArrayList<PickerVideo>()
     try {
@@ -80,11 +81,11 @@ private fun queryVideos(context: Context): List<PickerVideo> {
             "${MediaStore.Video.Media.DATE_ADDED} DESC",
         )?.use { c ->
             while (c.moveToNext()) {
-                result += PickerVideo(c.getLong(0), c.getString(1) ?: "video", c.getLong(2), c.getLong(3))
+                result += PickerVideo(c.getLong(0), c.getString(1) ?: "video", c.getLong(2), c.getLong(3), c.getLong(4))
             }
         }
-    } catch (e: SecurityException) {
-        // No storage permission yet: show the empty state rather than crash.
+    } catch (_: Exception) {
+        // Storage permission missing or OEM MediaStore quirk: show the empty state rather than spin forever.
     }
     return result
 }
@@ -106,11 +107,15 @@ fun VideoPickerScreen(
     initialSelection: Set<Long>,
     onCancel: () -> Unit,
     onDone: (Set<Long>) -> Unit,
+    onlyShared: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    val videos by produceState<List<PickerVideo>?>(initialValue = null) {
-        value = withContext(Dispatchers.IO) { queryVideos(context) }
+    val videos by produceState<List<PickerVideo>?>(initialValue = null, onlyShared) {
+        value = withContext(Dispatchers.IO) {
+            val all = queryVideos(context)
+            if (onlyShared) all.filter { mano.algo.caster.server.ShareSettings.isAllowed(it.id, it.bucketId) } else all
+        }
     }
     // Saved with the screen, so turning the phone doesn't bring back the old selection.
     val selected = rememberSaveable(
@@ -267,7 +272,7 @@ fun CastPickerScreen(
 
     val videos by produceState<List<PickerItem>?>(initialValue = null) {
         value = withContext(Dispatchers.IO) {
-            queryVideos(context).filter { mano.algo.caster.server.ShareSettings.isAllowed(it.id) }
+            queryVideos(context).filter { mano.algo.caster.server.ShareSettings.isAllowed(it.id, it.bucketId) }
                 .map { PickerItem(it.id, it.name, "${formatDuration(it.durationMs)} · ${formatSize(it.size)}", "v") }
         }
     }
@@ -404,7 +409,7 @@ fun queryPhotos(context: Context): List<PickerPhoto> {
                 result += PickerPhoto(c.getLong(0), c.getString(1) ?: "photo", c.getLong(2))
             }
         }
-    } catch (e: SecurityException) {
+    } catch (_: Exception) {
     }
     return result
 }
@@ -505,7 +510,7 @@ fun queryMusic(context: Context): List<PickerMusic> {
                 result += PickerMusic(c.getLong(0), c.getString(1) ?: "track", c.getLong(2), c.getLong(3))
             }
         }
-    } catch (e: SecurityException) {
+    } catch (_: Exception) {
     }
     return result
 }

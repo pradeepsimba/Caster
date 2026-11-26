@@ -198,7 +198,6 @@ fun CasterApp() {
     val devices by PairingManager.devices.collectAsStateWithLifecycle()
     val knownScreens by PairingManager.known.collectAsStateWithLifecycle()
     val selection by ShareSettings.state.collectAsStateWithLifecycle()
-    val watching by ActivityTracker.watching.collectAsStateWithLifecycle()
     val remotes by RemoteControl.all.collectAsStateWithLifecycle()
     val tvState by TvRemote.state.collectAsStateWithLifecycle()
     val tvHost by TvRemote.savedHost.collectAsStateWithLifecycle()
@@ -500,6 +499,7 @@ fun CasterApp() {
         FullScreenPage {
             VideoPickerScreen(
                 initialSelection = limitTarget.limit.orEmpty(),
+                onlyShared = true,
                 onCancel = { limitPicking = false; limitFor = null },
                 onDone = { ids ->
                     PairingManager.setLimit(limitTarget.clientId, ids)
@@ -516,7 +516,7 @@ fun CasterApp() {
             title = { Text("Videos for ${limitTarget.label}") },
             text = {
                 Text(
-                    if (limitTarget.limit == null) "This screen sees every video that is shared. You can let it see only some of them."
+                    if (limitTarget.limit == null) "No videos are chosen for this screen yet. Choose which videos it can see."
                     else "This screen sees only ${limitTarget.limit.size} chosen videos.",
                 )
             },
@@ -756,9 +756,6 @@ fun CasterApp() {
             onDeny = { PairingManager.deny() },
             onAllowBackground = { requestBatteryExemption(context) },
             onAppSettings = { openBatteryScreen(context) },
-            watching = watching,
-            remotes = remotes,
-            onRemote = RemoteControl::send,
             onCastChoose = { withLocalNetwork(runIfDenied = true) { castPicking = true } },
             onDisconnect = PairingManager::revoke,
             onDisconnectAll = PairingManager::revokeAll,

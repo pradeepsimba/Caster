@@ -30,6 +30,9 @@ import androidx.activity.compose.setContent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.core.content.pm.ShortcutInfoCompat
+import androidx.core.content.pm.ShortcutManagerCompat
+import androidx.core.graphics.drawable.IconCompat
 import mano.algo.caster.security.PinLock
 import mano.algo.caster.ui.VerifyPinDialog
 import mano.algo.caster.ui.theme.CasterTheme
@@ -190,5 +193,23 @@ class ShareWidget : AppWidgetProvider() {
             )
             manager.updateAppWidget(ids, views)
         }
+    }
+}
+
+/** The single app-icon shortcut: shows "Start sharing" (play icon) when off, or "Stop sharing" (stop icon) when on. */
+object ShareShortcut {
+    private const val ID = "toggle_sharing"
+
+    /** Publishes the single dynamic shortcut matching the current sharing state. */
+    fun update(context: Context) {
+        val app = context.applicationContext
+        val on = QuickActionActivity.isOn(MediaServerService.state.value)
+        val shortcut = ShortcutInfoCompat.Builder(app, ID)
+            .setShortLabel(app.getString(if (on) R.string.shortcut_stop_short else R.string.shortcut_start_short))
+            .setLongLabel(app.getString(if (on) R.string.shortcut_stop_long else R.string.shortcut_start_long))
+            .setIcon(IconCompat.createWithResource(app, if (on) R.drawable.ic_shortcut_stop else R.drawable.ic_shortcut_play))
+            .setIntent(QuickActionActivity.intent(app, QuickActionActivity.ACTION_TOGGLE))
+            .build()
+        ShortcutManagerCompat.setDynamicShortcuts(app, listOf(shortcut))
     }
 }

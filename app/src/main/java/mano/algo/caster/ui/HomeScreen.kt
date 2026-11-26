@@ -34,7 +34,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -45,14 +44,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.delay
-import mano.algo.caster.server.ActivityTracker
-import mano.algo.caster.server.NowWatching
 import mano.algo.caster.server.PairRequest
-import mano.algo.caster.server.RemoteControl
-import mano.algo.caster.server.RemoteState
 import mano.algo.caster.server.ServerState
 import mano.algo.caster.ui.theme.LiveGreen
 import mano.algo.caster.ui.theme.WarnAmber
@@ -93,9 +86,6 @@ fun HomeScreen(
     onDeny: () -> Unit,
     onAllowBackground: () -> Unit,
     onAppSettings: () -> Unit,
-    watching: List<NowWatching>,
-    remotes: List<RemoteState>,
-    onRemote: (deviceId: String, command: String) -> Unit,
     onCastChoose: () -> Unit,
     onDisconnect: (String) -> Unit,
     onDisconnectAll: () -> Unit,
@@ -343,119 +333,8 @@ fun HomeScreen(
 
         if (running) CastCard(onChooseVideo = onCastChoose)
 
-        if (running && (watching.isNotEmpty() || remotes.isNotEmpty())) NowWatchingCard(watching, remotes, onRemote)
-
         warnings.forEach { SetupWarningCard(it) }
         if (!batteryUnrestricted) BatteryCard(onAllowBackground, onAppSettings)
         Spacer(Modifier.height(8.dp))
-    }
-}
-
-@Composable
-private fun NowWatchingCard(entries: List<NowWatching>, remotes: List<RemoteState>, onRemote: (String, String) -> Unit) {
-    // The ticker lives here, so nothing recomposes every few seconds unless somebody is actually watching.
-    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(5_000)
-            now = System.currentTimeMillis()
-        }
-    }
-    val active = entries.filter { now - it.lastSeen < ActivityTracker.ACTIVE_WINDOW_MS }
-    // A page that reports its state is the more precise source: it knows about pauses, photos and music too.
-    val live = remotes.filter { now - it.reportedAt < RemoteControl.FRESH_MS * 2 }
-    val liveIds = live.map { it.deviceId }.toSet()
-    val passive = active.filter { it.deviceId !in liveIds }
-    if (passive.isEmpty() && live.isEmpty()) return
-
-    CasterCard(high = true) {
-        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                StatusDot(Color(0xFF22C55E), pulsing = true)
-                Text("Now watching", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            }
-            live.forEach { r -> RemoteRow(r, onRemote) }
-            passive.forEach { entry ->
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Box(
-                        modifier = Modifier.size(40.dp).background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(12.dp)),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
-                    }
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(entry.deviceLabel, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                        Text(
-                            entry.videoName,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun RemoteRow(r: RemoteState, onRemote: (String, String) -> Unit) {
-    fun clock(sec: Int) =
-        if (sec >= 3600) "%d:%02d:%02d".format(sec / 3600, sec % 3600 / 60, sec % 60)
-        else "%d:%02d".format(sec / 60, sec % 60)
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(r.deviceLabel, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-        Text(
-            r.title.ifBlank { "Playing" },
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        if (r.durationSec > 0) {
-            // While the finger is down the slider shows the finger; the screen only jumps when it is released.
-            var dragging by remember { mutableStateOf<Float?>(null) }
-            // After release, keep showing the chosen spot until the screen has had time to report the new one.
-            var sent by remember { mutableStateOf<Float?>(null) }
-            LaunchedEffect(sent) { if (sent != null) { delay(2_500); sent = null } }
-            val shown = dragging ?: sent ?: r.positionSec.toFloat()
-            androidx.compose.material3.Slider(
-                value = shown.coerceIn(0f, r.durationSec.toFloat()),
-                onValueChange = { dragging = it },
-                onValueChangeFinished = {
-                    dragging?.let { onRemote(r.deviceId, "seekto:${it.toInt()}"); sent = it }
-                    dragging = null
-                },
-                valueRange = 0f..r.durationSec.toFloat(),
-            )
-            Text("${clock(shown.toInt())} / ${clock(r.durationSec)}", style = MaterialTheme.typography.labelSmall)
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-            androidx.compose.material3.TextButton(onClick = { onRemote(r.deviceId, "seek:-10") }) { Text("-10s") }
-            FilledTonalButton(onClick = { onRemote(r.deviceId, "toggle") }) { Text(if (r.playing) "Pause" else "Play") }
-            androidx.compose.material3.TextButton(onClick = { onRemote(r.deviceId, "seek:10") }) { Text("+10s") }
-            androidx.compose.material3.TextButton(onClick = { onRemote(r.deviceId, "next") }) { Text("Next") }
-            androidx.compose.material3.TextButton(onClick = { onRemote(r.deviceId, "subs") }) { Text("CC") }
-        }
-        if (r.volume >= 0) {
-            // The same two-step as the position: the slider follows the finger, then the screen's own volume once it reports.
-            var volDrag by remember { mutableStateOf<Float?>(null) }
-            var volSent by remember { mutableStateOf<Float?>(null) }
-            LaunchedEffect(volSent) { if (volSent != null) { delay(2_500); volSent = null } }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Volume", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(end = 8.dp))
-                androidx.compose.material3.Slider(
-                    value = volDrag ?: volSent ?: r.volume.toFloat(),
-                    onValueChange = { volDrag = it },
-                    onValueChangeFinished = {
-                        volDrag?.let { onRemote(r.deviceId, "volume:${"%.2f".format(java.util.Locale.US, it / 100f)}"); volSent = it }
-                        volDrag = null
-                    },
-                    valueRange = 0f..100f,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-        }
     }
 }

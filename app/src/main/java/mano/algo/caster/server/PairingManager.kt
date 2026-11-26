@@ -312,6 +312,9 @@ object PairingManager {
 
     fun limitOf(clientId: String): Set<Long>? = _known.value.firstOrNull { it.clientId == clientId }?.limit
 
+    /** True when [token] belongs to a local in-app player (such as Chromecast). */
+    fun isLocal(token: String?): Boolean = (if (token == null) null else clients[token])?.clientId?.startsWith("local:") == true
+
     /** True when the screen behind [token] has been limited to some videos. */
     fun isLimited(token: String?): Boolean = (if (token == null) null else clients[token])?.limit != null
 

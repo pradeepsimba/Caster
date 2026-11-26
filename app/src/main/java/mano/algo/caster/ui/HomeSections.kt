@@ -12,12 +12,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -119,6 +122,15 @@ fun YourScreensSection(
     }
 }
 
+private val ScreenDisplayIcon: ImageVector by lazy {
+    ImageVector.Builder("ScreenDisplay", 24.dp, 24.dp, 24f, 24f).apply {
+        addPath(
+            pathData = addPathNodes("M21,3H3c-1.1,0 -2,0.9 -2,2v12c0,1.1 0.9,2 2,2h5v2h8v-2h5c1.1,0 1.99,-0.9 1.99,-2L23,5c0,-1.1 -0.9,-2 -2,-2zm0,14H3V5h18v12z"),
+            fill = SolidColor(Color.Black),
+        )
+    }.build()
+}
+
 @Composable
 private fun ScreenRow(
     label: String,
@@ -141,7 +153,7 @@ private fun ScreenRow(
                 modifier = Modifier.size(40.dp).background(scheme.primaryContainer, RoundedCornerShape(12.dp)),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(Icons.Filled.Phone, contentDescription = null, tint = scheme.onPrimaryContainer)
+                Icon(ScreenDisplayIcon, contentDescription = null, tint = scheme.onPrimaryContainer)
             }
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(label, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 1)
@@ -379,7 +391,6 @@ fun LibrarySection(
                     if (!hasStorageAccess) TextButton(onClick = onAllowAccess) { Text("Allow video access") }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(selected = selection.mode == ShareMode.ALL, onClick = onAll, label = { Text("All") }, modifier = Modifier.weight(1f))
                     FilterChip(
                         selected = selection.mode == ShareMode.FOLDERS,
                         onClick = { if (!hasStorageAccess) onAllowAccess() else if (selection.folders.isEmpty()) showFolders = true else onFoldersMode() },

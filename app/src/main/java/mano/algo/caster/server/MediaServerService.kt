@@ -113,8 +113,13 @@ class MediaServerService : Service() {
         ShareSettings.init(this)
         createNotificationChannel()
         watchPairingRequests()
-        // The home-screen widget follows the state.
-        scope.launch { state.collect { mano.algo.caster.quick.ShareWidget.update(applicationContext) } }
+        // The home-screen widget and app-icon shortcut follow the state.
+        scope.launch {
+            state.collect {
+                mano.algo.caster.quick.ShareWidget.update(applicationContext)
+                mano.algo.caster.quick.ShareShortcut.update(applicationContext)
+            }
+        }
         // Changing the port in Settings takes effect right away: rebind on the new one.
         scope.launch {
             ShareSettings.state.map { it.port to it.hostname }.distinctUntilChanged().drop(1).collect { reconcile() }
@@ -210,6 +215,7 @@ class MediaServerService : Service() {
         // A start that failed leaves its reason on screen instead of replacing it with a plain "stopped".
         if (!startFailed) _state.value = ServerState.Stopped
         mano.algo.caster.quick.ShareWidget.update(applicationContext) // the collector above is gone: say "off" ourselves
+        mano.algo.caster.quick.ShareShortcut.update(applicationContext)
         super.onDestroy()
     }
 
@@ -288,7 +294,7 @@ class MediaServerService : Service() {
                         host, port, name, requestedPort = wanted, requestedName = wantedName,
                         hotspot = NetworkUtils.isHotspot(this@MediaServerService),
                     ),
-                    "$host:$port" + if (port != wanted) " (usual port was busy)" else "",
+                    "Sharing your videos",
                 )
                 return@withLock
             }
