@@ -108,41 +108,79 @@
   .waiting { display:flex; align-items:center; justify-content:center; gap:10px; color:var(--dim); margin-top:18px; }
   #retry { margin-top:18px; }
 
-  /* videos */
-  .toolbar { position:sticky; top:67px; z-index:4; padding:10px 0; margin:0 -4px; padding-inline:4px; -webkit-backdrop-filter:blur(10px); backdrop-filter:blur(10px); background:var(--bg); background:color-mix(in srgb, var(--bg) 82%, transparent); }
-  .toolbar { display:flex; gap:10px; align-items:center; }
-  .search { position:relative; flex:1; }
-  .search .icon { position:absolute; left:14px; top:50%; transform:translateY(-50%); color:var(--dim); font-size:18px; pointer-events:none; }
-  .search input { padding-left:42px; border-radius:14px; }
-  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:16px; margin-top:8px; }
-  .video { display:block; width:100%; padding:0; text-align:left; cursor:pointer; overflow:hidden; border-radius:16px; background:var(--surface); border:1px solid var(--line);
-    box-shadow:var(--shadow); transition:transform .15s, border-color .15s; }
-  .video:hover, .video:focus-visible { transform:translateY(-3px); border-color:color-mix(in srgb, var(--accent) 55%, var(--line)); }
-  .thumb { position:relative; aspect-ratio:16/9; background:var(--surface-2) center/cover no-repeat; }
+  /* videos — YouTube TV full-screen app style */
+  body.in-videos {
+    background:radial-gradient(1100px 420px at 15% -120px, rgba(255,0,51,.14), transparent 65%), #0f0f0f;
+    color:#f1f1f1;
+  }
+  body.in-videos .topbar {
+    padding:12px max(28px,env(safe-area-inset-right)) 12px max(28px,env(safe-area-inset-left));
+    background:rgba(15,15,15,.92); border-bottom:0;
+  }
+  body.in-videos main { max-width:none; padding:6px max(28px,env(safe-area-inset-right)) 64px max(28px,env(safe-area-inset-left)); }
+  body.in-videos h3.section { margin:20px 4px 8px; font-size:16px; font-weight:700; letter-spacing:.1px; text-transform:none; color:#f1f1f1; }
+  body.in-videos #videoCount,
+  body.in-videos #disconnectBtn { display:none !important; }
+
+  .toolbar { display:flex; flex-wrap:wrap; gap:10px; align-items:center; padding:4px 4px 14px; }
+  .search { position:relative; flex:1; min-width:200px; max-width:420px; }
+  .search .icon { position:absolute; left:16px; top:50%; transform:translateY(-50%); color:#aaa; font-size:18px; pointer-events:none; }
+  .search input { padding:10px 16px 10px 44px; border-radius:999px; background:#212121; border:1px solid rgba(255,255,255,.1); color:#f1f1f1; }
+  body.in-videos .toolbar .btn,
+  body.in-videos .toolbar select {
+    border-radius:999px; background:#272727; border:0; color:#f1f1f1; padding:9px 16px; font-size:14px; font-weight:500;
+  }
+  body.in-videos .toolbar .icon-btn { width:40px; height:40px; padding:0; }
+  body.in-videos #playAll { background:#f1f1f1; color:#0f0f0f; font-weight:600; }
+
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:26px 18px; margin-top:4px; padding:12px 10px; margin-inline:-10px; }
+  .video {
+    display:block; width:100%; padding:0; text-align:left; cursor:pointer;
+    background:transparent; border:0; border-radius:14px; box-shadow:none; overflow:visible;
+    transition:transform .18s cubic-bezier(.2,.8,.2,1);
+  }
+  .video:hover, .video:focus-visible { transform:scale(1.03); }
+  .thumb {
+    position:relative; aspect-ratio:16/9; border-radius:14px; overflow:hidden;
+    background:#1c1c1c center/cover no-repeat; border:2px solid transparent;
+    transition:border-color .16s ease, box-shadow .18s ease;
+  }
   @supports not (aspect-ratio:16/9) { .thumb { height:0; padding-top:56.25%; } }
-  .thumb::after { content:""; position:absolute; top:0; right:0; bottom:0; left:0; background:linear-gradient(transparent 55%, rgba(0,0,0,.55)); opacity:.9; }
-  .play-badge { position:absolute; left:50%; top:50%; z-index:1; width:48px; height:48px; margin:-24px 0 0 -24px; border-radius:50%; font-size:22px; color:#fff;
-    background:rgba(0,0,0,.5); -webkit-backdrop-filter:blur(6px); backdrop-filter:blur(6px); opacity:0; transform:scale(.85); transition:opacity .15s, transform .15s; }
-  .video:hover .play-badge, .video:focus-visible .play-badge { opacity:1; transform:none; }
-  .thumb:not(.has-img) .play-badge { opacity:.6; transform:none; }
-  .duration { position:absolute; right:8px; bottom:8px; z-index:1; font-size:12px; font-weight:600; color:#fff; padding:2px 7px; border-radius:7px; background:rgba(0,0,0,.6); }
-  .meta { padding:12px 14px 14px; }
-  .title { font-size:14px; font-weight:600; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; word-break:break-word; }
-  .sub { color:var(--dim); font-size:12.5px; margin-top:3px; }
-  .skeleton { pointer-events:none; box-shadow:none; }
+  .thumb::after { content:""; position:absolute; top:0; right:0; bottom:0; left:0; background:linear-gradient(transparent 55%, rgba(0,0,0,.65)); opacity:.85; }
+  .play-badge {
+    position:absolute; left:50%; top:50%; z-index:1; width:50px; height:50px; margin:-25px 0 0 -25px; border-radius:50%;
+    display:grid; place-items:center; padding-left:3px; font-size:20px; line-height:1; color:#fff;
+    background:rgba(15,15,15,.72); -webkit-backdrop-filter:blur(8px); backdrop-filter:blur(8px);
+    opacity:0; transform:scale(.82); transition:opacity .16s, transform .16s, background .16s;
+  }
+  .video:hover .play-badge, .video:focus-visible .play-badge { opacity:1; transform:scale(1); }
+  .thumb:not(.has-img) .play-badge { opacity:.65; transform:none; }
+  .duration { position:absolute; right:8px; bottom:10px; z-index:1; font-size:12px; font-weight:600; color:#fff; padding:2px 7px; border-radius:6px; background:rgba(0,0,0,.82); }
+  .meta { padding:10px 4px 2px; }
+  .title { font-size:15px; font-weight:600; line-height:1.35; color:#f1f1f1; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; word-break:break-word; }
+  .sub { color:#aaaaaa; font-size:13px; margin-top:3px; }
+  .skeleton { pointer-events:none; }
   .skeleton .thumb::after { display:none; }
-  .skeleton .thumb, .skeleton .meta { position:relative; overflow:hidden; background:var(--surface-2); }
-  .skeleton .meta { height:62px; }
+  .skeleton .thumb, .skeleton .meta { position:relative; overflow:hidden; background:#1c1c1c; border-radius:14px; }
+  .skeleton .meta { height:52px; margin-top:10px; }
   .skeleton .thumb::before, .skeleton .meta::before { content:""; position:absolute; top:0; right:0; bottom:0; left:0; transform:translateX(-100%);
     background:linear-gradient(90deg, transparent, rgba(255,255,255,.07), transparent); animation:shimmer 1.3s infinite; }
   @keyframes shimmer { to { transform:translateX(100%); } }
 
-  .tabs { display:flex; gap:8px; flex-wrap:wrap; margin:6px 0 4px; }
-  .chipbtn { border:1px solid var(--line); background:var(--surface); color:var(--dim); border-radius:999px; padding:6px 14px; font-size:14px; cursor:pointer; }
-  .chipbtn.on { color:var(--on-accent); border-color:transparent; font-weight:600; background:linear-gradient(135deg,var(--accent),var(--accent-2)); }
-  .vcount { white-space:nowrap; font-size:14px; color:var(--dim); }
-  .progress { position:absolute; left:0; right:0; bottom:0; z-index:1; height:5px; background:rgba(255,255,255,.28); }
-  .progress > i { display:block; height:100%; background:linear-gradient(90deg,var(--accent),var(--accent-2)); }
+  .tabs { display:flex; gap:8px; flex-wrap:wrap; margin:4px 0 10px; padding:2px 4px; }
+  .chipbtn {
+    border:0; background:#272727; color:#f1f1f1; border-radius:10px; padding:8px 16px; font-size:14px; font-weight:500; cursor:pointer;
+    transition:background .15s, color .15s, transform .14s;
+  }
+  .chipbtn:hover { background:#3a3a3a; }
+  .chipbtn.on { color:#0f0f0f; font-weight:600; background:#f1f1f1; }
+  .vcount { white-space:nowrap; font-size:13.5px; color:#aaaaaa; margin-left:4px; }
+  .progress { position:absolute; left:0; right:0; bottom:0; z-index:2; height:4px; background:rgba(255,255,255,.25); }
+  .progress > i { display:block; height:100%; background:#ff0033; }
+  @media (max-width:600px) {
+    body.in-videos .topbar, body.in-videos main { padding-inline:14px; }
+    .grid { grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:18px 12px; }
+  }
 
   /* YouTube-style player */
   #player { position:fixed; top:0; right:0; bottom:0; left:0; z-index:20; display:none; background:#000; color:#fff; user-select:none; -webkit-user-select:none; }
@@ -233,9 +271,9 @@
   .toolbar { flex-wrap:wrap; }
   .search { min-width:180px; }
   select { font:inherit; color:inherit; background:var(--surface-2); border:1px solid var(--line); border-radius:12px; padding:10px 12px; cursor:pointer; }
-  .strip { display:flex; gap:16px; overflow-x:auto; padding:4px 2px 14px; margin-top:2px; scroll-snap-type:x proximity; }
-  .strip .video { flex:0 0 250px; flex:0 0 min(250px,70vw); scroll-snap-align:start; box-shadow:none; }
-  .strip + h3.section { margin-top:10px; }
+  .strip { display:flex; gap:18px; overflow-x:auto; padding:14px 16px 22px; margin:0 -16px; scroll-snap-type:x proximity; }
+  .strip .video { flex:0 0 280px; flex:0 0 min(280px,74vw); scroll-snap-align:start; box-shadow:none; }
+  .strip + h3.section { margin-top:6px; }
 
   /* player extras */
   body.playing { overflow:hidden; }
@@ -284,6 +322,17 @@
     box-shadow:0 0 0 9px color-mix(in srgb, var(--accent) 70%, transparent), 0 18px 40px rgba(0,0,0,.55); }
   html.tv .video:focus { transform:scale(1.06); }
   html.tv .video:focus .play-badge { opacity:1; transform:none; }
+  .remote-focus {
+    outline:none !important; position:relative; z-index:3;
+    box-shadow:0 0 0 2.5px #fff, 0 10px 24px rgba(0,0,0,.6) !important;
+    transform:scale(1.04);
+    transition:transform .16s cubic-bezier(.2,.8,.2,1), box-shadow .16s ease;
+  }
+  .video.remote-focus { box-shadow:none !important; transform:scale(1.04); }
+  .video.remote-focus .thumb { border:3px solid #fff; box-shadow:0 16px 36px rgba(0,0,0,.8), 0 0 24px rgba(255,255,255,.16); }
+  .video.remote-focus .title { color:#fff; }
+  .video.remote-focus .play-badge { opacity:1; transform:scale(1); background:#ff0033; color:#fff; }
+  .chipbtn.remote-focus { background:#f1f1f1; color:#0f0f0f; }
   html.tv .yt-btn { height:64px; min-width:64px; padding:0 16px; font-size:22px; }
   html.tv .yt-btn svg { width:34px; height:34px; }
   html.tv .yt-time { font-size:1.15rem; }
@@ -581,6 +630,7 @@
     }
     if (view !== 'pair') stopPairPoll();
     currentView = view;
+    document.body.classList.toggle('in-videos', view === 'videos');
     for (const id of ['devices', 'pair', 'videos']) $(id).hidden = id !== view;
     $('back').hidden = view === 'devices';
     $('title').hidden = view === 'devices' || !current;
@@ -1320,6 +1370,12 @@
     openVideo(index);
     $('seek').focus({ preventScroll: true });
     startRemoteSync();
+    if (!fsEl()) {
+      try {
+        const req = playerEl.requestFullscreen || playerEl.webkitRequestFullscreen;
+        if (req) Promise.resolve(req.call(playerEl)).catch(() => {});
+      } catch (_e) {}
+    }
   }
 
   function renderQueuePanel() {
@@ -1373,7 +1429,6 @@
     clearTimeout(blackCheck);
     inspectToken++;
     clearSubs();
-    stopRemoteSync();
     $('photo').hidden = true;
     $('photo').removeAttribute('src');
     playerEl.classList.remove('open', 'photo');
@@ -1385,6 +1440,7 @@
     currentId = null;
     renderVideos();                              // refresh the "watched" bars
     focusCard(id);
+    syncRemote(false);
   }
   function closePlayer() {
     if (history.state && history.state.pl) history.back(); else closePlayerNow();
@@ -1530,43 +1586,86 @@
   }
 
   // ---- phone as remote: report what is playing, run what the phone owner pressed -----------------------
-  let syncTimer = null, remoteOk = true;
-  async function syncRemote(idle) {
-    if (!current || !token(current) || currentView !== 'videos') { stopRemoteSync(); return; }
+  let remoteActive = false, remoteOk = true, remoteAbort = null;
+  async function syncRemote(idle, wait = false) {
+    if (!current || !token(current) || currentView !== 'videos') { stopRemoteSync(); return false; }
     const v = playQueue[queueIndex];
-    const state = idle || !isOpen() || !v ? 'idle' : kind === 'i' || video.paused ? 'paused' : 'playing';
-    let q = '&s=' + state;
-    if (state !== 'idle') {
+    const state = idle ? 'idle' : (!isOpen() || !v) ? 'browsing' : kind === 'i' || video.paused ? 'paused' : 'playing';
+    let q = '&s=' + state + (wait ? '&wait=1' : '');
+    if (state === 'playing' || state === 'paused') {
       q += '&p=' + Math.floor(getActualTime()) + '&d=' + Math.floor(getActualDuration()) +
         '&n=' + encodeURIComponent(v.name) + '&v=' + encodeURIComponent(v.id) + '&k=' + kind + '&vol=' + Math.round((video.muted ? 0 : video.volume) * 100);
     }
     try {
-      const r = await fetch(base(current) + '/api/remote?t=' + encodeURIComponent(token(current)) + q, { cache: 'no-store' });
-      if (r.status === 404) { remoteOk = false; stopRemoteSync(); return; }   // an older phone build
+      const ctrl = wait ? new AbortController() : null;
+      if (ctrl) remoteAbort = ctrl;
+      const r = await fetch(base(current) + '/api/remote?t=' + encodeURIComponent(token(current)) + q, { cache: 'no-store', signal: ctrl ? ctrl.signal : undefined });
+      if (r.status === 404) { remoteOk = false; stopRemoteSync(); return false; }   // an older phone build
       if (r.status === 401) {
         handleRevoked('Disconnected by phone.');
-        return;
+        return false;
       }
-      if (!r.ok) return;
+      if (!r.ok) return false;
       for (const c of (await r.json()).cmds || []) runRemoteCommand(c);
-    } catch (_e) { /* the phone is momentarily unreachable; the next tick tries again */ }
+      return true;
+    } catch (_e) {
+      return false; /* the phone is momentarily unreachable or aborted; the next tick tries again */
+    } finally {
+      remoteAbort = null;
+    }
+  }
+  async function remoteLoop() {
+    while (remoteActive && remoteOk && current && token(current) && currentView === 'videos') {
+      const ok = await syncRemote(false, true);
+      if (!remoteActive) break;
+      await new Promise(res => setTimeout(res, ok ? 30 : 800));
+    }
   }
   function startRemoteSync() {
-    if (!remoteOk || syncTimer) return;
-    syncTimer = setInterval(() => syncRemote(false), 1200);
+    if (!remoteOk || remoteActive) return;
+    remoteActive = true;
+    remoteLoop();
   }
   function stopRemoteSync() {
-    if (syncTimer) { clearInterval(syncTimer); syncTimer = null; }
+    remoteActive = false;
+    if (remoteAbort) { try { remoteAbort.abort(); } catch (_e) {} remoteAbort = null; }
   }
   function runRemoteCommand(c) {
+    if (c.startsWith('nav:')) {
+      const action = c.slice(4);
+      if (isOpen()) {
+        if (action === 'back') { closePlayer(); return; }
+        const keyMap = { up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight', ok: 'Enter' };
+        const key = keyMap[action];
+        if (key) {
+          if (action === 'ok' && document.activeElement && playerEl.contains(document.activeElement) && document.activeElement.id !== 'seek') {
+            document.activeElement.click();
+          } else {
+            handlePlayerKey({ key, repeat: false, ctrlKey: false, metaKey: false, altKey: false });
+          }
+          showUi();
+        }
+        return;
+      }
+      if (action === 'up' || action === 'down' || action === 'left' || action === 'right') {
+        spatialMove(action, true);
+      } else if (action === 'ok') {
+        const cur = document.querySelector('.remote-focus') || document.activeElement;
+        const target = cur && cur !== document.body && !$('player').contains(cur) ? cur : document.querySelector('#videos .video, #videos button');
+        if (target) { setRemoteFocus(target); target.click(); }
+      }
+      return;
+    }
     if (!isOpen()) return; // the player was closed while this command was on its way
     if (c === 'toggle') togglePlay();
     else if (c === 'next') nextVideo();
     else if (c === 'prev') prevVideo();
     else if (c === 'stop') closePlayer();
     else if (c.startsWith('seek:')) seekBy(Number(c.slice(5)) || 0);
-    else if (c.startsWith('volume:')) { const x = Number(c.slice(7)); if (isFinite(x)) { video.muted = false; video.volume = Math.max(0, Math.min(1, x)); } }
+    else if (c.startsWith('volume:')) { const x = Number(c.slice(7)); if (isFinite(x)) { video.muted = x <= 0; video.volume = Math.max(0, Math.min(1, x)); } }
+    else if (c === 'mute') toggleMute();
     else if (c === 'subs') { if (subTrack) onSubsButton(); else toast('No subtitles for this video'); }
+    else if (c === 'fs') toggleFullscreen(true);
     else if (c.startsWith('seekto:')) { seekToTime(Number(c.slice(7)) || 0); showUi(); }
   }
 
@@ -1652,14 +1751,26 @@
     }
   }
 
+  function setRemoteFocus(el) {
+    document.querySelectorAll('.remote-focus').forEach(n => n.classList.remove('remote-focus'));
+    if (!el) return;
+    el.classList.add('remote-focus');
+    el.focus({ preventScroll: true });
+    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
+  }
+  document.addEventListener('pointerdown', () => setRemoteFocus(null), { passive: true });
+
   // ---- TV spatial navigation ---------------------------------------------------------------------------
   const ARROWS = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
-  function spatialMove(dir) {
+  function spatialMove(dir, fromRemote = false) {
     const items = [...document.querySelectorAll('button, input, summary')].filter(n =>
       !n.disabled && n.offsetParent !== null && !n.closest('[hidden]') && !n.closest('#player') && !n.closest('.skeleton'));
     if (!items.length) return false;
-    const cur = document.activeElement;
-    if (!cur || !items.includes(cur)) { items[0].focus(); return true; }
+    const cur = document.querySelector('.remote-focus') || document.activeElement;
+    if (!cur || !items.includes(cur)) {
+      if (fromRemote) setRemoteFocus(items[0]); else items[0].focus();
+      return true;
+    }
     const c = cur.getBoundingClientRect();
     const cx = c.left + c.width / 2, cy = c.top + c.height / 2;
     let best = null, bestScore = Infinity;
@@ -1674,8 +1785,11 @@
       if (score < bestScore) { best = n; bestScore = score; }
     }
     if (!best) return false;
-    best.focus({ preventScroll: true });
-    best.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
+    if (fromRemote) setRemoteFocus(best);
+    else {
+      best.focus({ preventScroll: true });
+      best.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
+    }
     return true;
   }
 
@@ -1750,11 +1864,31 @@
   });
 
   const fsEl = () => document.fullscreenElement || document.webkitFullscreenElement;
-  function toggleFullscreen() {
+  function toggleFullscreen(fromRemote = false) {
     try {
-      if (fsEl()) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
-      else (playerEl.requestFullscreen || playerEl.webkitRequestFullscreen).call(playerEl);
-    } catch (_e) { /* not allowed here (for example inside a frame); the player already fills the window */ }
+      if (fsEl()) {
+        const ex = document.exitFullscreen || document.webkitExitFullscreen;
+        if (ex) Promise.resolve(ex.call(document)).catch(() => {});
+      } else {
+        const req = playerEl.requestFullscreen || playerEl.webkitRequestFullscreen;
+        if (req) {
+          Promise.resolve(req.call(playerEl)).catch(() => {
+            if (video.webkitEnterFullscreen) {
+              try { video.webkitEnterFullscreen(); return; } catch (_e) {}
+            }
+            if (fromRemote) {
+              playerUi.classList.add('idle');
+              toast('Tap F or ⛶ on screen for fullscreen');
+            }
+          });
+        }
+      }
+    } catch (_e) {
+      if (fromRemote) {
+        playerUi.classList.add('idle');
+        toast('Tap F or ⛶ on screen for fullscreen');
+      }
+    }
   }
   if (!document.fullscreenEnabled && !document.webkitFullscreenEnabled) $('fs').hidden = true;
 

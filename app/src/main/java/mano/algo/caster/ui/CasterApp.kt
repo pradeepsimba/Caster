@@ -872,6 +872,7 @@ fun CasterApp() {
         ModalBottomSheet(
             onDismissRequest = { showRemote = false },
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = androidx.compose.ui.graphics.Color(0xFF141416),
         ) {
             RemoteScreen(
                 state = tvState,

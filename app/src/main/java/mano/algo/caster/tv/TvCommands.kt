@@ -20,6 +20,25 @@ object TvKey {
     const val ENTER = 66
     const val POWER = 26 // switches the TV off, or on from standby (where the TV allows it)
     const val SEARCH = 84 // on an Android TV this opens the voice assistant
+    const val CHANNEL_UP = 166
+    const val CHANNEL_DOWN = 167
+    const val GUIDE = 172
+    const val INFO = 165
+    const val TV_INPUT = 178
+    const val DIGIT_0 = 7
+    const val DIGIT_1 = 8
+    const val DIGIT_2 = 9
+    const val DIGIT_3 = 10
+    const val DIGIT_4 = 11
+    const val DIGIT_5 = 12
+    const val DIGIT_6 = 13
+    const val DIGIT_7 = 14
+    const val DIGIT_8 = 15
+    const val DIGIT_9 = 16
+    const val PROG_RED = 183
+    const val PROG_GREEN = 184
+    const val PROG_YELLOW = 185
+    const val PROG_BLUE = 186
 }
 
 /** Pre-configured popular streaming apps to quick-launch on connected TVs. */
@@ -33,6 +52,7 @@ enum class TvApp(
     YOUTUBE("YouTube", "https://www.youtube.com", "com.google.android.youtube.tv", "youtube.leanback.v4", "111299001912"),
     NETFLIX("Netflix", "https://www.netflix.com", "com.netflix.ninja", "netflix", "11101200001"),
     PRIME_VIDEO("Prime Video", "https://www.primevideo.com", "com.amazon.amazonvideo.livingroom", "amazon", "3201512006785"),
+    HOTSTAR("JioHotstar", "https://www.hotstar.com", "in.startv.hotstar", "in.startv.hotstar", "3201707014489"),
     SPOTIFY("Spotify", "https://open.spotify.com", "com.spotify.tv.android", "spotify-medialink", "3201606009684"),
 }
 

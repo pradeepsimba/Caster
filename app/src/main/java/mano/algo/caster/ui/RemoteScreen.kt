@@ -7,29 +7,35 @@ import android.speech.RecognizerIntent
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -37,16 +43,14 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalContentColor
@@ -61,6 +65,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -69,8 +74,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
@@ -92,6 +100,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancelAndJoin
@@ -101,13 +110,16 @@ import kotlinx.coroutines.withContext
 import mano.algo.caster.cast.CastController
 import mano.algo.caster.server.RemoteControl
 import mano.algo.caster.server.RemoteState
+import mano.algo.caster.tv.InstalledTvApp
 import mano.algo.caster.tv.TvApp
+import mano.algo.caster.tv.TvInput
 import mano.algo.caster.tv.TvKey
 import mano.algo.caster.tv.TvRemote
 import mano.algo.caster.tv.WakeOnLan
 import mano.algo.caster.ui.theme.LiveGreen
+import java.util.Locale
 
-// ---- Icons matching the sleek remote aesthetic ---------------------------------------------------
+// ---- Custom Icons matching the reference remote aesthetic ----------------------------------------
 
 val RemoteIcon: ImageVector by lazy {
     ImageVector.Builder("Remote", 24.dp, 24.dp, 24f, 24f).apply {
@@ -152,6 +164,48 @@ private val PowerIcon: ImageVector by lazy {
     }.build()
 }
 
+private val InputPlugIcon: ImageVector by lazy {
+    ImageVector.Builder("InputPlug", 24.dp, 24.dp, 24f, 24f).apply {
+        addPath(
+            pathData = addPathNodes("M16,7V3h-2v4h-4V3H8v4h-1c-1.1,0 -2,0.9 -2,2v5.5L8.5,18v3h7v-3L19,14.5V9c0,-1.1 -0.9,-2 -2,-2h-1z"),
+            fill = SolidColor(Color.Black),
+        )
+    }.build()
+}
+
+private val ChevronDownIcon: ImageVector by lazy {
+    ImageVector.Builder("ChevronDown", 24.dp, 24.dp, 24f, 24f).apply {
+        addPath(pathData = addPathNodes("M7.41,8.59L12,13.17l4.59,-4.58L18,10l-6,6 -6,-6 1.41,-1.41z"), fill = SolidColor(Color.Black))
+    }.build()
+}
+
+private val GuideListIcon: ImageVector by lazy {
+    ImageVector.Builder("GuideList", 24.dp, 24.dp, 24f, 24f).apply {
+        addPath(
+            pathData = addPathNodes("M4,8h4v2H4V8zm6,0h10v2H10V8zm-6,6h4v2H4v-2zm6,0h10v2H10v-2z"),
+            fill = SolidColor(Color.Black),
+        )
+    }.build()
+}
+
+private val PlayPauseIcon: ImageVector by lazy {
+    ImageVector.Builder("PlayPause", 24.dp, 24.dp, 24f, 24f).apply {
+        addPath(pathData = addPathNodes("M4,18l8.5,-6L4,6v12zm9,-12v12h2V6h-2zm4,0v12h2V6h-2z"), fill = SolidColor(Color.Black))
+    }.build()
+}
+
+private val RewindIcon: ImageVector by lazy {
+    ImageVector.Builder("Rewind", 24.dp, 24.dp, 24f, 24f).apply {
+        addPath(pathData = addPathNodes("M11,18V6l-8.5,6 8.5,6zm0.5,-6l8.5,6V6l-8.5,6z"), fill = SolidColor(Color.Black))
+    }.build()
+}
+
+private val FastForwardIcon: ImageVector by lazy {
+    ImageVector.Builder("FastForward", 24.dp, 24.dp, 24f, 24f).apply {
+        addPath(pathData = addPathNodes("M4,18l8.5,-6L4,6v12zm9,-12v12l8.5,-6L13,6z"), fill = SolidColor(Color.Black))
+    }.build()
+}
+
 private val VolumeOffIcon: ImageVector by lazy {
     ImageVector.Builder("VolumeOff", 24.dp, 24.dp, 24f, 24f).apply {
         addPath(
@@ -163,24 +217,46 @@ private val VolumeOffIcon: ImageVector by lazy {
     }.build()
 }
 
-private val MicIcon: ImageVector by lazy {
-    ImageVector.Builder("Mic", 24.dp, 24.dp, 24f, 24f).apply {
+private val VolumeUpIcon: ImageVector by lazy {
+    ImageVector.Builder("VolumeUp", 24.dp, 24.dp, 24f, 24f).apply {
         addPath(
             pathData = addPathNodes(
-                "M12,14c1.66,0 3,-1.34 3,-3V5c0,-1.66 -1.34,-3 -3,-3S9,3.34 9,5v6c0,1.66 1.34,3 3,3zm5.3,-3c0,3 -2.54,5.1 -5.3,5.1S6.7,14 6.7,11H5c0,3.41 2.72,6.23 6,6.72V21h2v-3.28c3.28,-0.48 6,-3.3 6,-6.72h-1.7z",
+                "M3,9v6h4l5,5V4L7,9H3zm13.5,3c0,-1.77 -1.02,-3.29 -2.5,-4.03v8.05c1.48,-0.73 2.5,-2.25 2.5,-4.02zM14,3.23v2.06c2.89,0.86 5,3.54 5,6.71s-2.11,5.85 -5,6.71v2.06c4.01,-0.91 7,-4.49 7,-8.77s-2.99,-7.86 -7,-8.77z",
             ),
             fill = SolidColor(Color.Black),
         )
     }.build()
 }
 
-private val KeyboardIcon: ImageVector by lazy {
-    ImageVector.Builder("Keyboard", 24.dp, 24.dp, 24f, 24f).apply {
+private val UndoBackIcon: ImageVector by lazy {
+    ImageVector.Builder("UndoBack", 24.dp, 24.dp, 24f, 24f).apply {
         addPath(
             pathData = addPathNodes(
-                "M20,5H4c-1.1,0 -1.99,0.9 -1.99,2L2,17c0,1.1 0.9,2 2,2h16c1.1,0 2,-0.9 2,-2V7c0,-1.1 -0.9,-2 -2,-2zm-9,3h2v2h-2V8zm0,3h2v2h-2v-2zM8,8h2v2H8V8zm0,3h2v2H8v-2zm-1,2H5v-2h2v2zm0,-3H5V8h2v2zm9,7H8v-2h8v2zm0,-4h-2v-2h2v2zm0,-3h-2V8h2v2zm3,3h-2v-2h2v2zm0,-3h-2V8h2v2z",
+                "M12.5,8c-2.65,0 -5.05,0.99 -6.9,2.6L2,7v9h9l-3.62,-3.62c1.39,-1.16 3.16,-1.88 5.12,-1.88 3.54,0 6.55,2.31 7.6,5.5l2.37,-0.78C21.08,11.03 17.15,8 12.5,8z",
             ),
             fill = SolidColor(Color.Black),
+        )
+    }.build()
+}
+
+private val HomeOutlineIcon: ImageVector by lazy {
+    ImageVector.Builder("HomeOutline", 24.dp, 24.dp, 24f, 24f).apply {
+        addPath(
+            pathData = addPathNodes("M12,5.69l5,4.5V18h-2v-6H9v6H7v-7.81l5,-4.5M12,3L2,12h3v8h6v-6h2v6h6v-8h3L12,3z"),
+            fill = SolidColor(Color.Black),
+        )
+    }.build()
+}
+
+private val AssistantLoopIcon: ImageVector by lazy {
+    ImageVector.Builder("AssistantLoop", 24.dp, 24.dp, 24f, 24f).apply {
+        addPath(
+            pathData = addPathNodes(
+                "M18.6,6.62c-1.44,0 -2.8,0.56 -3.77,1.53L12,10.66 10.48,12h0.01L7.8,14.39c-0.64,0.64 -1.49,0.99 -2.4,0.99 -1.87,0 -3.39,-1.51 -3.39,-3.38S3.53,8.62 5.4,8.62c0.91,0 1.76,0.35 2.44,1.03l1.13,1 1.51,-1.34L9.22,8.2C8.2,7.18 6.84,6.62 5.4,6.62 2.42,6.62 0,9.04 0,12s2.42,5.38 5.4,5.38c1.44,0 2.8,-0.56 3.77,-1.53l2.83,-2.5 0.01,-0.01L13.52,12h-0.01l2.69,-2.39c0.64,-0.64 1.49,-0.99 2.4,-0.99 1.87,0 3.39,1.51 3.39,3.38s-1.52,3.38 -3.39,3.38c-0.9,0 -1.76,-0.35 -2.44,-1.03l-1.14,-1.01 -1.51,1.34 1.27,1.12c1.02,1.01 2.37,1.57 3.82,1.57 2.98,0 5.4,-2.41 5.4,-5.38s-2.42,-5.37 -5.4,-5.37z",
+            ),
+            fill = Brush.linearGradient(
+                listOf(Color(0xFF4F8DFF), Color(0xFFA855F7), Color(0xFFEC4899)),
+            ),
         )
     }.build()
 }
@@ -207,19 +283,77 @@ private val TouchpadIcon: ImageVector by lazy {
     }.build()
 }
 
-// ---- Remote Palette ------------------------------------------------------------------------------
+private val LiveTvIcon: ImageVector by lazy {
+    ImageVector.Builder("LiveTv", 24.dp, 24.dp, 24f, 24f).apply {
+        addPath(
+            pathData = addPathNodes("M21,3H3c-1.1,0 -2,0.9 -2,2v12c0,1.1 0.9,2 2,2h5v2h8v-2h5c1.1,0 1.99,-0.9 1.99,-2L23,5c0,-1.1 -0.9,-2 -2,-2zm0,14H3V5h18v12z"),
+            fill = SolidColor(Color.Black),
+        )
+    }.build()
+}
 
-private val RemoteBg = Color(0xFF1A1A1D)
-private val RemoteButtonBg = Color(0xFF333338)
-private val RemoteButtonPressed = Color(0xFF47474E)
-private val RemoteButtonBorder = Color(0xFF4A4A50)
-private val RemotePowerRed = Color(0xFFE05252)
+private val SetTopBoxIcon: ImageVector by lazy {
+    ImageVector.Builder("SetTopBox", 24.dp, 24.dp, 24f, 24f).apply {
+        addPath(
+            pathData = addPathNodes("M20,8H4c-1.1,0 -2,0.9 -2,2v4c0,1.1 0.9,2 2,2h16c1.1,0 2,-0.9 2,-2v-4c0,-1.1 -0.9,-2 -2,-2zm0,6H4v-4h16v4zM6,11h6v2H6v-2zm8,0h2v2h-2v-2zm3,0h1v2h-1v-2z"),
+            fill = SolidColor(Color.Black),
+        )
+    }.build()
+}
+
+private val HdmiPortIcon: ImageVector by lazy {
+    ImageVector.Builder("HdmiPort", 24.dp, 24.dp, 24f, 24f).apply {
+        addPath(
+            pathData = addPathNodes("M18,7H6C4.9,7 4,7.9 4,9v4l2,3h12l2,-3V9C20,7.9 19.1,7 18,7zM18,12.3l-1.2,1.7H7.2L6,12.3V9h12V12.3zM8,10.5h8v1.5H8V10.5z"),
+            fill = SolidColor(Color.Black),
+        )
+    }.build()
+}
+
+private val WebGlobeIcon: ImageVector by lazy {
+    ImageVector.Builder("WebGlobe", 24.dp, 24.dp, 24f, 24f).apply {
+        addPath(
+            pathData = addPathNodes("M12,2C6.48,2 2,6.48 2,12s4.48,10 10,10 10,-4.48 10,-10S17.52,2 12,2zm-1,17.93c-3.95,-0.49 -7,-3.85 -7,-7.93 0,-0.62 0.08,-1.21 0.21,-1.79L9,15v1c0,1.1 0.9,2 2,2v1.93zm6.9,-2.54c-0.26,-0.81 -1,-1.39 -1.9,-1.39h-1v-3c0,-0.55 -0.45,-1 -1,-1H8v-2h2c0.55,0 1,-0.45 1,-1V7h2c1.1,0 2,-0.9 2,-2v-0.41c2.93,1.19 5,4.06 5,7.41 0,2.08 -0.8,3.97 -2.1,5.39z"),
+            fill = SolidColor(Color.Black),
+        )
+    }.build()
+}
+
+private val StopSquareIcon: ImageVector by lazy {
+    ImageVector.Builder("StopSquare", 24.dp, 24.dp, 24f, 24f).apply {
+        addPath(pathData = addPathNodes("M6,6h12v12H6z"), fill = SolidColor(Color.Black))
+    }.build()
+}
+
+private val FullscreenIcon: ImageVector by lazy {
+    ImageVector.Builder("Fullscreen", 24.dp, 24.dp, 24f, 24f).apply {
+        addPath(
+            pathData = addPathNodes("M7,14H5v5h5v-2H7v-3zm-2,-4h2V7h3V5H5v5zm12,7h-3v2h5v-5h-2v3zM14,5v2h3v3h2V5h-5z"),
+            fill = SolidColor(Color.Black),
+        )
+    }.build()
+}
+
+// ---- Remote Palette (matching the dark reference screenshots) ------------------------------------
+
+private val RemoteBg = Color(0xFF141416)
+private val RemoteSheetBg = Color(0xFF1D1D20)
+private val RemotePillDark = Color(0xFF0A0A0C)
+private val RemoteTileBg = Color(0xFF3A3A3E)
+private val RemoteTilePressed = Color(0xFF4E4E54)
+private val RemoteWellBg = Color(0xFF070708)
+private val RemoteOkRingBg = Color(0xFF424246)
+private val RemoteBottomBarBg = Color(0xFF1E1E22)
+private val RemotePowerRed = Color(0xFFE03A3A)
+private val RemoteInputBlue = Color(0xFF5E6BF5)
 private val RemoteAccentBlue = Color(0xFF5EA8FF)
-private val RemoteMicPurple = Color(0xFFA86BFF)
+private val RemoteBorderSubtle = Color(0xFF2C2C30)
 
 // ---- State & Capabilities ------------------------------------------------------------------------
 
-private enum class LowerMode { DPAD, TOUCHPAD, NUMPAD, KEYBOARD, APPS, DEVICES }
+private enum class LowerMode { DPAD, TOUCHPAD, NUMPAD }
+
+private enum class UpperPage { TV, MEDIA, APPS, EXTRA }
 
 private sealed interface RemoteTarget {
     val id: String
@@ -233,7 +367,7 @@ private sealed interface RemoteTarget {
             TvRemote.Link.AndroidTv -> "Android TV"
             TvRemote.Link.Samsung -> "Samsung TV"
             TvRemote.Link.Lg -> "LG TV"
-            TvRemote.Link.Adb -> "Android TV (ADB)"
+            TvRemote.Link.Adb -> "Android TV"
         }
         override val subtitle: String = host
     }
@@ -255,26 +389,36 @@ private sealed interface RemoteTarget {
     data class Web(val remote: RemoteState) : RemoteTarget {
         override val id: String = "web:${remote.deviceId}"
         override val label: String = remote.deviceLabel
-        override val subtitle: String = if (remote.playing) "Playing on screen" else "Paused on screen"
+        override val subtitle: String = when {
+            remote.title.isBlank() -> "Browsing index page"
+            remote.playing -> "Playing on screen"
+            else -> "Paused on screen"
+        }
     }
 }
 
 private data class RemoteCapabilities(
+    val power: Boolean = false,
     val dpad: Boolean = false,
+    val back: Boolean = false,
+    val home: Boolean = false,
     val playPause: Boolean = false,
     val seekButtons: Boolean = false,
     val prev: Boolean = false,
     val next: Boolean = false,
+    val stop: Boolean = false,
     val seekBar: Boolean = false,
     val subtitles: Boolean = false,
     val volumeButtons: Boolean = false,
     val volumeSlider: Boolean = false,
     val volumeSetup: Boolean = false,
-    val power: Boolean = false,
+    val channels: Boolean = false,
+    val guide: Boolean = false,
+    val numpad: Boolean = false,
+    val inputs: Boolean = false,
+    val trackpad: Boolean = false,
     val voice: Boolean = false,
     val keyboard: Boolean = false,
-    val trackpad: Boolean = false,
-    val numpad: Boolean = false,
     val apps: Boolean = false,
 )
 
@@ -283,31 +427,45 @@ private fun capabilitiesFor(target: RemoteTarget?, volume: TvRemote.VolumeState)
         val full = target.link != TvRemote.Link.FireTv
         val volReady = full || volume is TvRemote.VolumeState.Ready
         RemoteCapabilities(
+            power = TvRemote.supportsKey(target.link, TvKey.POWER),
             dpad = true,
+            back = true,
+            home = true,
             playPause = true,
             seekButtons = true,
             volumeButtons = volReady,
             volumeSetup = !volReady && TvRemote.adbSupported,
-            power = TvRemote.supportsKey(target.link, TvKey.POWER),
+            channels = full,
+            guide = full,
+            numpad = full,
+            inputs = full,
+            trackpad = true,
             voice = true,
             keyboard = true,
-            trackpad = target.link == TvRemote.Link.Lg,
-            numpad = true,
-            apps = true,
+            apps = full,
         )
     }
-    is RemoteTarget.Web -> RemoteCapabilities(
-        playPause = true,
-        seekButtons = true,
-        next = true,
-        seekBar = target.remote.durationSec > 0,
-        subtitles = true,
-        volumeSlider = target.remote.volume >= 0,
-    )
+    is RemoteTarget.Web -> {
+        val hasVideo = target.remote.title.isNotBlank()
+        RemoteCapabilities(
+            dpad = true,
+            back = hasVideo,
+            playPause = hasVideo,
+            seekButtons = hasVideo,
+            seekBar = hasVideo && target.remote.durationSec > 0,
+            subtitles = hasVideo,
+            volumeButtons = hasVideo && target.remote.volume >= 0,
+            volumeSlider = hasVideo && target.remote.volume >= 0,
+        )
+    }
     is RemoteTarget.Cast -> RemoteCapabilities(
         playPause = true,
+        seekButtons = true,
         prev = true,
         next = true,
+        stop = true,
+        volumeButtons = true,
+        volumeSlider = false,
     )
     null -> RemoteCapabilities()
 }
@@ -317,8 +475,8 @@ private fun formatClock(sec: Int): String =
     else "%d:%02d".format(sec / 60, sec % 60)
 
 /**
- * Unified, sleek, no-scroll remote UI that adapts dynamically to the connected device's features
- * (Smart TV, Web Screen, or Chromecast) and uses show/hide mode toggles instead of scrolling.
+ * Unified adaptive remote UI for TV (Fire TV, Android TV, Samsung, LG, ADB), Chromecast, and Web Screens.
+ * Features and pages are limited dynamically based on what the connected device supports.
  */
 @Composable
 fun RemoteScreen(
@@ -349,6 +507,9 @@ fun RemoteScreen(
     modifier: Modifier = Modifier,
 ) {
     val castState by CastController.state.collectAsStateWithLifecycle()
+    val tvInputs by TvRemote.inputs.collectAsStateWithLifecycle()
+    val activeTvInputId by TvRemote.activeInputId.collectAsStateWithLifecycle()
+    val installedApps by TvRemote.installedApps.collectAsStateWithLifecycle()
 
     LaunchedEffect(savedHost) {
         if (state is TvRemote.State.Idle && savedHost.isNotBlank()) onConnect(savedHost)
@@ -367,209 +528,235 @@ fun RemoteScreen(
     }
 
     var selectedTargetId by rememberSaveable { mutableStateOf<String?>(null) }
+
+    // Automatically switch remote when a device starts playing or connects
+    val playingWebId = liveRemotes.firstOrNull { it.playing }?.let { "web:${it.deviceId}" }
+    LaunchedEffect(castState.device, castState.playing) {
+        if (castState.device != null && castState.playing) selectedTargetId = "cast"
+    }
+    LaunchedEffect(playingWebId) {
+        if (playingWebId != null) selectedTargetId = playingWebId
+    }
+    LaunchedEffect(state) {
+        if (state is TvRemote.State.Connected) selectedTargetId = "tv"
+    }
+
     val activeTarget = targets.firstOrNull { it.id == selectedTargetId } ?: targets.firstOrNull()
     val caps = capabilitiesFor(activeTarget, volume)
 
     var lowerMode by rememberSaveable { mutableStateOf(LowerMode.DPAD) }
+    var showDevicesPanel by rememberSaveable { mutableStateOf(false) }
+    var showInputsSheet by rememberSaveable { mutableStateOf(false) }
+
     val forceDevices = activeTarget == null || state is TvRemote.State.Connecting || state is TvRemote.State.NeedsPin
-    val shownMode = when {
-        forceDevices -> LowerMode.DEVICES
-        lowerMode == LowerMode.TOUCHPAD && !caps.trackpad && !caps.dpad -> LowerMode.DPAD
+    val showingDevices = forceDevices || showDevicesPanel
+
+    val effectiveLowerMode = when {
+        lowerMode == LowerMode.TOUCHPAD && !caps.trackpad -> LowerMode.DPAD
         lowerMode == LowerMode.NUMPAD && !caps.numpad -> LowerMode.DPAD
-        lowerMode == LowerMode.KEYBOARD && !caps.keyboard -> LowerMode.DPAD
-        lowerMode == LowerMode.APPS && !caps.apps -> LowerMode.DPAD
         else -> lowerMode
     }
 
-    Surface(
-        modifier = modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 4.dp),
-        shape = RoundedCornerShape(28.dp),
-        color = RemoteBg,
-        contentColor = Color.White,
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
+            .background(RemoteBg),
     ) {
         Column(
-            modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 14.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 16.dp, vertical = 6.dp),
             verticalArrangement = Arrangement.SpaceBetween,
         ) {
-            // 1. Sleek Top Bar: Red Power (if supported) + Device title/switcher + More (⋮)
+            // Top Bar: Power (left) | Inputs / Active Device v (center) | Settings (right)
             RemoteTopBar(
-                targets = targets,
                 active = activeTarget,
-                hasPower = caps.power,
+                multiTarget = targets.size > 1,
+                hasPower = caps.power && !showingDevices,
                 onPower = { onKey(TvKey.POWER, false) },
-                onSelectTarget = {
-                    selectedTargetId = it.id
-                    lowerMode = LowerMode.DPAD
-                },
-                onToggleDevices = {
-                    lowerMode = if (shownMode == LowerMode.DEVICES) LowerMode.DPAD else LowerMode.DEVICES
+                onOpenInputs = { showInputsSheet = true },
+                onToggleSettings = {
+                    if (!forceDevices) showDevicesPanel = !showDevicesPanel
                 },
             )
 
-            // 2. Dynamic Body: adapts layout cleanly to TV vs Web vs Cast vs Devices
-            when {
-                shownMode == LowerMode.DEVICES -> {
-                    Box(modifier = Modifier.weight(1f).fillMaxWidth().padding(vertical = 8.dp)) {
-                        DevicesPanel(
-                            state = state,
-                            savedHost = savedHost,
-                            found = found,
-                            saved = saved,
-                            scanning = scanning,
-                            onWake = onWake,
-                            onForget = onForget,
-                            onConnect = { host ->
-                                onConnect(host)
-                                lowerMode = LowerMode.DPAD
-                            },
-                            onConnectAdb = { host ->
-                                onConnectAdb(host)
-                                lowerMode = LowerMode.DPAD
-                            },
-                            onSubmitPin = onSubmitPin,
-                            onDisconnect = onDisconnect,
-                            onScan = onScan,
-                        )
-                    }
-                }
+            Spacer(Modifier.height(10.dp))
 
-                activeTarget is RemoteTarget.Web -> {
-                    WebRemoteBody(
-                        remote = activeTarget.remote,
-                        caps = caps,
-                        onRemote = onRemote,
-                        modifier = Modifier.weight(1f).fillMaxWidth(),
+            if (showingDevices) {
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    DevicesPanel(
+                        state = state,
+                        savedHost = savedHost,
+                        found = found,
+                        saved = saved,
+                        scanning = scanning,
+                        onWake = onWake,
+                        onForget = onForget,
+                        onConnect = { host ->
+                            onConnect(host)
+                            showDevicesPanel = false
+                            lowerMode = LowerMode.DPAD
+                        },
+                        onConnectAdb = { host ->
+                            onConnectAdb(host)
+                            showDevicesPanel = false
+                            lowerMode = LowerMode.DPAD
+                        },
+                        onSubmitPin = onSubmitPin,
+                        onDisconnect = {
+                            onDisconnect()
+                            showDevicesPanel = false
+                        },
+                        onScan = onScan,
                     )
                 }
-
-                activeTarget is RemoteTarget.Cast -> {
-                    CastRemoteBody(
-                        state = activeTarget.state,
-                        modifier = Modifier.weight(1f).fillMaxWidth(),
-                    )
-                }
-
-                activeTarget is RemoteTarget.Tv -> {
-                    TvRemoteBody(
-                        link = activeTarget.link,
-                        caps = caps,
-                        volume = volume,
-                        shownMode = shownMode,
-                        shareUrl = shareUrl,
-                        voiceError = voiceError,
-                        onEnableVolume = onEnableVolume,
-                        onKey = onKey,
-                        onTyped = onTyped,
-                        onOpenCaster = onOpenCaster,
-                        onOpenBrowser = onOpenBrowser,
-                        onVoiceStart = onVoiceStart,
-                        onVoiceEnd = onVoiceEnd,
-                        onChangeMode = { lowerMode = it },
-                        modifier = Modifier.weight(1f).fillMaxWidth(),
-                    )
-                }
+            } else {
+                UnifiedRemoteBody(
+                    target = activeTarget,
+                    caps = caps,
+                    volume = volume,
+                    lowerMode = effectiveLowerMode,
+                    installedApps = installedApps,
+                    shareUrl = shareUrl,
+                    voiceError = voiceError,
+                    onEnableVolume = onEnableVolume,
+                    onKey = onKey,
+                    onTyped = onTyped,
+                    onOpenCaster = onOpenCaster,
+                    onOpenBrowser = onOpenBrowser,
+                    onVoiceStart = onVoiceStart,
+                    onVoiceEnd = onVoiceEnd,
+                    onRemote = onRemote,
+                    onChangeLowerMode = { lowerMode = it },
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                )
             }
+        }
+
+        // 1st Image: Inputs bottom sheet overlay showing connected device & available ports
+        AnimatedVisibility(
+            visible = showInputsSheet,
+            enter = fadeIn(tween(150)),
+            exit = fadeOut(tween(150)),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.62f))
+                    .clickable(onClick = { showInputsSheet = false }),
+            )
+        }
+
+        AnimatedVisibility(
+            visible = showInputsSheet,
+            enter = slideInVertically(initialOffsetY = { it }),
+            exit = slideOutVertically(targetOffsetY = { it }),
+            modifier = Modifier.align(Alignment.BottomCenter),
+        ) {
+            InputsSheetOverlay(
+                targets = targets,
+                activeTarget = activeTarget,
+                tvInputs = if (activeTarget is RemoteTarget.Tv && caps.inputs) tvInputs else emptyList(),
+                activeTvInputId = activeTvInputId,
+                onSelectTarget = { target ->
+                    selectedTargetId = target.id
+                    showDevicesPanel = false
+                    lowerMode = LowerMode.DPAD
+                    showInputsSheet = false
+                },
+                onSelectTvInput = { input ->
+                    TvRemote.switchInput(input)
+                    showInputsSheet = false
+                },
+                onManageDevices = {
+                    showInputsSheet = false
+                    showDevicesPanel = true
+                },
+            )
         }
     }
 }
 
 @Composable
 private fun RemoteTopBar(
-    targets: List<RemoteTarget>,
     active: RemoteTarget?,
+    multiTarget: Boolean,
     hasPower: Boolean,
     onPower: () -> Unit,
-    onSelectTarget: (RemoteTarget) -> Unit,
-    onToggleDevices: () -> Unit,
+    onOpenInputs: () -> Unit,
+    onToggleSettings: () -> Unit,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        // Left: Red Power button (only when device supports Power)
+        if (hasPower) {
+            CircleRemoteButton(
+                label = "Power",
+                size = 44.dp,
+                containerColor = RemotePowerRed,
+                onClick = onPower,
+            ) {
+                Icon(PowerIcon, contentDescription = "Power", tint = Color.White, modifier = Modifier.size(22.dp))
+            }
+        } else {
+            Spacer(Modifier.size(44.dp))
+        }
+
+        // Center: Inputs / Device switcher pill
+        Surface(
+            onClick = onOpenInputs,
+            shape = RoundedCornerShape(22.dp),
+            color = RemotePillDark,
+            modifier = Modifier.height(44.dp).width(176.dp),
         ) {
-            // Left: Red Power button (only when device supports Power)
-            if (hasPower) {
-                SleekCircleButton(
-                    label = "Power",
-                    size = 46.dp,
-                    containerColor = RemotePowerRed,
-                    borderColor = RemotePowerRed.copy(alpha = 0.6f),
-                    onClick = onPower,
-                ) {
-                    Icon(PowerIcon, contentDescription = "Power", tint = Color.White, modifier = Modifier.size(22.dp))
-                }
-            } else {
-                Spacer(Modifier.size(46.dp))
-            }
-
-            // Center: Active device name + status dot
-            if (active != null) {
-                Column(
-                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Box(modifier = Modifier.size(8.dp).background(LiveGreen, CircleShape))
-                        Text(
-                            active.label,
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = Color.White,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    Text(
-                        active.subtitle,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color.White.copy(alpha = 0.6f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            } else {
+            Row(
+                modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+            ) {
+                Icon(InputPlugIcon, contentDescription = null, tint = Color.White.copy(alpha = 0.9f), modifier = Modifier.size(18.dp))
                 Text(
-                    "Connect a device",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
+                    text = when {
+                        active == null -> "Devices"
+                        multiTarget || active !is RemoteTarget.Tv -> active.label
+                        else -> "Inputs"
+                    },
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Medium,
                     color = Color.White,
-                    modifier = Modifier.weight(1f),
-                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
                 )
-            }
-
-            // Right: More (Devices)
-            IconButton(onClick = onToggleDevices, modifier = Modifier.size(40.dp)) {
-                Icon(Icons.Filled.MoreVert, contentDescription = "Devices", tint = Color.White.copy(alpha = 0.85f))
+                Icon(ChevronDownIcon, contentDescription = null, tint = Color.White.copy(alpha = 0.85f), modifier = Modifier.size(18.dp))
             }
         }
 
-        if (targets.size > 1) {
-            Row(
-                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                targets.forEach { t ->
-                    FilterChip(
-                        selected = t.id == active?.id,
-                        onClick = { onSelectTarget(t) },
-                        label = { Text(t.label, maxLines = 1) },
-                    )
-                }
-            }
+        // Right: Settings / Devices gear button
+        CircleRemoteButton(
+            label = "Devices and settings",
+            size = 44.dp,
+            containerColor = RemotePillDark,
+            onClick = onToggleSettings,
+        ) {
+            Icon(Icons.Filled.Settings, contentDescription = "Devices", tint = Color.White, modifier = Modifier.size(20.dp))
         }
     }
 }
 
-// ---- Smart TV Remote Body (Matching Reference Images 1, 2, 3) ------------------------------------
+// ---- Unified Remote Body (adapts pages, lower area, and bottom bar to device support) ----------
 
 @Composable
-private fun TvRemoteBody(
-    link: TvRemote.Link,
+private fun UnifiedRemoteBody(
+    target: RemoteTarget?,
     caps: RemoteCapabilities,
     volume: TvRemote.VolumeState,
-    shownMode: LowerMode,
+    lowerMode: LowerMode,
+    installedApps: List<InstalledTvApp>,
     shareUrl: String?,
     voiceError: String?,
     onEnableVolume: () -> Unit,
@@ -579,11 +766,14 @@ private fun TvRemoteBody(
     onOpenBrowser: () -> Unit,
     onVoiceStart: () -> Boolean,
     onVoiceEnd: () -> Unit,
-    onChangeMode: (LowerMode) -> Unit,
+    onRemote: (String, String) -> Unit,
+    onChangeLowerMode: (LowerMode) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    val holdToTalk = link == TvRemote.Link.AndroidTv
+    val scope = rememberCoroutineScope()
+    val holdToTalk = (target as? RemoteTarget.Tv)?.link == TvRemote.Link.AndroidTv
+
     var typedForDictation by rememberSaveable { mutableStateOf("") }
     val dictation = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val said = result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.trim()
@@ -605,100 +795,84 @@ private fun TvRemoteBody(
         }
     }
 
+    val pages = remember(caps) {
+        buildList {
+            if (caps.channels || caps.guide || caps.numpad) add(UpperPage.TV)
+            if (caps.playPause || caps.seekButtons) add(UpperPage.MEDIA)
+            if (caps.apps) add(UpperPage.APPS)
+            if (caps.keyboard) add(UpperPage.EXTRA)
+        }
+    }
+    val pagerState = rememberPagerState(pageCount = { pages.size.coerceAtLeast(1) })
+
     Column(
         modifier = modifier,
         verticalArrangement = Arrangement.SpaceBetween,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // Upper Cluster: VOL pill + Mute/Play circles + SEEK pill, and Back/Home/Menu circles
-        Column(
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                // Left Vertical Pill: Volume + / - (or Enable Vol for Fire TV)
-                if (caps.volumeButtons) {
-                    VerticalRockerPill(
-                        label = "VOL",
-                        topSymbol = "+",
-                        bottomSymbol = "−",
-                        onTop = { onKey(TvKey.VOLUME_UP, false) },
-                        onBottom = { onKey(TvKey.VOLUME_DOWN, false) },
+        // 1. Upper Paged Controls (TV / Media / Apps / Keyboard)
+        if (pages.isNotEmpty()) {
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(if (pages.size > 1) 166.dp else 152.dp),
+            ) { index ->
+                when (pages[index]) {
+                    UpperPage.TV -> TvUpperPage(
+                        caps = caps,
+                        volume = volume,
+                        onEnableVolume = onEnableVolume,
+                        onKey = onKey,
+                        onToggleNumpad = {
+                            onChangeLowerMode(if (lowerMode == LowerMode.NUMPAD) LowerMode.DPAD else LowerMode.NUMPAD)
+                        },
                     )
-                } else if (caps.volumeSetup) {
-                    Surface(
-                        onClick = onEnableVolume,
-                        modifier = Modifier.size(width = 66.dp, height = 136.dp),
-                        shape = RoundedCornerShape(33.dp),
-                        color = RemoteButtonBg,
-                        border = BorderStroke(1.dp, RemoteButtonBorder),
-                    ) {
-                        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(6.dp)) {
-                            Text(
-                                when (volume) {
-                                    is TvRemote.VolumeState.Waiting -> "Allow\non TV"
-                                    is TvRemote.VolumeState.Failed -> "Retry\nVol"
-                                    else -> "Enable\nVol"
-                                },
-                                style = MaterialTheme.typography.labelMedium,
-                                color = Color.White,
-                                textAlign = TextAlign.Center,
-                            )
-                        }
-                    }
+                    UpperPage.MEDIA -> MediaUpperPage(
+                        target = target,
+                        caps = caps,
+                        volume = volume,
+                        onEnableVolume = onEnableVolume,
+                        onKey = onKey,
+                        onRemote = onRemote,
+                    )
+                    UpperPage.APPS -> AppsUpperPage(
+                        apps = installedApps,
+                        onLaunch = { app -> TvRemote.launchAppById(app.id, app.fallbackApp) },
+                    )
+                    UpperPage.EXTRA -> ExtraUpperPage(
+                        target = target,
+                        caps = caps,
+                        shareUrl = shareUrl,
+                        onTyped = onTyped,
+                        onKey = onKey,
+                        onOpenCaster = onOpenCaster,
+                        onOpenBrowser = onOpenBrowser,
+                        onRemote = onRemote,
+                    )
                 }
-
-                // Center Column: Mute + Play/Pause
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    if (caps.volumeButtons) {
-                        SleekCircleButton("Mute", size = 62.dp, onClick = { onKey(TvKey.MUTE, false) }) {
-                            Icon(VolumeOffIcon, contentDescription = "Mute", tint = Color.White, modifier = Modifier.size(24.dp))
-                        }
-                    }
-                    SleekCircleButton("Play or pause", size = 62.dp, onClick = { onKey(TvKey.PLAY_PAUSE, false) }) {
-                        Icon(Icons.Filled.PlayArrow, contentDescription = "Play/Pause", tint = Color.White, modifier = Modifier.size(26.dp))
-                    }
-                }
-
-                // Right Vertical Pill: Seek Up / Down chevrons (Fast Forward / Rewind)
-                VerticalRockerPill(
-                    label = "SEEK",
-                    topSymbol = "⌃",
-                    bottomSymbol = "⌄",
-                    onTop = { onKey(TvKey.FAST_FORWARD, false) },
-                    onBottom = { onKey(TvKey.REWIND, false) },
-                )
             }
 
-            // Navigation Row: Back, Home, Settings/Menu
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                SleekCircleButton(
-                    label = "Back",
-                    size = 62.dp,
-                    onClick = { onKey(TvKey.BACK, false) },
-                    onLongPress = { TvRemote.longPress(TvKey.BACK) },
+            // Page indicator dots
+            if (pages.size > 1) {
+                Row(
+                    modifier = Modifier.padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White, modifier = Modifier.size(24.dp))
+                    repeat(pages.size) { index ->
+                        val active = pagerState.currentPage == index
+                        Box(
+                            modifier = Modifier
+                                .size(7.dp)
+                                .clip(CircleShape)
+                                .background(if (active) Color(0xFFB5B5BC) else Color(0xFF424248))
+                                .clickable { scope.launch { pagerState.animateScrollToPage(index) } },
+                        )
+                    }
                 }
-                SleekCircleButton(
-                    label = "Home",
-                    size = 62.dp,
-                    onClick = { onKey(TvKey.HOME, false) },
-                    onLongPress = { TvRemote.longPress(TvKey.HOME) },
-                ) {
-                    Icon(Icons.Filled.Home, contentDescription = "Home", tint = Color.White, modifier = Modifier.size(24.dp))
-                }
-                SleekCircleButton(
-                    label = "Menu",
-                    size = 62.dp,
-                    onClick = { onKey(TvKey.MENU, false) },
-                    onLongPress = { TvRemote.longPress(TvKey.MENU) },
-                ) {
-                    Icon(Icons.Filled.Settings, contentDescription = "Menu", tint = Color.White, modifier = Modifier.size(24.dp))
-                }
+            } else {
+                Spacer(Modifier.height(8.dp))
             }
         }
 
@@ -706,126 +880,960 @@ private fun TvRemoteBody(
             Text(voiceError, style = MaterialTheme.typography.bodySmall, color = RemotePowerRed)
         }
 
-        // Lower Switchable Area (No Scroll! Fits cleanly in remaining space)
+        // 2. Lower Control Area (D-pad / Touchpad / Numpad for TV; Media & Volume Pad for Cast/Web)
         Box(
-            modifier = Modifier.weight(1f).fillMaxWidth().padding(vertical = 8.dp),
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(vertical = 4.dp),
             contentAlignment = Alignment.Center,
         ) {
-            when (shownMode) {
-                LowerMode.DPAD -> CircularDpadRing(onKey = onKey)
-                LowerMode.TOUCHPAD -> TouchpadArea(
-                    isLg = link == TvRemote.Link.Lg,
-                    onKey = onKey,
-                    onOpenKeyboard = { onChangeMode(LowerMode.KEYBOARD) },
-                )
-                LowerMode.NUMPAD -> NumberPadGrid(
-                    onDigit = { digit -> onTyped("", digit) },
-                    onOk = { onKey(TvKey.OK, false) },
-                    onBack = { onKey(TvKey.BACK, false) },
-                )
-                LowerMode.KEYBOARD -> InlineKeyboardArea(
-                    fullRemote = link != TvRemote.Link.FireTv,
-                    shareUrl = shareUrl,
-                    onOpenCaster = onOpenCaster,
-                    onOpenBrowser = onOpenBrowser,
-                    onTyped = onTyped,
-                    onKey = onKey,
-                )
-                LowerMode.APPS -> InlineAppsArea(onLaunch = { TvRemote.launchApp(it) })
-                LowerMode.DEVICES -> Unit
+            when {
+                target is RemoteTarget.Tv && lowerMode == LowerMode.NUMPAD && caps.numpad -> {
+                    NumpadLowerCard(
+                        onKey = onKey,
+                        onBackToDpad = { onChangeLowerMode(LowerMode.DPAD) },
+                    )
+                }
+                target is RemoteTarget.Tv && lowerMode == LowerMode.TOUCHPAD && caps.trackpad -> {
+                    TouchpadLowerCard(
+                        isLg = target.link == TvRemote.Link.Lg,
+                        hasMute = caps.volumeButtons,
+                        onKey = onKey,
+                        onSwitchToDpad = { onChangeLowerMode(LowerMode.DPAD) },
+                    )
+                }
+                target is RemoteTarget.Tv -> {
+                    DpadLowerArea(
+                        hasMute = caps.volumeButtons,
+                        hasTouchpad = caps.trackpad,
+                        onKey = onKey,
+                        onEnableTouchpad = { onChangeLowerMode(LowerMode.TOUCHPAD) },
+                    )
+                }
+                else -> {
+                    CastOrWebLowerCard(
+                        target = target,
+                        caps = caps,
+                        onRemote = onRemote,
+                    )
+                }
             }
         }
 
-        // Bottom Bar (Matching Images 1, 2, 3): Touchpad | D-Pad | Mic | 123 | Keyboard/Apps
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically,
+        Spacer(Modifier.height(8.dp))
+
+        // 3. Bottom Bar: 3 wide pill buttons (Back | Home | Assistant for TV; Prev | Stop | Next/CC for Cast/Web)
+        RemoteBottomBar(
+            target = target,
+            caps = caps,
+            holdToTalk = holdToTalk,
+            onKey = onKey,
+            onVoiceStart = onVoiceStart,
+            onVoiceEnd = onVoiceEnd,
+            onDictate = ::dictate,
+            onRemote = onRemote,
+        )
+    }
+}
+
+// ---- Upper Pages ---------------------------------------------------------------------------------
+
+@Composable
+private fun TvUpperPage(
+    caps: RemoteCapabilities,
+    volume: TvRemote.VolumeState,
+    onEnableVolume: () -> Unit,
+    onKey: (Int, Boolean) -> Unit,
+    onToggleNumpad: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // Left: VOL pill
+        VolumePillOrSetup(
+            caps = caps,
+            volume = volume,
+            onEnableVolume = onEnableVolume,
+            onVolUp = { onKey(TvKey.VOLUME_UP, false) },
+            onVolDown = { onKey(TvKey.VOLUME_DOWN, false) },
+            modifier = Modifier.weight(1f).fillMaxHeight(),
+        )
+
+        // Middle: 123 (with 4 color dots) + GUIDE
+        Column(
+            modifier = Modifier.weight(1.05f).fillMaxHeight(),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            BottomModeButton(
-                selected = shownMode == LowerMode.TOUCHPAD,
-                onClick = { onChangeMode(LowerMode.TOUCHPAD) },
+            Surface(
+                onClick = onToggleNumpad,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                shape = RoundedCornerShape(26.dp),
+                color = RemoteTileBg,
             ) {
-                Icon(
-                    TouchpadIcon,
-                    contentDescription = "Touchpad",
-                    tint = if (shownMode == LowerMode.TOUCHPAD) RemoteAccentBlue else Color.White.copy(alpha = 0.85f),
-                    modifier = Modifier.size(22.dp),
-                )
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text("123", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = Color.White)
+                    Spacer(Modifier.height(4.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        listOf(Color(0xFFE53935), Color(0xFFFDD835), Color(0xFF43A047), Color(0xFF1E88E5)).forEach { c ->
+                            Box(modifier = Modifier.size(6.dp).background(c, CircleShape))
+                        }
+                    }
+                }
             }
 
-            BottomModeButton(
-                selected = shownMode == LowerMode.DPAD,
-                onClick = { onChangeMode(LowerMode.DPAD) },
+            Surface(
+                onClick = { onKey(TvKey.GUIDE, false) },
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                shape = RoundedCornerShape(26.dp),
+                color = RemoteTileBg,
             ) {
-                Icon(
-                    DpadIcon,
-                    contentDescription = "D-Pad",
-                    tint = if (shownMode == LowerMode.DPAD) RemoteAccentBlue else Color.White.copy(alpha = 0.85f),
-                    modifier = Modifier.size(22.dp),
-                )
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Icon(GuideListIcon, contentDescription = null, tint = Color.White, modifier = Modifier.size(22.dp))
+                    Text("GUIDE", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold, color = Color.White.copy(alpha = 0.85f))
+                }
             }
+        }
 
-            MicCircleButton(
-                holdToTalk = holdToTalk,
-                onHoldStart = onVoiceStart,
-                onHoldEnd = onVoiceEnd,
-                onDictate = ::dictate,
-            )
+        // Right: CH pill
+        VerticalRockerTile(
+            label = "CH",
+            topSymbol = "⌃",
+            bottomSymbol = "⌄",
+            onTop = { onKey(TvKey.CHANNEL_UP, false) },
+            onBottom = { onKey(TvKey.CHANNEL_DOWN, false) },
+            modifier = Modifier.weight(1f).fillMaxHeight(),
+        )
+    }
+}
 
-            BottomModeButton(
-                selected = shownMode == LowerMode.NUMPAD,
-                onClick = { onChangeMode(LowerMode.NUMPAD) },
-            ) {
-                Text(
-                    "123",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    color = if (shownMode == LowerMode.NUMPAD) RemoteAccentBlue else Color.White.copy(alpha = 0.85f),
-                )
-            }
-
-            BottomModeButton(
-                selected = shownMode == LowerMode.KEYBOARD || shownMode == LowerMode.APPS,
-                onClick = {
-                    onChangeMode(
-                        when (shownMode) {
-                            LowerMode.KEYBOARD -> LowerMode.APPS
-                            LowerMode.APPS -> LowerMode.DPAD
-                            else -> LowerMode.KEYBOARD
-                        },
-                    )
+@Composable
+private fun MediaUpperPage(
+    target: RemoteTarget?,
+    caps: RemoteCapabilities,
+    volume: TvRemote.VolumeState,
+    onEnableVolume: () -> Unit,
+    onKey: (Int, Boolean) -> Unit,
+    onRemote: (String, String) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (caps.volumeButtons || caps.volumeSetup) {
+            VolumePillOrSetup(
+                caps = caps,
+                volume = volume,
+                onEnableVolume = onEnableVolume,
+                onVolUp = {
+                    when (target) {
+                        is RemoteTarget.Tv -> onKey(TvKey.VOLUME_UP, false)
+                        is RemoteTarget.Cast -> CastController.adjustVolume(0.08)
+                        is RemoteTarget.Web -> {
+                            val next = ((target.remote.volume + 8).coerceIn(0, 100)) / 100f
+                            onRemote(target.remote.deviceId, "volume:${"%.2f".format(Locale.US, next)}")
+                        }
+                        null -> Unit
+                    }
                 },
+                onVolDown = {
+                    when (target) {
+                        is RemoteTarget.Tv -> onKey(TvKey.VOLUME_DOWN, false)
+                        is RemoteTarget.Cast -> CastController.adjustVolume(-0.08)
+                        is RemoteTarget.Web -> {
+                            val next = ((target.remote.volume - 8).coerceIn(0, 100)) / 100f
+                            onRemote(target.remote.deviceId, "volume:${"%.2f".format(Locale.US, next)}")
+                        }
+                        null -> Unit
+                    }
+                },
+                modifier = Modifier.width(96.dp).fillMaxHeight(),
+            )
+        }
+
+        Column(
+            modifier = Modifier.weight(1f).fillMaxHeight(),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            // Top wide Play/Pause pill
+            Surface(
+                onClick = {
+                    when (target) {
+                        is RemoteTarget.Tv -> onKey(TvKey.PLAY_PAUSE, false)
+                        is RemoteTarget.Cast -> CastController.togglePlayback()
+                        is RemoteTarget.Web -> onRemote(target.remote.deviceId, "toggle")
+                        null -> Unit
+                    }
+                },
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                shape = RoundedCornerShape(26.dp),
+                color = RemoteTileBg,
             ) {
-                Icon(
-                    KeyboardIcon,
-                    contentDescription = "Keyboard & Apps",
-                    tint = if (shownMode == LowerMode.KEYBOARD || shownMode == LowerMode.APPS) RemoteAccentBlue else Color.White.copy(alpha = 0.85f),
-                    modifier = Modifier.size(22.dp),
-                )
+                Box(contentAlignment = Alignment.Center) {
+                    val icon = when (target) {
+                        is RemoteTarget.Cast -> if (target.state.playing) PauseIcon else Icons.Filled.PlayArrow
+                        is RemoteTarget.Web -> if (target.remote.playing) PauseIcon else Icons.Filled.PlayArrow
+                        else -> PlayPauseIcon
+                    }
+                    Icon(icon, contentDescription = "Play or pause", tint = Color.White, modifier = Modifier.size(28.dp))
+                }
+            }
+
+            // Bottom wide Rewind | Fast-Forward pill
+            Surface(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                shape = RoundedCornerShape(26.dp),
+                color = RemoteTileBg,
+            ) {
+                Row(modifier = Modifier.fillMaxSize()) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .clickable {
+                                when (target) {
+                                    is RemoteTarget.Tv -> onKey(TvKey.REWIND, false)
+                                    is RemoteTarget.Cast -> CastController.seekBy(-10_000L)
+                                    is RemoteTarget.Web -> onRemote(target.remote.deviceId, "seek:-10")
+                                    null -> Unit
+                                }
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(RewindIcon, contentDescription = "Rewind", tint = Color.White, modifier = Modifier.size(26.dp))
+                    }
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .clickable {
+                                when (target) {
+                                    is RemoteTarget.Tv -> onKey(TvKey.FAST_FORWARD, false)
+                                    is RemoteTarget.Cast -> CastController.seekBy(10_000L)
+                                    is RemoteTarget.Web -> onRemote(target.remote.deviceId, "seek:10")
+                                    null -> Unit
+                                }
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(FastForwardIcon, contentDescription = "Fast forward", tint = Color.White, modifier = Modifier.size(26.dp))
+                    }
+                }
             }
         }
     }
 }
 
-// ---- Web Screen Dynamic Remote Body (Only Web features, NO channels/D-pad) ----------------------
+@Composable
+private fun AppsUpperPage(
+    apps: List<InstalledTvApp>,
+    onLaunch: (InstalledTvApp) -> Unit,
+) {
+    val haptic = LocalHapticFeedback.current
+    var showAllDialog by rememberSaveable { mutableStateOf(false) }
+
+    if (showAllDialog) {
+        AlertDialog(
+            onDismissRequest = { showAllDialog = false },
+            title = { Text("Installed Apps") },
+            text = {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    apps.forEach { app ->
+                        Surface(
+                            onClick = {
+                                onLaunch(app)
+                                showAllDialog = false
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                app.title,
+                                style = MaterialTheme.typography.bodyLarge,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showAllDialog = false }) { Text("Close") } },
+        )
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 4.dp),
+        shape = RoundedCornerShape(28.dp),
+        color = RemoteTileBg,
+    ) {
+        if (apps.isEmpty()) {
+            Box(contentAlignment = Alignment.Center) {
+                Text("No apps reported by TV", color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.bodyMedium)
+            }
+        } else {
+            val hasOverflow = apps.size > 8
+            val shown = if (hasOverflow) apps.take(7) else apps.take(8)
+            Column(
+                modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                val firstRow = shown.take(4)
+                val secondRow = shown.drop(4)
+                Row(
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    firstRow.forEach { app ->
+                        AppTileButton(
+                            app = app,
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onLaunch(app)
+                            },
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                        )
+                    }
+                    repeat(4 - firstRow.size) { Spacer(Modifier.weight(1f)) }
+                }
+                Row(
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    secondRow.forEach { app ->
+                        AppTileButton(
+                            app = app,
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onLaunch(app)
+                            },
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                        )
+                    }
+                    if (hasOverflow) {
+                        Surface(
+                            onClick = { showAllDialog = true },
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                            shape = RoundedCornerShape(14.dp),
+                            color = Color(0xFF28282C),
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text("•••", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                            }
+                        }
+                    }
+                    val used = secondRow.size + if (hasOverflow) 1 else 0
+                    repeat((4 - used).coerceAtLeast(0)) { Spacer(Modifier.weight(1f)) }
+                }
+            }
+        }
+    }
+}
 
 @Composable
-private fun WebRemoteBody(
-    remote: RemoteState,
-    caps: RemoteCapabilities,
-    onRemote: (String, String) -> Unit,
+private fun AppTileButton(
+    app: InstalledTvApp,
+    onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val lower = app.title.lowercase()
+    val bg = when {
+        "youtube" in lower -> Color(0xFFFFFFFF)
+        "netflix" in lower -> Color(0xFF141414)
+        "prime" in lower -> Color(0xFF00A8E1)
+        "hotstar" in lower -> Color(0xFF0F79E0)
+        "spotify" in lower -> Color(0xFF1DB954)
+        "xstream" in lower -> Color(0xFFB71C1C)
+        "browser" in lower || "web" in lower -> Color(0xFF5C6BC0)
+        else -> Color(0xFF505056)
+    }
+    val fg = if ("youtube" in lower) Color(0xFFFF0000) else Color.White
+
+    Surface(
+        onClick = onClick,
+        modifier = modifier,
+        shape = RoundedCornerShape(14.dp),
+        color = bg,
+    ) {
+        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(6.dp)) {
+            Text(
+                text = app.title,
+                color = fg,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ExtraUpperPage(
+    target: RemoteTarget?,
+    caps: RemoteCapabilities,
+    shareUrl: String?,
+    onTyped: (String, String) -> Unit,
+    onKey: (Int, Boolean) -> Unit,
+    onOpenCaster: (String) -> Unit,
+    onOpenBrowser: () -> Unit,
+    onRemote: (String, String) -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 4.dp),
+        shape = RoundedCornerShape(28.dp),
+        color = RemoteTileBg,
+    ) {
+        when {
+            target is RemoteTarget.Web -> {
+                val remote = target.remote
+                Column(
+                    modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        remote.title.ifBlank { "Playing on screen" },
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (caps.seekBar) {
+                        var dragging by remember(remote.deviceId) { mutableStateOf<Float?>(null) }
+                        var sent by remember(remote.deviceId) { mutableStateOf<Float?>(null) }
+                        LaunchedEffect(sent) { if (sent != null) { delay(2_500); sent = null } }
+                        val shown = dragging ?: sent ?: remote.positionSec.toFloat()
+                        Slider(
+                            value = shown.coerceIn(0f, remote.durationSec.toFloat()),
+                            onValueChange = { dragging = it },
+                            onValueChangeFinished = {
+                                dragging?.let { onRemote(remote.deviceId, "seekto:${it.toInt()}"); sent = it }
+                                dragging = null
+                            },
+                            valueRange = 0f..remote.durationSec.toFloat(),
+                        )
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(formatClock(shown.toInt()), style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.7f))
+                            Text(formatClock(remote.durationSec), style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.7f))
+                        }
+                    }
+                    if (caps.subtitles) {
+                        OutlinedButton(
+                            onClick = { onRemote(remote.deviceId, "subs") },
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.3f)),
+                        ) {
+                            Text("Subtitles (CC)", color = Color.White)
+                        }
+                    }
+                }
+            }
+            target is RemoteTarget.Tv -> {
+                val fullRemote = target.link != TvRemote.Link.FireTv
+                var typed by rememberSaveable { mutableStateOf("") }
+                Column(
+                    modifier = Modifier.fillMaxSize().padding(12.dp),
+                    verticalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    OutlinedTextField(
+                        value = typed,
+                        onValueChange = { new ->
+                            onTyped(typed, new)
+                            typed = new
+                        },
+                        placeholder = { Text("Type text for TV…", color = Color.White.copy(alpha = 0.55f)) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            capitalization = KeyboardCapitalization.None,
+                            autoCorrectEnabled = false,
+                            imeAction = if (fullRemote) ImeAction.Send else ImeAction.Done,
+                        ),
+                        keyboardActions = KeyboardActions(onSend = {
+                            onKey(TvKey.ENTER, false)
+                            typed = ""
+                        }),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        if (fullRemote) {
+                            OutlinedButton(
+                                onClick = {
+                                    if (typed.isEmpty()) onKey(TvKey.DELETE, false) else {
+                                        val shorter = typed.dropLast(1)
+                                        onTyped(typed, shorter)
+                                        typed = shorter
+                                    }
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.weight(1f),
+                            ) { Text("⌫", color = Color.White) }
+                            Button(
+                                onClick = { onKey(TvKey.ENTER, false); typed = "" },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.weight(1f),
+                            ) { Text("Enter") }
+                        } else if (shareUrl != null) {
+                            Button(onClick = onOpenBrowser, modifier = Modifier.weight(1f), shape = RoundedCornerShape(12.dp)) {
+                                Text("Browser", maxLines = 1)
+                            }
+                            OutlinedButton(
+                                onClick = { onTyped("", shareUrl); typed = "" },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(12.dp),
+                            ) { Text("Type URL", color = Color.White, maxLines = 1) }
+                        }
+                        if (shareUrl != null && fullRemote) {
+                            Button(
+                                onClick = { onOpenCaster(shareUrl) },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.weight(1.4f),
+                            ) { Text("Open Caster", maxLines = 1) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---- Lower Control Areas -------------------------------------------------------------------------
+
+@Composable
+private fun DpadLowerArea(
+    hasMute: Boolean,
+    hasTouchpad: Boolean,
+    onKey: (Int, Boolean) -> Unit,
+    onEnableTouchpad: () -> Unit,
+) {
+    val haptic = LocalHapticFeedback.current
+    Box(modifier = Modifier.fillMaxSize()) {
+        if (hasMute) {
+            IconButton(
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onKey(TvKey.MUTE, false)
+                },
+                modifier = Modifier.align(Alignment.TopStart).padding(4.dp),
+            ) {
+                Icon(VolumeOffIcon, contentDescription = "Mute", tint = Color.White.copy(alpha = 0.85f), modifier = Modifier.size(24.dp))
+            }
+        }
+
+        // Large dark circular D-pad matching Image 2
+        Box(
+            modifier = Modifier
+                .size(242.dp)
+                .align(Alignment.Center)
+                .background(RemoteWellBg, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            DpadDirectionHitArea("Up", TvKey.UP, onKey, Modifier.align(Alignment.TopCenter).padding(top = 12.dp)) {
+                Text("▲", fontSize = 14.sp, color = Color.White.copy(alpha = 0.85f))
+            }
+            DpadDirectionHitArea("Down", TvKey.DOWN, onKey, Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp)) {
+                Text("▼", fontSize = 14.sp, color = Color.White.copy(alpha = 0.85f))
+            }
+            DpadDirectionHitArea("Left", TvKey.LEFT, onKey, Modifier.align(Alignment.CenterStart).padding(start = 16.dp)) {
+                Text("◀", fontSize = 14.sp, color = Color.White.copy(alpha = 0.85f))
+            }
+            DpadDirectionHitArea("Right", TvKey.RIGHT, onKey, Modifier.align(Alignment.CenterEnd).padding(end = 16.dp)) {
+                Text("▶", fontSize = 14.sp, color = Color.White.copy(alpha = 0.85f))
+            }
+
+            // Center grey ring + dark rounded-square OK button
+            Box(
+                modifier = Modifier
+                    .size(94.dp)
+                    .clip(CircleShape)
+                    .background(RemoteOkRingBg)
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onTap = {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onKey(TvKey.OK, false)
+                            },
+                            onLongPress = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                TvRemote.longPress(TvKey.OK)
+                            },
+                        )
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(54.dp)
+                        .background(RemoteWellBg, RoundedCornerShape(14.dp)),
+                )
+            }
+        }
+
+        // Bottom-left: Enable Touchpad button (only when supported)
+        if (hasTouchpad) {
+            IconButton(
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onEnableTouchpad()
+                },
+                modifier = Modifier.align(Alignment.BottomStart).padding(4.dp),
+            ) {
+                Icon(TouchpadIcon, contentDescription = "Enable touchpad", tint = Color.White.copy(alpha = 0.85f), modifier = Modifier.size(24.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun TouchpadLowerCard(
+    isLg: Boolean,
+    hasMute: Boolean,
+    onKey: (Int, Boolean) -> Unit,
+    onSwitchToDpad: () -> Unit,
+) {
+    val haptic = LocalHapticFeedback.current
+    var sliderFrac by remember { mutableFloatStateOf(0.5f) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .clip(RoundedCornerShape(26.dp))
+            .background(RemoteWellBg)
+            .padding(14.dp),
+    ) {
+        // Main swipe + tap touchpad area
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(end = 36.dp)
+                .pointerInput(isLg) {
+                    var accX = 0f
+                    var accY = 0f
+                    detectDragGestures(
+                        onDragEnd = { accX = 0f; accY = 0f },
+                        onDragCancel = { accX = 0f; accY = 0f },
+                        onDrag = { change, dragAmount ->
+                            change.consume()
+                            accX += dragAmount.x
+                            accY += dragAmount.y
+                            if (isLg) {
+                                val dx = accX.toInt()
+                                val dy = accY.toInt()
+                                if (dx != 0 || dy != 0) {
+                                    accX -= dx
+                                    accY -= dy
+                                    TvRemote.pointerMove(dx, dy, false)
+                                }
+                            } else {
+                                val threshold = 48f
+                                if (accX > threshold) { accX = 0f; onKey(TvKey.RIGHT, false) }
+                                else if (accX < -threshold) { accX = 0f; onKey(TvKey.LEFT, false) }
+                                if (accY > threshold) { accY = 0f; onKey(TvKey.DOWN, false) }
+                                else if (accY < -threshold) { accY = 0f; onKey(TvKey.UP, false) }
+                            }
+                        },
+                    )
+                }
+                .clickable {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    if (isLg) TvRemote.pointerClick() else onKey(TvKey.OK, false)
+                },
+        )
+
+        if (hasMute) {
+            IconButton(
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onKey(TvKey.MUTE, false)
+                },
+                modifier = Modifier.align(Alignment.TopStart).size(36.dp),
+            ) {
+                Icon(VolumeOffIcon, contentDescription = "Mute", tint = Color.White.copy(alpha = 0.85f), modifier = Modifier.size(22.dp))
+            }
+        }
+
+        // Bottom-left: Switch back to D-pad
+        IconButton(
+            onClick = {
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                onSwitchToDpad()
+            },
+            modifier = Modifier.align(Alignment.BottomStart).size(36.dp),
+        ) {
+            Icon(DpadIcon, contentDescription = "Switch to D-pad", tint = Color.White.copy(alpha = 0.85f), modifier = Modifier.size(22.dp))
+        }
+
+        // Right-side vertical scroll/slider strip matching Image 3 & 4
+        VerticalTouchSlider(
+            fraction = sliderFrac,
+            onStepUp = {
+                sliderFrac = (sliderFrac - 0.15f).coerceIn(0.15f, 0.85f)
+                onKey(TvKey.UP, false)
+            },
+            onStepDown = {
+                sliderFrac = (sliderFrac + 0.15f).coerceIn(0.15f, 0.85f)
+                onKey(TvKey.DOWN, false)
+            },
+            modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight(0.82f),
+        )
+    }
+}
+
+@Composable
+private fun CastOrWebLowerCard(
+    target: RemoteTarget?,
+    caps: RemoteCapabilities,
+    onRemote: (String, String) -> Unit,
+) {
+    val haptic = LocalHapticFeedback.current
+    var lastNonZeroWebVol by remember(target?.id) { mutableStateOf(100) }
+    var optimisticWebMuted by remember(target?.id) { mutableStateOf<Boolean?>(null) }
+    var optimisticCastMuted by remember(target?.id) { mutableStateOf(false) }
+
+    val webVol = (target as? RemoteTarget.Web)?.remote?.volume ?: -1
+    LaunchedEffect(webVol) {
+        if (webVol > 0) lastNonZeroWebVol = webVol
+        optimisticWebMuted = null
+    }
+    val isMuted = when (target) {
+        is RemoteTarget.Web -> optimisticWebMuted ?: (webVol == 0)
+        is RemoteTarget.Cast -> optimisticCastMuted
+        else -> false
+    }
+
+    if (target is RemoteTarget.Web) {
+        val remote = target.remote
+        val hasVideo = remote.title.isNotBlank()
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.SpaceBetween,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            // Compact title & seekbar when a video is open
+            if (hasVideo) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        remote.title,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Medium,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (caps.seekBar) {
+                        var dragging by remember(remote.deviceId) { mutableStateOf<Float?>(null) }
+                        var sent by remember(remote.deviceId) { mutableStateOf<Float?>(null) }
+                        LaunchedEffect(sent) { if (sent != null) { delay(2_500); sent = null } }
+                        val shown = dragging ?: sent ?: remote.positionSec.toFloat()
+                        Slider(
+                            value = shown.coerceIn(0f, remote.durationSec.toFloat()),
+                            onValueChange = { dragging = it },
+                            onValueChangeFinished = {
+                                dragging?.let { onRemote(remote.deviceId, "seekto:${it.toInt()}"); sent = it }
+                                dragging = null
+                            },
+                            valueRange = 0f..remote.durationSec.toFloat(),
+                            modifier = Modifier.height(28.dp),
+                        )
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(formatClock(shown.toInt()), style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.6f))
+                            Text(formatClock(remote.durationSec), style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.6f))
+                        }
+                    }
+                }
+            } else {
+                Text(
+                    "Browse index & select a video",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Color.White.copy(alpha = 0.6f),
+                )
+            }
+
+            // D-pad (Up, Down, Left, Right, Click) + corner action buttons
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                if (caps.volumeButtons) {
+                    Surface(
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            if (isMuted) {
+                                val restore = lastNonZeroWebVol.coerceIn(10, 100)
+                                optimisticWebMuted = false
+                                onRemote(remote.deviceId, "volume:${"%.2f".format(Locale.US, restore / 100f)}")
+                            } else {
+                                if (webVol > 0) lastNonZeroWebVol = webVol
+                                optimisticWebMuted = true
+                                onRemote(remote.deviceId, "volume:0")
+                            }
+                        },
+                        modifier = Modifier.align(Alignment.TopStart).size(44.dp),
+                        shape = CircleShape,
+                        color = if (isMuted) RemoteInputBlue else RemoteTileBg,
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                if (isMuted) VolumeOffIcon else VolumeUpIcon,
+                                contentDescription = if (isMuted) "Unmute" else "Mute",
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
+                    }
+                }
+
+                if (hasVideo && caps.subtitles) {
+                    Surface(
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onRemote(remote.deviceId, "subs")
+                        },
+                        modifier = Modifier.align(Alignment.TopEnd).size(44.dp),
+                        shape = CircleShape,
+                        color = RemoteTileBg,
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text("CC", style = MaterialTheme.typography.labelMedium, color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+
+                if (hasVideo) {
+                    Surface(
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onRemote(remote.deviceId, "fs")
+                        },
+                        modifier = Modifier.align(Alignment.BottomEnd).size(44.dp),
+                        shape = CircleShape,
+                        color = RemoteTileBg,
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(FullscreenIcon, contentDescription = "Fullscreen", tint = Color.White, modifier = Modifier.size(20.dp))
+                        }
+                    }
+                }
+
+                // Circular D-Pad for index page & player navigation
+                val dpadSize = if (hasVideo) 182.dp else 222.dp
+                val okRingSize = if (hasVideo) 72.dp else 88.dp
+                val okInnerSize = if (hasVideo) 42.dp else 50.dp
+                Box(
+                    modifier = Modifier
+                        .size(dpadSize)
+                        .align(Alignment.Center)
+                        .background(RemoteWellBg, CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 8.dp)
+                            .size(54.dp)
+                            .clip(CircleShape)
+                            .clickable {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onRemote(remote.deviceId, "nav:up")
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) { Text("▲", fontSize = 14.sp, color = Color.White.copy(alpha = 0.85f)) }
+
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 8.dp)
+                            .size(54.dp)
+                            .clip(CircleShape)
+                            .clickable {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onRemote(remote.deviceId, "nav:down")
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) { Text("▼", fontSize = 14.sp, color = Color.White.copy(alpha = 0.85f)) }
+
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.CenterStart)
+                            .padding(start = 10.dp)
+                            .size(54.dp)
+                            .clip(CircleShape)
+                            .clickable {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onRemote(remote.deviceId, "nav:left")
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) { Text("◀", fontSize = 14.sp, color = Color.White.copy(alpha = 0.85f)) }
+
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .padding(end = 10.dp)
+                            .size(54.dp)
+                            .clip(CircleShape)
+                            .clickable {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onRemote(remote.deviceId, "nav:right")
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) { Text("▶", fontSize = 14.sp, color = Color.White.copy(alpha = 0.85f)) }
+
+                    // Center Click / OK button
+                    Box(
+                        modifier = Modifier
+                            .size(okRingSize)
+                            .clip(CircleShape)
+                            .background(RemoteOkRingBg)
+                            .clickable {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onRemote(remote.deviceId, "nav:ok")
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(okInnerSize)
+                                .background(RemoteWellBg, RoundedCornerShape(12.dp)),
+                        )
+                    }
+                }
+            }
+        }
+        return
+    }
+
+    // Chromecast lower card
     Column(
-        modifier = modifier.padding(vertical = 8.dp),
-        verticalArrangement = Arrangement.SpaceEvenly,
+        modifier = Modifier
+            .fillMaxSize()
+            .clip(RoundedCornerShape(26.dp))
+            .background(RemoteWellBg)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.SpaceBetween,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // Title & Seekbar
-        Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            val title = (target as? RemoteTarget.Cast)?.state?.title ?: target?.label ?: "No media"
             Text(
-                remote.title.ifBlank { "Playing on screen" },
+                title,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Medium,
                 color = Color.White,
@@ -833,232 +1841,703 @@ private fun WebRemoteBody(
                 overflow = TextOverflow.Ellipsis,
                 textAlign = TextAlign.Center,
             )
-            if (caps.seekBar) {
-                var dragging by remember(remote.deviceId) { mutableStateOf<Float?>(null) }
-                var sent by remember(remote.deviceId) { mutableStateOf<Float?>(null) }
-                LaunchedEffect(sent) { if (sent != null) { delay(2_500); sent = null } }
-                val shown = dragging ?: sent ?: remote.positionSec.toFloat()
-                Slider(
-                    value = shown.coerceIn(0f, remote.durationSec.toFloat()),
-                    onValueChange = { dragging = it },
-                    onValueChangeFinished = {
-                        dragging?.let { onRemote(remote.deviceId, "seekto:${it.toInt()}"); sent = it }
-                        dragging = null
+            Text(
+                target?.subtitle.orEmpty(),
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.White.copy(alpha = 0.55f),
+                maxLines = 1,
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (caps.volumeButtons) {
+                Surface(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        optimisticCastMuted = !optimisticCastMuted
+                        CastController.toggleMute()
                     },
-                    valueRange = 0f..remote.durationSec.toFloat(),
-                )
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(formatClock(shown.toInt()), style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.65f))
-                    Text(formatClock(remote.durationSec), style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.65f))
+                    modifier = Modifier.weight(1f).height(52.dp),
+                    shape = RoundedCornerShape(18.dp),
+                    color = if (isMuted) RemoteInputBlue else RemoteTileBg,
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            if (isMuted) VolumeOffIcon else VolumeUpIcon,
+                            contentDescription = if (isMuted) "Unmute" else "Mute",
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Text(
+                            if (isMuted) "Unmute" else "Mute",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = Color.White,
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+            if (caps.seekButtons) {
+                Surface(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        CastController.seekBy(-10_000L)
+                    },
+                    modifier = Modifier.weight(0.75f).height(52.dp),
+                    shape = RoundedCornerShape(18.dp),
+                    color = RemoteTileBg,
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text("−10s", style = MaterialTheme.typography.labelLarge, color = Color.White, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+                Surface(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        CastController.seekBy(10_000L)
+                    },
+                    modifier = Modifier.weight(0.75f).height(52.dp),
+                    shape = RoundedCornerShape(18.dp),
+                    color = RemoteTileBg,
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text("+10s", style = MaterialTheme.typography.labelLarge, color = Color.White, fontWeight = FontWeight.SemiBold)
+                    }
                 }
             }
         }
+    }
+}
 
-        // Main Playback Controls: -10s | Play/Pause | +10s
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(20.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            SleekCircleButton("-10s", size = 62.dp, onClick = { onRemote(remote.deviceId, "seek:-10") }) {
-                Text("-10s", style = MaterialTheme.typography.labelLarge, color = Color.White, fontWeight = FontWeight.SemiBold)
-            }
-            SleekCircleButton(
-                label = if (remote.playing) "Pause" else "Play",
-                size = 82.dp,
-                containerColor = RemoteAccentBlue,
-                borderColor = RemoteAccentBlue.copy(alpha = 0.5f),
-                onClick = { onRemote(remote.deviceId, "toggle") },
-            ) {
-                Icon(
-                    if (remote.playing) PauseIcon else Icons.Filled.PlayArrow,
-                    contentDescription = if (remote.playing) "Pause" else "Play",
-                    tint = Color.Black,
-                    modifier = Modifier.size(36.dp),
+@Composable
+private fun VerticalTouchSlider(
+    fraction: Float,
+    onStepUp: () -> Unit,
+    onStepDown: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var dragAcc by remember { mutableFloatStateOf(0f) }
+    Box(
+        modifier = modifier
+            .width(24.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0xFF7A7A82))
+            .pointerInput(Unit) {
+                detectVerticalDragGestures(
+                    onDragEnd = { dragAcc = 0f },
+                    onVerticalDrag = { change, dragAmount ->
+                        change.consume()
+                        dragAcc += dragAmount
+                        if (dragAcc < -28f) {
+                            dragAcc = 0f
+                            onStepUp()
+                        } else if (dragAcc > 28f) {
+                            dragAcc = 0f
+                            onStepDown()
+                        }
+                    },
                 )
             }
-            SleekCircleButton("+10s", size = 62.dp, onClick = { onRemote(remote.deviceId, "seek:10") }) {
-                Text("+10s", style = MaterialTheme.typography.labelLarge, color = Color.White, fontWeight = FontWeight.SemiBold)
+            .padding(3.dp),
+    ) {
+        Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .clickable(onClick = onStepUp),
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .background(RemoteWellBg, RoundedCornerShape(9.dp)),
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .clickable(onClick = onStepDown),
+            )
+        }
+    }
+}
+
+@Composable
+private fun NumpadLowerCard(
+    onKey: (Int, Boolean) -> Unit,
+    onBackToDpad: () -> Unit,
+) {
+    val haptic = LocalHapticFeedback.current
+    val digitKeys = mapOf(
+        "0" to TvKey.DIGIT_0, "1" to TvKey.DIGIT_1, "2" to TvKey.DIGIT_2,
+        "3" to TvKey.DIGIT_3, "4" to TvKey.DIGIT_4, "5" to TvKey.DIGIT_5,
+        "6" to TvKey.DIGIT_6, "7" to TvKey.DIGIT_7, "8" to TvKey.DIGIT_8,
+        "9" to TvKey.DIGIT_9,
+    )
+    val rows = listOf(
+        listOf("1", "2", "3"),
+        listOf("4", "5", "6"),
+        listOf("7", "8", "9"),
+        listOf("D-Pad", "0", "OK"),
+    )
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .clip(RoundedCornerShape(26.dp))
+            .background(RemoteWellBg)
+            .padding(10.dp),
+        verticalArrangement = Arrangement.SpaceBetween,
+    ) {
+        // 4 Color buttons matching the 4 dots on "123"
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            listOf(
+                Color(0xFFE53935) to TvKey.PROG_RED,
+                Color(0xFFFDD835) to TvKey.PROG_YELLOW,
+                Color(0xFF43A047) to TvKey.PROG_GREEN,
+                Color(0xFF1E88E5) to TvKey.PROG_BLUE,
+            ).forEach { (color, key) ->
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(22.dp)
+                        .clip(RoundedCornerShape(11.dp))
+                        .background(color)
+                        .clickable {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onKey(key, false)
+                        },
+                )
             }
         }
 
-        // Secondary Row: CC (Subtitles) | Next
-        Row(horizontalArrangement = Arrangement.spacedBy(20.dp), verticalAlignment = Alignment.CenterVertically) {
-            SleekCircleButton("Subtitles", size = 56.dp, onClick = { onRemote(remote.deviceId, "subs") }) {
-                Text("CC", style = MaterialTheme.typography.labelLarge, color = Color.White, fontWeight = FontWeight.SemiBold)
-            }
-            SleekCircleButton("Next", size = 56.dp, onClick = { onRemote(remote.deviceId, "next") }) {
-                Icon(SkipNextIcon, contentDescription = "Next", tint = Color.White, modifier = Modifier.size(24.dp))
+        rows.forEach { row ->
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                row.forEach { label ->
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(42.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                when (label) {
+                                    "D-Pad" -> onBackToDpad()
+                                    "OK" -> onKey(TvKey.OK, false)
+                                    else -> digitKeys[label]?.let { onKey(it, false) }
+                                }
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium, color = Color.White)
+                    }
+                }
             }
         }
+    }
+}
 
-        // Volume Slider (only if page reports volume)
-        if (caps.volumeSlider) {
-            var volDrag by remember(remote.deviceId) { mutableStateOf<Float?>(null) }
-            var volSent by remember(remote.deviceId) { mutableStateOf<Float?>(null) }
-            LaunchedEffect(volSent) { if (volSent != null) { delay(2_500); volSent = null } }
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("Vol", style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.75f), modifier = Modifier.padding(end = 10.dp))
-                Slider(
-                    value = (volDrag ?: volSent ?: remote.volume.toFloat()).coerceIn(0f, 100f),
-                    onValueChange = { volDrag = it },
-                    onValueChangeFinished = {
-                        volDrag?.let { onRemote(remote.deviceId, "volume:${"%.2f".format(java.util.Locale.US, it / 100f)}"); volSent = it }
-                        volDrag = null
-                    },
-                    valueRange = 0f..100f,
+// ---- Bottom Bar (3 wide pills) -------------------------------------------------------------------
+
+@Composable
+private fun RemoteBottomBar(
+    target: RemoteTarget?,
+    caps: RemoteCapabilities,
+    holdToTalk: Boolean,
+    onKey: (Int, Boolean) -> Unit,
+    onVoiceStart: () -> Boolean,
+    onVoiceEnd: () -> Unit,
+    onDictate: () -> Unit,
+    onRemote: (String, String) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        when (target) {
+            is RemoteTarget.Tv -> {
+                BottomPillButton(
+                    label = "Back",
+                    onClick = { onKey(TvKey.BACK, false) },
+                    onLongPress = { TvRemote.longPress(TvKey.BACK) },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(UndoBackIcon, contentDescription = "Back", tint = Color.White, modifier = Modifier.size(22.dp))
+                }
+
+                BottomPillButton(
+                    label = "Home",
+                    onClick = { onKey(TvKey.HOME, false) },
+                    onLongPress = { TvRemote.longPress(TvKey.HOME) },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(HomeOutlineIcon, contentDescription = "Home", tint = Color.White, modifier = Modifier.size(24.dp))
+                }
+
+                VoiceBottomPill(
+                    holdToTalk = holdToTalk,
+                    onHoldStart = onVoiceStart,
+                    onHoldEnd = onVoiceEnd,
+                    onDictate = onDictate,
                     modifier = Modifier.weight(1f),
                 )
             }
+            is RemoteTarget.Cast -> {
+                BottomPillButton(
+                    label = "Previous",
+                    onClick = { CastController.prev() },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(SkipPreviousIcon, contentDescription = "Previous", tint = Color.White, modifier = Modifier.size(24.dp))
+                }
+                BottomPillButton(
+                    label = "Stop",
+                    onClick = { CastController.stop() },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(StopSquareIcon, contentDescription = "Stop", tint = Color.White, modifier = Modifier.size(22.dp))
+                }
+                BottomPillButton(
+                    label = "Next",
+                    onClick = { CastController.next() },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(SkipNextIcon, contentDescription = "Next", tint = Color.White, modifier = Modifier.size(24.dp))
+                }
+            }
+            is RemoteTarget.Web -> {
+                if (caps.back) {
+                    BottomPillButton(
+                        label = "Back",
+                        onClick = { onRemote(target.remote.deviceId, "nav:back") },
+                        modifier = Modifier.fillMaxWidth(0.45f),
+                    ) {
+                        Icon(UndoBackIcon, contentDescription = "Back", tint = Color.White, modifier = Modifier.size(22.dp))
+                    }
+                } else {
+                    Spacer(Modifier.height(12.dp))
+                }
+            }
+            null -> Spacer(Modifier.height(52.dp))
         }
     }
 }
 
-// ---- Chromecast Dynamic Remote Body --------------------------------------------------------------
+// ---- 1st Image: Inputs Bottom Sheet Overlay ------------------------------------------------------
 
 @Composable
-private fun CastRemoteBody(
-    state: CastController.State,
-    modifier: Modifier = Modifier,
+private fun InputsSheetOverlay(
+    targets: List<RemoteTarget>,
+    activeTarget: RemoteTarget?,
+    tvInputs: List<TvInput>,
+    activeTvInputId: String?,
+    onSelectTarget: (RemoteTarget) -> Unit,
+    onSelectTvInput: (TvInput) -> Unit,
+    onManageDevices: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = false, onClick = {}),
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        color = RemoteSheetBg,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .size(width = 42.dp, height = 4.dp)
+                    .background(Color(0xFF56565E), RoundedCornerShape(2.dp)),
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "Inputs",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                )
+                TextButton(onClick = onManageDevices) {
+                    Text("Manage devices", color = RemoteAccentBlue)
+                }
+            }
+
+            // Connected devices row (Chromecast, Web, TV)
+            if (targets.size > 1 || (targets.isNotEmpty() && tvInputs.isEmpty())) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (tvInputs.isNotEmpty()) {
+                        Text("Connected devices", style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.6f))
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(18.dp),
+                    ) {
+                        targets.forEach { target ->
+                            val selected = target.id == activeTarget?.id
+                            val icon = when (target) {
+                                is RemoteTarget.Cast -> CastIcon
+                                is RemoteTarget.Web -> WebGlobeIcon
+                                is RemoteTarget.Tv -> LiveTvIcon
+                            }
+                            InputCircleItem(
+                                label = target.label,
+                                icon = icon,
+                                selected = selected,
+                                connected = true,
+                                onClick = { onSelectTarget(target) },
+                            )
+                        }
+                    }
+                }
+            }
+
+            // TV Ports / Inputs row (matching Image 1: Live TV, Set-Top Box, HDMI 2, HDMI 3)
+            if (tvInputs.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (targets.size > 1) {
+                        Text("${activeTarget?.label ?: "TV"} ports", style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.6f))
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(18.dp),
+                    ) {
+                        tvInputs.forEach { input ->
+                            val isSelected = input.id == activeTvInputId
+                            val icon = when (input.kind) {
+                                TvInput.InputKind.LIVE_TV -> LiveTvIcon
+                                TvInput.InputKind.STB -> SetTopBoxIcon
+                                TvInput.InputKind.HDMI, TvInput.InputKind.AV, TvInput.InputKind.OTHER -> HdmiPortIcon
+                            }
+                            InputCircleItem(
+                                label = input.label,
+                                icon = icon,
+                                selected = isSelected,
+                                connected = input.connected || isSelected,
+                                onClick = { onSelectTvInput(input) },
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (targets.isEmpty()) {
+                Text(
+                    "No devices connected yet. Tap \"Manage devices\" to connect a TV, Chromecast, or Web screen.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.White.copy(alpha = 0.65f),
+                )
+            }
+
+            Spacer(Modifier.height(8.dp))
+        }
+    }
+}
+
+@Composable
+private fun InputCircleItem(
+    label: String,
+    icon: ImageVector,
+    selected: Boolean,
+    connected: Boolean,
+    onClick: () -> Unit,
 ) {
     Column(
-        modifier = modifier.padding(vertical = 8.dp),
-        verticalArrangement = Arrangement.SpaceEvenly,
+        modifier = Modifier
+            .width(74.dp)
+            .clickable(onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            state.title?.let { title ->
+        Box(modifier = Modifier.size(64.dp)) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(CircleShape)
+                    .background(
+                        when {
+                            selected -> RemoteInputBlue
+                            connected -> Color(0xFF4C4C52)
+                            else -> Color(0xFF2E2E32)
+                        },
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    icon,
+                    contentDescription = label,
+                    tint = if (connected || selected) Color.White else Color.White.copy(alpha = 0.45f),
+                    modifier = Modifier.size(28.dp),
+                )
+            }
+            if (selected) {
+                Box(
+                    modifier = Modifier
+                        .size(20.dp)
+                        .align(Alignment.TopStart)
+                        .clip(CircleShape)
+                        .background(Color.White),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Filled.Check, contentDescription = "Active", tint = RemoteInputBlue, modifier = Modifier.size(14.dp))
+                }
+            }
+        }
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = if (connected || selected) Color.White else Color.White.copy(alpha = 0.5f),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+        )
+    }
+}
+
+// ---- Reusable Remote Building Blocks -------------------------------------------------------------
+
+@Composable
+private fun VolumePillOrSetup(
+    caps: RemoteCapabilities,
+    volume: TvRemote.VolumeState,
+    onEnableVolume: () -> Unit,
+    onVolUp: () -> Unit,
+    onVolDown: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (caps.volumeButtons) {
+        VerticalRockerTile(
+            label = "VOL",
+            topSymbol = "+",
+            bottomSymbol = "−",
+            onTop = onVolUp,
+            onBottom = onVolDown,
+            modifier = modifier,
+        )
+    } else if (caps.volumeSetup) {
+        Surface(
+            onClick = onEnableVolume,
+            modifier = modifier,
+            shape = RoundedCornerShape(28.dp),
+            color = RemoteTileBg,
+        ) {
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(8.dp)) {
                 Text(
-                    title,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Medium,
+                    when (volume) {
+                        is TvRemote.VolumeState.Waiting -> "Allow\non TV"
+                        is TvRemote.VolumeState.Failed -> "Retry\nVol"
+                        else -> "Enable\nVol"
+                    },
+                    style = MaterialTheme.typography.labelLarge,
                     color = Color.White,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
                     textAlign = TextAlign.Center,
                 )
             }
-            state.error?.let { err ->
-                Text(err, style = MaterialTheme.typography.bodySmall, color = RemotePowerRed, textAlign = TextAlign.Center)
-            }
         }
+    }
+}
 
-        // Main Skip & Play/Pause row: -10s | Play/Pause | +10s
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(20.dp),
-            verticalAlignment = Alignment.CenterVertically,
+@Composable
+private fun VerticalRockerTile(
+    label: String,
+    topSymbol: String,
+    bottomSymbol: String,
+    onTop: () -> Unit,
+    onBottom: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val haptic = LocalHapticFeedback.current
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(28.dp),
+        color = RemoteTileBg,
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.SpaceBetween,
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            SleekCircleButton("-10s", size = 62.dp, onClick = { CastController.seekBy(-10_000L) }) {
-                Text("-10s", style = MaterialTheme.typography.labelLarge, color = Color.White, fontWeight = FontWeight.SemiBold)
-            }
-            SleekCircleButton(
-                label = if (state.playing) "Pause" else "Play",
-                size = 84.dp,
-                containerColor = RemoteAccentBlue,
-                borderColor = RemoteAccentBlue.copy(alpha = 0.5f),
-                onClick = { CastController.togglePlayback() },
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .clickable {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onTop()
+                    },
+                contentAlignment = Alignment.Center,
             ) {
-                Icon(
-                    if (state.playing) PauseIcon else Icons.Filled.PlayArrow,
-                    contentDescription = if (state.playing) "Pause" else "Play",
-                    tint = Color.Black,
-                    modifier = Modifier.size(38.dp),
-                )
+                Text(topSymbol, style = MaterialTheme.typography.headlineSmall, color = Color.White)
             }
-            SleekCircleButton("+10s", size = 62.dp, onClick = { CastController.seekBy(10_000L) }) {
-                Text("+10s", style = MaterialTheme.typography.labelLarge, color = Color.White, fontWeight = FontWeight.SemiBold)
-            }
-        }
-
-        // Track / Slide navigation: Previous | Next
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(20.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            SleekCircleButton("Previous", size = 56.dp, onClick = { CastController.prev() }) {
-                Icon(SkipPreviousIcon, contentDescription = "Previous", tint = Color.White, modifier = Modifier.size(24.dp))
-            }
-            SleekCircleButton("Next", size = 56.dp, onClick = { CastController.next() }) {
-                Icon(SkipNextIcon, contentDescription = "Next", tint = Color.White, modifier = Modifier.size(24.dp))
-            }
-        }
-
-        // Volume row: Vol - | Mute | Vol +
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            SleekCircleButton("Volume down", size = 56.dp, onClick = { CastController.adjustVolume(-0.08) }) {
-                Text("Vol −", style = MaterialTheme.typography.labelMedium, color = Color.White)
-            }
-            SleekCircleButton("Mute", size = 56.dp, onClick = { CastController.toggleMute() }) {
-                Icon(VolumeOffIcon, contentDescription = "Mute", tint = Color.White, modifier = Modifier.size(22.dp))
-            }
-            SleekCircleButton("Volume up", size = 56.dp, onClick = { CastController.adjustVolume(0.08) }) {
-                Text("Vol +", style = MaterialTheme.typography.labelMedium, color = Color.White)
+            Text(label, style = MaterialTheme.typography.labelLarge, color = Color.White.copy(alpha = 0.85f), fontWeight = FontWeight.Medium)
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .clickable {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onBottom()
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(bottomSymbol, style = MaterialTheme.typography.headlineSmall, color = Color.White)
             }
         }
     }
 }
 
-// ---- Lower Switchable Panels (Matching Reference Images) -----------------------------------------
-
 @Composable
-private fun CircularDpadRing(onKey: (Int, Boolean) -> Unit) {
+private fun CircleRemoteButton(
+    label: String,
+    size: Dp,
+    containerColor: Color,
+    onClick: () -> Unit,
+    content: @Composable () -> Unit,
+) {
     val haptic = LocalHapticFeedback.current
+    var pressed by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(if (pressed) 0.92f else 1f, tween(80), label = "circlePress")
     Box(
         modifier = Modifier
-            .size(220.dp)
-            .background(RemoteButtonBg, CircleShape)
-            .border(1.dp, RemoteButtonBorder, CircleShape),
+            .size(size)
+            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .clip(CircleShape)
+            .background(containerColor, CircleShape)
+            .semantics {
+                contentDescription = label
+                role = Role.Button
+                onClick(label) { onClick(); true }
+            }
+            .pointerInput(label) {
+                detectTapGestures(
+                    onPress = {
+                        pressed = true
+                        try { tryAwaitRelease() } finally { pressed = false }
+                    },
+                    onTap = {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onClick()
+                    },
+                )
+            },
         contentAlignment = Alignment.Center,
     ) {
-        // Up
-        DpadDirectionHitArea("Up", TvKey.UP, onKey, Modifier.align(Alignment.TopCenter).padding(top = 12.dp)) {
-            Text("⌃", style = MaterialTheme.typography.headlineSmall, color = Color.White)
+        CompositionLocalProvider(LocalContentColor provides Color.White) {
+            content()
         }
-        // Down
-        DpadDirectionHitArea("Down", TvKey.DOWN, onKey, Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp)) {
-            Text("⌄", style = MaterialTheme.typography.headlineSmall, color = Color.White)
-        }
-        // Left
-        DpadDirectionHitArea("Left", TvKey.LEFT, onKey, Modifier.align(Alignment.CenterStart).padding(start = 16.dp)) {
-            Text("‹", style = MaterialTheme.typography.headlineMedium, color = Color.White)
-        }
-        // Right
-        DpadDirectionHitArea("Right", TvKey.RIGHT, onKey, Modifier.align(Alignment.CenterEnd).padding(end = 16.dp)) {
-            Text("›", style = MaterialTheme.typography.headlineMedium, color = Color.White)
-        }
-        // Center OK circle with bullseye icon
-        Box(
-            modifier = Modifier
-                .size(86.dp)
-                .clip(CircleShape)
-                .background(RemoteBg)
-                .border(1.dp, RemoteButtonBorder, CircleShape)
-                .pointerInput(Unit) {
-                    detectTapGestures(
-                        onTap = {
-                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                            onKey(TvKey.OK, false)
-                        },
-                        onLongPress = {
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            TvRemote.longPress(TvKey.OK)
-                        },
-                    )
-                },
-            contentAlignment = Alignment.Center,
-        ) {
-            Box(
-                modifier = Modifier.size(20.dp).border(2.dp, Color.White, CircleShape),
-                contentAlignment = Alignment.Center,
-            ) {
-                Box(modifier = Modifier.size(8.dp).background(Color.White, CircleShape))
+    }
+}
+
+@Composable
+private fun BottomPillButton(
+    label: String,
+    onClick: () -> Unit,
+    onLongPress: (() -> Unit)? = null,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    val haptic = LocalHapticFeedback.current
+    var pressed by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(if (pressed) 0.94f else 1f, tween(80), label = "pillPress")
+    Box(
+        modifier = modifier
+            .height(52.dp)
+            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .clip(RoundedCornerShape(26.dp))
+            .background(if (pressed) RemoteTilePressed else RemoteBottomBarBg)
+            .semantics {
+                contentDescription = label
+                role = Role.Button
+                onClick(label) { onClick(); true }
+                if (onLongPress != null) onLongClick("$label, held") { onLongPress(); true }
             }
-        }
+            .pointerInput(label) {
+                detectTapGestures(
+                    onPress = {
+                        pressed = true
+                        try { tryAwaitRelease() } finally { pressed = false }
+                    },
+                    onTap = {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onClick()
+                    },
+                    onLongPress = onLongPress?.let { lp ->
+                        {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            lp()
+                        }
+                    },
+                )
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        content()
+    }
+}
+
+@Composable
+private fun VoiceBottomPill(
+    holdToTalk: Boolean,
+    onHoldStart: () -> Boolean,
+    onHoldEnd: () -> Unit,
+    onDictate: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val haptic = LocalHapticFeedback.current
+    var down by remember { mutableStateOf(false) }
+    var listening by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(if (down) 0.94f else 1f, tween(90), label = "voicePill")
+    val label = if (holdToTalk) "Voice, hold and speak" else "Voice, tap and speak"
+    Box(
+        modifier = modifier
+            .height(52.dp)
+            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .clip(RoundedCornerShape(26.dp))
+            .background(if (listening) RemotePowerRed else RemoteBottomBarBg)
+            .semantics {
+                contentDescription = label
+                role = Role.Button
+                onClick(label) { if (!holdToTalk) onDictate(); true }
+            }
+            .pointerInput(holdToTalk) {
+                detectTapGestures(
+                    onPress = {
+                        down = true
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        val started = holdToTalk && onHoldStart()
+                        listening = started
+                        try { tryAwaitRelease() } finally {
+                            down = false
+                            listening = false
+                            if (started) onHoldEnd()
+                        }
+                    },
+                    onTap = { if (!holdToTalk) onDictate() },
+                )
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(AssistantLoopIcon, contentDescription = label, tint = Color.Unspecified, modifier = Modifier.size(26.dp))
     }
 }
 
@@ -1074,7 +2553,7 @@ private fun DpadDirectionHitArea(
     val scope = rememberCoroutineScope()
     Box(
         modifier = modifier
-            .size(56.dp)
+            .size(62.dp)
             .clip(CircleShape)
             .semantics {
                 contentDescription = label
@@ -1110,460 +2589,6 @@ private fun DpadDirectionHitArea(
     ) { content() }
 }
 
-@Composable
-private fun TouchpadArea(
-    isLg: Boolean,
-    onKey: (Int, Boolean) -> Unit,
-    onOpenKeyboard: () -> Unit,
-) {
-    val haptic = LocalHapticFeedback.current
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(216.dp)
-            .background(Color(0xFF28282C), RoundedCornerShape(20.dp))
-            .border(1.dp, RemoteButtonBorder.copy(alpha = 0.6f), RoundedCornerShape(20.dp))
-            .padding(10.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        // Main Touchpad surface with top-left Keyboard icon (matching Image 1)
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxSize()
-                .pointerInput(isLg) {
-                    var accX = 0f
-                    var accY = 0f
-                    detectDragGestures(
-                        onDragEnd = { accX = 0f; accY = 0f },
-                        onDragCancel = { accX = 0f; accY = 0f },
-                        onDrag = { change, dragAmount ->
-                            change.consume()
-                            accX += dragAmount.x
-                            accY += dragAmount.y
-                            if (isLg) {
-                                val dx = accX.toInt()
-                                val dy = accY.toInt()
-                                if (dx != 0 || dy != 0) {
-                                    accX -= dx
-                                    accY -= dy
-                                    TvRemote.pointerMove(dx, dy, false)
-                                }
-                            } else {
-                                val threshold = 48f
-                                if (accX > threshold) { accX = 0f; onKey(TvKey.RIGHT, false) }
-                                else if (accX < -threshold) { accX = 0f; onKey(TvKey.LEFT, false) }
-                                if (accY > threshold) { accY = 0f; onKey(TvKey.DOWN, false) }
-                                else if (accY < -threshold) { accY = 0f; onKey(TvKey.UP, false) }
-                            }
-                        },
-                    )
-                }
-                .clickable {
-                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    if (isLg) TvRemote.pointerClick() else onKey(TvKey.OK, false)
-                },
-        ) {
-            // Top-left Keyboard icon button (like Image 1)
-            Surface(
-                onClick = onOpenKeyboard,
-                shape = RoundedCornerShape(10.dp),
-                color = RemoteButtonBg,
-                modifier = Modifier.align(Alignment.TopStart).size(width = 40.dp, height = 28.dp),
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(KeyboardIcon, contentDescription = "Open Keyboard", tint = Color.White.copy(alpha = 0.7f), modifier = Modifier.size(18.dp))
-                }
-            }
-            Text(
-                if (isLg) "Swipe to move · Tap to click" else "Swipe to navigate · Tap for OK",
-                style = MaterialTheme.typography.bodySmall,
-                color = Color.White.copy(alpha = 0.35f),
-                modifier = Modifier.align(Alignment.Center),
-            )
-        }
-
-        // Right vertical scroll strip (matching Image 1)
-        Column(
-            modifier = Modifier
-                .width(22.dp)
-                .fillMaxSize()
-                .background(Color(0xFF5A6373).copy(alpha = 0.55f), RoundedCornerShape(11.dp))
-                .padding(vertical = 4.dp),
-            verticalArrangement = Arrangement.SpaceBetween,
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text(
-                "⌃",
-                style = MaterialTheme.typography.labelMedium,
-                color = Color.White.copy(alpha = 0.85f),
-                modifier = Modifier.clickable { onKey(TvKey.UP, false) }.padding(2.dp),
-            )
-            Text(
-                "⌄",
-                style = MaterialTheme.typography.labelMedium,
-                color = Color.White.copy(alpha = 0.85f),
-                modifier = Modifier.clickable { onKey(TvKey.DOWN, false) }.padding(2.dp),
-            )
-        }
-    }
-}
-
-@Composable
-private fun NumberPadGrid(
-    onDigit: (String) -> Unit,
-    onOk: () -> Unit,
-    onBack: () -> Unit,
-) {
-    val haptic = LocalHapticFeedback.current
-    val rows = listOf(
-        listOf("1", "2", "3"),
-        listOf("4", "5", "6"),
-        listOf("7", "8", "9"),
-        listOf("Back", "0", "OK"),
-    )
-    Surface(
-        modifier = Modifier.fillMaxWidth().height(216.dp),
-        shape = RoundedCornerShape(20.dp),
-        color = Color(0xFF28282C),
-        border = BorderStroke(1.dp, RemoteButtonBorder.copy(alpha = 0.6f)),
-    ) {
-        Column(
-            modifier = Modifier.fillMaxSize().padding(8.dp),
-            verticalArrangement = Arrangement.SpaceEvenly,
-        ) {
-            rows.forEach { row ->
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    row.forEach { label ->
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(44.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .clickable {
-                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                    when (label) {
-                                        "OK" -> onOk()
-                                        "Back" -> onBack()
-                                        else -> onDigit(label)
-                                    }
-                                },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                label,
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Medium,
-                                color = Color.White,
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun InlineKeyboardArea(
-    fullRemote: Boolean,
-    shareUrl: String?,
-    onOpenCaster: (String) -> Unit,
-    onOpenBrowser: () -> Unit,
-    onTyped: (String, String) -> Unit,
-    onKey: (Int, Boolean) -> Unit,
-) {
-    var typed by rememberSaveable { mutableStateOf("") }
-    Surface(
-        modifier = Modifier.fillMaxWidth().height(216.dp),
-        shape = RoundedCornerShape(20.dp),
-        color = Color(0xFF28282C),
-        border = BorderStroke(1.dp, RemoteButtonBorder.copy(alpha = 0.6f)),
-    ) {
-        Column(
-            modifier = Modifier.fillMaxSize().padding(12.dp),
-            verticalArrangement = Arrangement.SpaceBetween,
-        ) {
-            OutlinedTextField(
-                value = typed,
-                onValueChange = { new ->
-                    onTyped(typed, new)
-                    typed = new
-                },
-                placeholder = { Text("Type text for TV…", color = Color.White.copy(alpha = 0.5f)) },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(
-                    capitalization = KeyboardCapitalization.None,
-                    autoCorrectEnabled = false,
-                    imeAction = if (fullRemote) ImeAction.Send else ImeAction.Done,
-                ),
-                keyboardActions = KeyboardActions(onSend = {
-                    onKey(TvKey.ENTER, false)
-                    typed = ""
-                }),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            if (fullRemote) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick = {
-                            if (typed.isEmpty()) onKey(TvKey.DELETE, false) else {
-                                val shorter = typed.dropLast(1)
-                                onTyped(typed, shorter)
-                                typed = shorter
-                            }
-                        },
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.weight(1f),
-                    ) { Text("⌫ Delete", color = Color.White) }
-                    Button(
-                        onClick = { onKey(TvKey.ENTER, false); typed = "" },
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.weight(1f),
-                    ) { Text("Enter") }
-                }
-            }
-            if (shareUrl != null && fullRemote) {
-                Button(onClick = { onOpenCaster(shareUrl) }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
-                    Text("Open Caster on TV")
-                }
-            } else if (shareUrl != null) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onOpenBrowser, modifier = Modifier.weight(1f), shape = RoundedCornerShape(12.dp)) {
-                        Text("Open Browser", maxLines = 1)
-                    }
-                    OutlinedButton(
-                        onClick = { onTyped("", shareUrl); typed = "" },
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(12.dp),
-                    ) { Text("Type URL", color = Color.White, maxLines = 1) }
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun InlineAppsArea(onLaunch: (TvApp) -> Unit) {
-    val haptic = LocalHapticFeedback.current
-    Surface(
-        modifier = Modifier.fillMaxWidth().height(216.dp),
-        shape = RoundedCornerShape(20.dp),
-        color = Color(0xFF28282C),
-        border = BorderStroke(1.dp, RemoteButtonBorder.copy(alpha = 0.6f)),
-    ) {
-        Column(
-            modifier = Modifier.fillMaxSize().padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Text("Quick Launch Apps", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, color = Color.White)
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                TvApp.entries.forEach { app ->
-                    OutlinedButton(
-                        onClick = {
-                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                            onLaunch(app)
-                        },
-                        shape = RoundedCornerShape(14.dp),
-                        border = BorderStroke(1.dp, RemoteButtonBorder),
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
-                    ) {
-                        Text(app.title, color = Color.White, style = MaterialTheme.typography.labelLarge)
-                    }
-                }
-            }
-        }
-    }
-}
-
-// ---- Reusable Sleek Remote Components ------------------------------------------------------------
-
-@Composable
-private fun VerticalRockerPill(
-    label: String,
-    topSymbol: String,
-    bottomSymbol: String,
-    onTop: () -> Unit,
-    onBottom: () -> Unit,
-) {
-    val haptic = LocalHapticFeedback.current
-    Surface(
-        modifier = Modifier.size(width = 66.dp, height = 136.dp),
-        shape = RoundedCornerShape(33.dp),
-        color = RemoteButtonBg,
-        border = BorderStroke(1.dp, RemoteButtonBorder),
-    ) {
-        Column(
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.SpaceBetween,
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .clickable {
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        onTop()
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(topSymbol, style = MaterialTheme.typography.titleMedium, color = Color.White)
-            }
-            Text(label, style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.85f), fontWeight = FontWeight.Medium)
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .clickable {
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        onBottom()
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(bottomSymbol, style = MaterialTheme.typography.titleMedium, color = Color.White)
-            }
-        }
-    }
-}
-
-@Composable
-private fun SleekCircleButton(
-    label: String,
-    size: Dp,
-    containerColor: Color = RemoteButtonBg,
-    borderColor: Color = RemoteButtonBorder,
-    onClick: () -> Unit,
-    onLongPress: (() -> Unit)? = null,
-    content: @Composable () -> Unit,
-) {
-    val haptic = LocalHapticFeedback.current
-    var pressed by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(if (pressed) 0.92f else 1f, tween(80), label = "circlePress")
-    val bg = if (pressed && containerColor == RemoteButtonBg) RemoteButtonPressed else containerColor
-    Box(
-        modifier = Modifier
-            .size(size)
-            .graphicsLayer { scaleX = scale; scaleY = scale }
-            .clip(CircleShape)
-            .background(bg, CircleShape)
-            .border(1.dp, borderColor, CircleShape)
-            .semantics {
-                contentDescription = label
-                role = Role.Button
-                onClick(label) { onClick(); true }
-                if (onLongPress != null) onLongClick("$label, held") { onLongPress(); true }
-            }
-            .pointerInput(label) {
-                detectTapGestures(
-                    onPress = {
-                        pressed = true
-                        try {
-                            tryAwaitRelease()
-                        } finally {
-                            pressed = false
-                        }
-                    },
-                    onTap = {
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        onClick()
-                    },
-                    onLongPress = onLongPress?.let { lp ->
-                        {
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            lp()
-                        }
-                    },
-                )
-            },
-        contentAlignment = Alignment.Center,
-    ) {
-        CompositionLocalProvider(LocalContentColor provides Color.White) {
-            content()
-        }
-    }
-}
-
-@Composable
-private fun BottomModeButton(
-    selected: Boolean,
-    onClick: () -> Unit,
-    content: @Composable () -> Unit,
-) {
-    val haptic = LocalHapticFeedback.current
-    Box(
-        modifier = Modifier
-            .size(46.dp)
-            .clip(CircleShape)
-            .background(if (selected) RemoteAccentBlue.copy(alpha = 0.14f) else Color.Transparent)
-            .clickable {
-                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                onClick()
-            },
-        contentAlignment = Alignment.Center,
-    ) {
-        content()
-    }
-}
-
-@Composable
-private fun MicCircleButton(
-    holdToTalk: Boolean,
-    onHoldStart: () -> Boolean,
-    onHoldEnd: () -> Unit,
-    onDictate: () -> Unit,
-) {
-    val haptic = LocalHapticFeedback.current
-    var down by remember { mutableStateOf(false) }
-    var listening by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(if (down) 0.92f else 1f, tween(90), label = "mic")
-    val label = if (holdToTalk) "Voice, hold and speak" else "Voice, tap and speak"
-    Box(
-        modifier = Modifier
-            .size(56.dp)
-            .graphicsLayer { scaleX = scale; scaleY = scale }
-            .clip(CircleShape)
-            .background(if (listening) RemotePowerRed else RemoteButtonBg, CircleShape)
-            .border(1.dp, if (listening) RemotePowerRed else RemoteButtonBorder, CircleShape)
-            .semantics {
-                contentDescription = label
-                role = Role.Button
-                onClick(label) { if (!holdToTalk) onDictate(); true }
-            }
-            .pointerInput(holdToTalk) {
-                detectTapGestures(
-                    onPress = {
-                        down = true
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        val started = holdToTalk && onHoldStart()
-                        listening = started
-                        try {
-                            tryAwaitRelease()
-                        } finally {
-                            down = false
-                            listening = false
-                            if (started) onHoldEnd()
-                        }
-                    },
-                    onTap = { if (!holdToTalk) onDictate() },
-                )
-            },
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            MicIcon,
-            contentDescription = label,
-            tint = if (listening) Color.White else RemoteMicPurple,
-            modifier = Modifier.size(26.dp),
-        )
-    }
-}
-
 // ---- Devices / Connection Panel ------------------------------------------------------------------
 
 @Composable
@@ -1595,7 +2620,7 @@ private fun DevicesPanel(
     macFor?.let { address ->
         var mac by rememberSaveable(address) { mutableStateOf(saved.firstOrNull { it.address == address }?.mac.orEmpty()) }
         val valid = WakeOnLan.normalize(mac) != null
-        androidx.compose.material3.AlertDialog(
+        AlertDialog(
             onDismissRequest = { macFor = null },
             title = { Text("Turn on $address") },
             text = {
@@ -1621,7 +2646,7 @@ private fun DevicesPanel(
     }
 
     if (showManualDialog) {
-        androidx.compose.material3.AlertDialog(
+        AlertDialog(
             onDismissRequest = { showManualDialog = false },
             title = { Text("Connect TV by IP") },
             text = {
@@ -1662,9 +2687,9 @@ private fun DevicesPanel(
 
     Surface(
         modifier = Modifier.fillMaxSize(),
-        shape = RoundedCornerShape(20.dp),
-        color = Color(0xFF252529),
-        border = BorderStroke(1.dp, RemoteButtonBorder.copy(alpha = 0.6f)),
+        shape = RoundedCornerShape(24.dp),
+        color = Color(0xFF202024),
+        border = BorderStroke(1.dp, RemoteBorderSubtle),
     ) {
         Column(modifier = Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if (connecting) {
@@ -1718,6 +2743,20 @@ private fun DevicesPanel(
                     modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
+                    if (state is TvRemote.State.Connected) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Box(modifier = Modifier.size(8.dp).background(LiveGreen, CircleShape))
+                                Text("Connected to ${state.host}", style = MaterialTheme.typography.bodyMedium, color = Color.White)
+                            }
+                            TextButton(onClick = onDisconnect) { Text("Disconnect", color = RemotePowerRed) }
+                        }
+                    }
+
                     if (primaryTv != null) {
                         TvDeviceCard(
                             name = primaryTv.kind ?: "Smart TV",
@@ -1732,6 +2771,10 @@ private fun DevicesPanel(
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(14.dp),
                             ) { Text("Turn on with Wake-on-LAN", color = Color.White) }
+                        } else {
+                            TextButton(onClick = { macFor = primaryTv.address }) {
+                                Text("Set up Wake-on-LAN", color = Color.White.copy(alpha = 0.7f))
+                            }
                         }
                     }
 
@@ -1792,8 +2835,13 @@ private fun DevicesPanel(
                     }
                 }
 
-                TextButton(onClick = { showManualDialog = true }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
-                    Text("Add TV by IP address", style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.7f))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    TextButton(onClick = onScan, enabled = !scanning) {
+                        Text("Rescan Wi-Fi", style = MaterialTheme.typography.labelSmall, color = RemoteAccentBlue)
+                    }
+                    TextButton(onClick = { showManualDialog = true }) {
+                        Text("Add TV by IP", style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.75f))
+                    }
                 }
             }
             (state as? TvRemote.State.Failed)?.let {
@@ -1815,8 +2863,8 @@ private fun TvDeviceCard(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
-        color = if (primary) RemoteButtonBg else Color(0xFF2D2D32),
-        border = BorderStroke(1.dp, if (primary) RemoteAccentBlue.copy(alpha = 0.45f) else RemoteButtonBorder.copy(alpha = 0.5f)),
+        color = if (primary) RemoteTileBg else Color(0xFF2B2B30),
+        border = BorderStroke(1.dp, if (primary) RemoteAccentBlue.copy(alpha = 0.45f) else RemoteBorderSubtle),
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),

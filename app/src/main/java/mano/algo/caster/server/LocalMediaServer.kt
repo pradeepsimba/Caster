@@ -516,7 +516,9 @@ class LocalMediaServer(
             )
         }
         val cmds = JSONArray()
-        RemoteControl.drain(deviceId).forEach { cmds.put(it) }
+        val wait = p["wait"]?.firstOrNull() == "1" && p["s"]?.firstOrNull() != "idle"
+        val list = if (wait) RemoteControl.drainOrWait(deviceId, 1_200L) else RemoteControl.drain(deviceId)
+        list.forEach { cmds.put(it) }
         return json(JSONObject().put("cmds", cmds))
     }
 

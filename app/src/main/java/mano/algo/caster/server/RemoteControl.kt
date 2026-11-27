@@ -29,6 +29,7 @@ object RemoteControl {
 
     private val states = ConcurrentHashMap<String, RemoteState>()
     private val queues = ConcurrentHashMap<String, ConcurrentLinkedQueue<String>>()
+    private val waiters = ConcurrentHashMap<String, Any>()
     private val _all = MutableStateFlow<List<RemoteState>>(emptyList())
 
     val all: StateFlow<List<RemoteState>> = _all.asStateFlow()
@@ -41,6 +42,7 @@ object RemoteControl {
     fun idle(deviceId: String) {
         states.remove(deviceId)
         queues.remove(deviceId)
+        waiters[deviceId]?.let { synchronized(it) { (it as Object).notifyAll() } }
         publish()
     }
 
@@ -48,6 +50,7 @@ object RemoteControl {
         queues.getOrPut(deviceId) { ConcurrentLinkedQueue() }.apply {
             if (size < MAX_QUEUED) add(command)
         }
+        waiters[deviceId]?.let { synchronized(it) { (it as Object).notifyAll() } }
     }
 
     /** Returns and clears the commands waiting for [deviceId]. */
@@ -56,9 +59,23 @@ object RemoteControl {
         return generateSequence { queue.poll() }.toList()
     }
 
+    /** Returns waiting commands immediately, or waits up to [waitMs] for a new command. */
+    fun drainOrWait(deviceId: String, waitMs: Long): List<String> {
+        drain(deviceId).takeIf { it.isNotEmpty() }?.let { return it }
+        if (waitMs <= 0L) return emptyList()
+        val waiter = waiters.getOrPut(deviceId) { Any() }
+        synchronized(waiter) {
+            drain(deviceId).takeIf { it.isNotEmpty() }?.let { return it }
+            runCatching { (waiter as Object).wait(waitMs) }
+        }
+        return drain(deviceId)
+    }
+
     fun clear() {
         states.clear()
         queues.clear()
+        waiters.values.forEach { synchronized(it) { (it as Object).notifyAll() } }
+        waiters.clear()
         publish()
     }
 

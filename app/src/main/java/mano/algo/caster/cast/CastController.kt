@@ -406,7 +406,7 @@ object CastController {
         val selector = castContext?.mergedSelector ?: return
         val r = MediaRouter.getInstance(context.applicationContext)
         router = r
-        r.addCallback(selector, discoveryCallback, MediaRouter.CALLBACK_FLAG_PERFORM_ACTIVE_SCAN)
+        r.addCallback(selector, discoveryCallback, MediaRouter.CALLBACK_FLAG_REQUEST_DISCOVERY)
         refreshNearby()
     }
 

@@ -540,4 +540,52 @@ class WebSocketTvsTest {
             input.close()
         }
     }
+
+    @Test
+    fun tvChannelGuideNumpadAndColorKeysMapCorrectly() {
+        assertEquals("KEY_CHUP", SamsungTvCommands.keyName(TvKey.CHANNEL_UP))
+        assertEquals("KEY_CHDOWN", SamsungTvCommands.keyName(TvKey.CHANNEL_DOWN))
+        assertEquals("KEY_GUIDE", SamsungTvCommands.keyName(TvKey.GUIDE))
+        assertEquals("KEY_SOURCE", SamsungTvCommands.keyName(TvKey.TV_INPUT))
+        assertEquals("KEY_5", SamsungTvCommands.keyName(TvKey.DIGIT_5))
+        assertEquals("KEY_RED", SamsungTvCommands.keyName(TvKey.PROG_RED))
+
+        assertEquals("CHANNELUP", LgTvCommands.buttonName(TvKey.CHANNEL_UP))
+        assertEquals("CHANNELDOWN", LgTvCommands.buttonName(TvKey.CHANNEL_DOWN))
+        assertEquals("GUIDE", LgTvCommands.buttonName(TvKey.GUIDE))
+        assertEquals("7", LgTvCommands.buttonName(TvKey.DIGIT_7))
+        assertEquals("BLUE", LgTvCommands.buttonName(TvKey.PROG_BLUE))
+    }
+
+    @Test
+    fun lgParsesExternalInputsLaunchPointsAndForegroundApp() {
+        val inputsJson = """
+            {"type":"response","id":1,"payload":{"returnValue":true,"devices":[
+                {"id":"HDMI_1","label":"Airtel Set-Top Box","connected":true,"appId":"com.webos.app.hdmi1"},
+                {"id":"HDMI_2","label":"HDMI 2","connected":false,"appId":"com.webos.app.hdmi2"}
+            ]}}
+        """.trimIndent()
+        val inputs = LgTvCommands.parseExternalInputs(inputsJson)
+        assertEquals(2, inputs.size)
+        assertEquals("HDMI_1", inputs[0].id)
+        assertEquals("Airtel Set-Top Box", inputs[0].label)
+        assertEquals(TvInput.InputKind.STB, inputs[0].kind)
+        assertTrue(inputs[0].connected)
+        assertEquals(TvInput.InputKind.HDMI, inputs[1].kind)
+        assertFalse(inputs[1].connected)
+
+        val appsJson = """
+            {"type":"response","id":2,"payload":{"returnValue":true,"launchPoints":[
+                {"id":"youtube.leanback.v4","title":"YouTube","systemApp":false},
+                {"id":"com.webos.app.internal","title":"com.webos.app.internal","systemApp":true}
+            ]}}
+        """.trimIndent()
+        val apps = LgTvCommands.parseLaunchPoints(appsJson)
+        assertEquals(1, apps.size)
+        assertEquals("youtube.leanback.v4", apps[0].id)
+        assertEquals("YouTube", apps[0].title)
+
+        val fgJson = """{"type":"response","id":3,"payload":{"appId":"com.webos.app.hdmi1","returnValue":true}}"""
+        assertEquals("com.webos.app.hdmi1", LgTvCommands.parseForegroundAppId(fgJson))
+    }
 }

@@ -184,6 +184,16 @@ object TvRemote {
 
     /** Why the last voice try didn't work, for the screen; null when it did (or none was tried). */
     val voiceError: StateFlow<String?> = _voiceError.asStateFlow()
+
+    private val _inputs = MutableStateFlow<List<TvInput>>(emptyList())
+    val inputs: StateFlow<List<TvInput>> = _inputs.asStateFlow()
+
+    private val _activeInputId = MutableStateFlow<String?>(null)
+    val activeInputId: StateFlow<String?> = _activeInputId.asStateFlow()
+
+    private val _installedApps = MutableStateFlow<List<InstalledTvApp>>(emptyList())
+    val installedApps: StateFlow<List<InstalledTvApp>> = _installedApps.asStateFlow()
+
     private var volumeJob: Job? = null
 
     /** Bumped by every disconnect, so a job that was running for an older connection can tell and stay quiet. */
@@ -553,6 +563,8 @@ object TvRemote {
             val current = ifCurrent(mine) {
                 atv = link
                 rememberKind(host, Kind.AndroidTv)
+                _inputs.value = defaultTvInputs()
+                _installedApps.value = defaultInstalledApps()
                 _state.value = State.Connected(host, Link.AndroidTv)
                 startSender(mine)
             }
@@ -579,8 +591,22 @@ object TvRemote {
             openingSocket = null
             socketRemote = link
             rememberKind(host, if (kind == Link.Samsung) Kind.Samsung else Kind.Lg)
+            if (link is LgTvLink) {
+                link.onInputsLoaded = { list -> if (mine == generation) _inputs.value = list }
+                link.onAppsLoaded = { list -> if (mine == generation) _installedApps.value = list }
+                link.onForegroundApp = { appId ->
+                    if (mine == generation) {
+                        val match = _inputs.value.firstOrNull { it.appId == appId }
+                        if (match != null) _activeInputId.value = match.id
+                    }
+                }
+            } else {
+                _inputs.value = defaultTvInputs()
+            }
+            _installedApps.value = defaultInstalledApps()
             _state.value = State.Connected(host, kind)
             startSender(mine)
+            if (link is LgTvLink) enqueue { link.refreshMetadata() }
         }
         if (!current) link.close() else link.failure?.let { linkClosed(mine, it) }
     }
@@ -745,6 +771,8 @@ object TvRemote {
                 val current = isActive && !gaveUp.get() && ifCurrent(mine) {
                     opening = null
                     connection = opened
+                    _inputs.value = defaultTvInputs()
+                    _installedApps.value = defaultInstalledApps()
                     _state.value = State.Connected(host, Link.Adb)
                     startSender(mine)
                 }
@@ -802,6 +830,9 @@ object TvRemote {
         socketRemote = null
         holding.clear()
         closeVolume()
+        _inputs.value = emptyList()
+        _activeInputId.value = null
+        _installedApps.value = emptyList()
         newQueue()
         pending.set(0)
         _state.value = State.Idle
@@ -989,6 +1020,59 @@ object TvRemote {
 
     /** True when button [code] does something on the connected TV (the Fire TV service has no volume or Enter, for example). */
     fun supportsKey(link: Link, code: Int) = link != Link.FireTv || FireTvCommands.supports(code)
+
+    /** Switches the TV's active input/port (for LG via SSAP; for other TVs opens/cycles input). */
+    fun switchInput(input: TvInput) {
+        val remote = socketRemote
+        if (remote is LgTvLink) {
+            _activeInputId.value = input.id
+            enqueue { remote.switchInput(input.id) }
+            return
+        }
+        if (remote != null) {
+            _activeInputId.value = input.id
+            enqueue { remote.press(TvKey.TV_INPUT) }
+            return
+        }
+        val androidTv = atv
+        if (androidTv != null) {
+            _activeInputId.value = input.id
+            enqueue { androidTv.key(TvKey.TV_INPUT) }
+            return
+        }
+        val adb = connection
+        if (adb != null) {
+            _activeInputId.value = input.id
+            enqueue { shellGuarded(adb, TvCommands.key(TvKey.TV_INPUT)) }
+        }
+    }
+
+    /** Launches an app by its protocol ID (LG/Samsung) or falls back to [TvApp] if present. */
+    fun launchAppById(appId: String, fallback: TvApp? = null) {
+        val remote = socketRemote
+        if (remote != null && fallback == null) {
+            enqueue { remote.launchApp(appId) }
+            return
+        }
+        if (fallback != null) {
+            launchApp(fallback)
+        } else {
+            val adb = connection
+            if (adb != null) {
+                enqueue { shellGuarded(adb, "monkey -p $appId -c android.intent.category.LAUNCHER 1") }
+            }
+        }
+    }
+
+    private fun defaultTvInputs(): List<TvInput> = listOf(
+        TvInput("tv", "Live TV", TvInput.InputKind.LIVE_TV, connected = true),
+        TvInput("hdmi1", "HDMI 1", TvInput.InputKind.HDMI, connected = true),
+        TvInput("hdmi2", "HDMI 2", TvInput.InputKind.HDMI, connected = false),
+        TvInput("hdmi3", "HDMI 3", TvInput.InputKind.HDMI, connected = false),
+    )
+
+    private fun defaultInstalledApps(): List<InstalledTvApp> =
+        TvApp.entries.map { InstalledTvApp(id = it.androidPackage, title = it.title, fallbackApp = it) }
 
     /** One press of [code]. With [repeating] (a held button) a press is skipped while the TV is still catching up. */
     fun key(code: Int, repeating: Boolean = false) {

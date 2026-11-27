@@ -7,6 +7,24 @@ import java.net.URLEncoder
 import java.security.cert.CertificateException
 import java.util.concurrent.atomic.AtomicInteger
 
+/** An input/port on a TV (e.g., Live TV, HDMI 1, HDMI 2). */
+data class TvInput(
+    val id: String,
+    val label: String,
+    val kind: InputKind = InputKind.HDMI,
+    val connected: Boolean = true,
+    val appId: String? = null,
+) {
+    enum class InputKind { LIVE_TV, STB, HDMI, AV, OTHER }
+}
+
+/** An app available to launch on the connected TV. */
+data class InstalledTvApp(
+    val id: String,
+    val title: String,
+    val fallbackApp: TvApp? = null,
+)
+
 /** A TV remote that talks over a WebSocket (Samsung and LG): what the phone's buttons and keyboard need from it. */
 internal interface TvSocketRemote : Closeable {
     /** True when button [code] does something on this TV. */
@@ -23,6 +41,8 @@ internal interface TvSocketRemote : Closeable {
     fun openUrl(url: String)
 
     fun launchApp(appId: String) {}
+
+    fun switchInput(inputId: String) {}
 
     fun pointerMove(dx: Int, dy: Int, drag: Boolean = false) {}
 
@@ -46,10 +66,18 @@ internal fun canTryNextPort(e: Throwable): Boolean =
 internal fun isPinMismatch(e: Throwable): Boolean = generateSequence(e) { it.cause }.any { it is CertificateException }
 
 /** Reads and drops what a TV sends, for as long as the connection lives; reports when it ends. */
-private fun startReader(name: String, socket: WebSocketClient, ended: (Throwable) -> Unit) {
+private fun startReader(
+    name: String,
+    socket: WebSocketClient,
+    onMessage: ((String) -> Unit)? = null,
+    ended: (Throwable) -> Unit,
+) {
     Thread({
         try {
-            while (true) socket.readTextKeepingAlive(20_000)
+            while (true) {
+                val text = socket.readTextKeepingAlive(20_000)
+                onMessage?.invoke(text)
+            }
         } catch (e: Throwable) {
             ended(e)
         }
@@ -109,6 +137,25 @@ object SamsungTvCommands {
         TvKey.VOLUME_DOWN -> "KEY_VOLDOWN"
         TvKey.MUTE -> "KEY_MUTE"
         TvKey.POWER -> "KEY_POWER"
+        TvKey.CHANNEL_UP -> "KEY_CHUP"
+        TvKey.CHANNEL_DOWN -> "KEY_CHDOWN"
+        TvKey.GUIDE -> "KEY_GUIDE"
+        TvKey.INFO -> "KEY_INFO"
+        TvKey.TV_INPUT -> "KEY_SOURCE"
+        TvKey.DIGIT_0 -> "KEY_0"
+        TvKey.DIGIT_1 -> "KEY_1"
+        TvKey.DIGIT_2 -> "KEY_2"
+        TvKey.DIGIT_3 -> "KEY_3"
+        TvKey.DIGIT_4 -> "KEY_4"
+        TvKey.DIGIT_5 -> "KEY_5"
+        TvKey.DIGIT_6 -> "KEY_6"
+        TvKey.DIGIT_7 -> "KEY_7"
+        TvKey.DIGIT_8 -> "KEY_8"
+        TvKey.DIGIT_9 -> "KEY_9"
+        TvKey.PROG_RED -> "KEY_RED"
+        TvKey.PROG_GREEN -> "KEY_GREEN"
+        TvKey.PROG_YELLOW -> "KEY_YELLOW"
+        TvKey.PROG_BLUE -> "KEY_BLUE"
         else -> null
     }
 }
@@ -215,7 +262,7 @@ internal class SamsungTvLink private constructor(
                         when (SamsungTvCommands.event(message)) {
                             "ms.channel.connect" -> {
                                 val link = SamsungTvLink(ws, onClosed)
-                                startReader("caster-samsung-reader", ws, link::ended)
+                                startReader("caster-samsung-reader", ws, null, link::ended)
                                 return Opened(link, SamsungTvCommands.token(message) ?: token.takeIf { endpoint.secure }, ws.serverFingerprint)
                             }
                             "ms.channel.unauthorized", "ms.channel.timeOut" -> throw TvRefusedException("The TV didn't allow this phone")
@@ -282,6 +329,12 @@ object LgTvCommands {
 
     fun launchApp(appId: String) = "system.launcher/launch" to """{"id":${FireTvCommands.jsonString(appId)}}"""
 
+    fun switchInput(inputId: String) = "tv/switchInput" to """{"inputId":${FireTvCommands.jsonString(inputId)}}"""
+
+    const val GET_EXTERNAL_INPUTS = "tv/getExternalInputList"
+    const val GET_LAUNCH_POINTS = "com.webos.applicationManager/listLaunchPoints"
+    const val GET_FOREGROUND_APP = "com.webos.applicationManager/getForegroundAppInfo"
+
     fun move(dx: Int, dy: Int, drag: Boolean = false) = "type:move\ndx:$dx\ndy:$dy\ndown:${if (drag) 1 else 0}\n\n"
 
     fun click() = "type:click\n\n"
@@ -302,7 +355,104 @@ object LgTvCommands {
         TvKey.VOLUME_UP -> "VOLUMEUP"
         TvKey.VOLUME_DOWN -> "VOLUMEDOWN"
         TvKey.MUTE -> "MUTE"
+        TvKey.CHANNEL_UP -> "CHANNELUP"
+        TvKey.CHANNEL_DOWN -> "CHANNELDOWN"
+        TvKey.GUIDE -> "GUIDE"
+        TvKey.INFO -> "INFO"
+        TvKey.DIGIT_0 -> "0"
+        TvKey.DIGIT_1 -> "1"
+        TvKey.DIGIT_2 -> "2"
+        TvKey.DIGIT_3 -> "3"
+        TvKey.DIGIT_4 -> "4"
+        TvKey.DIGIT_5 -> "5"
+        TvKey.DIGIT_6 -> "6"
+        TvKey.DIGIT_7 -> "7"
+        TvKey.DIGIT_8 -> "8"
+        TvKey.DIGIT_9 -> "9"
+        TvKey.PROG_RED -> "RED"
+        TvKey.PROG_GREEN -> "GREEN"
+        TvKey.PROG_YELLOW -> "YELLOW"
+        TvKey.PROG_BLUE -> "BLUE"
         else -> null
+    }
+
+    /** Extracts JSON object slices inside an array field such as `"devices":[{...},{...}]`. */
+    private fun extractArrayObjects(json: String, arrayKey: String): List<String> {
+        val keyIdx = json.indexOf("\"$arrayKey\"")
+        if (keyIdx < 0) return emptyList()
+        val bracketStart = json.indexOf('[', keyIdx)
+        if (bracketStart < 0) return emptyList()
+        val items = mutableListOf<String>()
+        var depth = 0
+        var objStart = -1
+        var inString = false
+        var escape = false
+        for (i in bracketStart until json.length) {
+            val c = json[i]
+            if (escape) { escape = false; continue }
+            if (c == '\\' && inString) { escape = true; continue }
+            if (c == '"') { inString = !inString; continue }
+            if (inString) continue
+            when (c) {
+                '{' -> {
+                    if (depth == 1) objStart = i
+                    depth++
+                }
+                '}' -> {
+                    depth--
+                    if (depth == 1 && objStart >= 0) {
+                        items += json.substring(objStart, i + 1)
+                        objStart = -1
+                    }
+                }
+                '[' -> if (depth == 0) depth = 1
+                ']' -> if (depth == 1) break
+            }
+        }
+        return items
+    }
+
+    private fun jsonStr(obj: String, key: String): String? =
+        Regex(""""$key"\s*:\s*"((?:[^"\\]|\\.)*)"""").find(obj)?.groupValues?.get(1)
+            ?.replace("\\\"", "\"")?.replace("\\\\", "\\")?.replace("\\/", "/")
+
+    private fun jsonBool(obj: String, key: String): Boolean? =
+        Regex(""""$key"\s*:\s*(true|false)""").find(obj)?.groupValues?.get(1)?.toBooleanStrictOrNull()
+
+    fun parseExternalInputs(message: String): List<TvInput> {
+        val objs = extractArrayObjects(message, "devices")
+        if (objs.isEmpty()) return emptyList()
+        return objs.mapNotNull { obj ->
+            val id = jsonStr(obj, "id") ?: return@mapNotNull null
+            val label = jsonStr(obj, "label")?.takeIf { it.isNotBlank() } ?: id
+            val connected = jsonBool(obj, "connected") ?: false
+            val appId = jsonStr(obj, "appId")
+            val lower = (label + " " + id).lowercase()
+            val kind = when {
+                "stb" in lower || "set-top" in lower || "settop" in lower || "cable" in lower -> TvInput.InputKind.STB
+                "live tv" in lower || "antenna" in lower || id.equals("tv", ignoreCase = true) -> TvInput.InputKind.LIVE_TV
+                "hdmi" in lower -> TvInput.InputKind.HDMI
+                "av" in lower || "comp" in lower -> TvInput.InputKind.AV
+                else -> TvInput.InputKind.OTHER
+            }
+            TvInput(id = id, label = label, kind = kind, connected = connected, appId = appId)
+        }
+    }
+
+    fun parseLaunchPoints(message: String): List<InstalledTvApp> {
+        val objs = extractArrayObjects(message, "launchPoints")
+        if (objs.isEmpty()) return emptyList()
+        return objs.mapNotNull { obj ->
+            val id = jsonStr(obj, "id") ?: return@mapNotNull null
+            val title = jsonStr(obj, "title")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            if (jsonBool(obj, "systemApp") == true && title.startsWith("com.")) return@mapNotNull null
+            InstalledTvApp(id = id, title = title)
+        }
+    }
+
+    fun parseForegroundAppId(message: String): String? {
+        if (!message.contains("\"appId\"")) return null
+        return jsonStr(message, "appId")
     }
 
     // LG's sample registration (the one every open-source LG remote uses).
@@ -322,15 +472,19 @@ internal class LgTvLink private constructor(
         private set
     private val ids = AtomicInteger(1)
     private var playing = true // the pause and play buttons are separate: pause first, then play, and so on
+    @Volatile var onInputsLoaded: ((List<TvInput>) -> Unit)? = null
+    @Volatile var onAppsLoaded: ((List<InstalledTvApp>) -> Unit)? = null
+    @Volatile var onForegroundApp: ((String) -> Unit)? = null
 
     override fun supports(code: Int) =
-        LgTvCommands.buttonName(code) != null || code == TvKey.PLAY_PAUSE || code == TvKey.ENTER || code == TvKey.DELETE || code == TvKey.POWER
+        LgTvCommands.buttonName(code) != null || code == TvKey.PLAY_PAUSE || code == TvKey.ENTER || code == TvKey.DELETE || code == TvKey.POWER || code == TvKey.TV_INPUT
 
     override fun press(code: Int) {
         when (code) {
             TvKey.ENTER -> request(LgTvCommands.ENTER_KEY, "{}")
             TvKey.DELETE -> request(LgTvCommands.deleteCharacters(1))
             TvKey.POWER -> request("system/turnOff", "{}")
+            TvKey.TV_INPUT -> request("system.launcher/launch", """{"id":"com.webos.app.connectionmanager"}""")
             TvKey.PLAY_PAUSE -> {
                 playing = !playing
                 input.sendText(LgTvCommands.button(if (playing) "PLAY" else "PAUSE"))
@@ -353,6 +507,33 @@ internal class LgTvLink private constructor(
 
     override fun launchApp(appId: String) {
         request(LgTvCommands.launchApp(appId))
+    }
+
+    override fun switchInput(inputId: String) {
+        request(LgTvCommands.switchInput(inputId))
+    }
+
+    fun refreshMetadata() {
+        request(LgTvCommands.GET_EXTERNAL_INPUTS, "{}")
+        request(LgTvCommands.GET_LAUNCH_POINTS, "{}")
+        request(LgTvCommands.GET_FOREGROUND_APP, "{}")
+    }
+
+    internal fun handleMainMessage(message: String) {
+        if (LgTvCommands.type(message) != "response") return
+        when {
+            message.contains("\"devices\"") -> {
+                val inputs = LgTvCommands.parseExternalInputs(message)
+                if (inputs.isNotEmpty()) onInputsLoaded?.invoke(inputs)
+            }
+            message.contains("\"launchPoints\"") -> {
+                val apps = LgTvCommands.parseLaunchPoints(message)
+                if (apps.isNotEmpty()) onAppsLoaded?.invoke(apps)
+            }
+            message.contains("\"appId\"") -> {
+                LgTvCommands.parseForegroundAppId(message)?.let { onForegroundApp?.invoke(it) }
+            }
+        }
     }
 
     override fun pointerMove(dx: Int, dy: Int, drag: Boolean) {
@@ -422,8 +603,8 @@ internal class LgTvLink private constructor(
                     stage = "opening the button channel"
                     input = openInput(main, host, endpoint, pinned, onSocket)
                     val link = LgTvLink(main, input, onClosed)
-                    startReader("caster-lg-reader", main, link::ended)
-                    startReader("caster-lg-input", input, link::ended)
+                    startReader("caster-lg-reader", main, link::handleMainMessage, link::ended)
+                    startReader("caster-lg-input", input, null, link::ended)
                     return Opened(link, registered, main.serverFingerprint)
                 } catch (e: Throwable) {
                     main.close()
