@@ -194,6 +194,10 @@ object TvRemote {
     private val _foregroundAppId = MutableStateFlow<String?>(null)
     val foregroundAppId: StateFlow<String?> = _foregroundAppId.asStateFlow()
 
+    data class KeyboardInputState(val focused: Boolean = false, val isPassword: Boolean = false, val seq: Int = 0)
+    private val _tvKeyboard = MutableStateFlow(KeyboardInputState())
+    val tvKeyboard: StateFlow<KeyboardInputState> = _tvKeyboard.asStateFlow()
+
     private val _installedApps = MutableStateFlow<List<InstalledTvApp>>(emptyList())
     val installedApps: StateFlow<List<InstalledTvApp>> = _installedApps.asStateFlow()
 
@@ -602,6 +606,9 @@ object TvRemote {
                 link.onForegroundApp = { appId ->
                     if (mine == generation) updateActiveInputForApp(appId)
                 }
+                link.onKeyboardFocus = { focused, isPassword ->
+                    if (mine == generation) updateKeyboardFocus(focused, isPassword)
+                }
             } else {
                 _inputs.value = defaultTvInputs()
             }
@@ -836,6 +843,7 @@ object TvRemote {
         _inputs.value = emptyList()
         _activeInputId.value = null
         _foregroundAppId.value = null
+        _tvKeyboard.value = KeyboardInputState()
         _installedApps.value = emptyList()
         newQueue()
         pending.set(0)
@@ -1052,6 +1060,9 @@ object TvRemote {
                         newLink.onForegroundApp = { appId ->
                             if (mine == generation) updateActiveInputForApp(appId)
                         }
+                        newLink.onKeyboardFocus = { focused, isPassword ->
+                            if (mine == generation) updateKeyboardFocus(focused, isPassword)
+                        }
                         socketRemote = newLink
                     }
                     true
@@ -1227,6 +1238,15 @@ object TvRemote {
             ?: if (appId == "com.webos.app.livetv") list.firstOrNull { it.kind == TvInput.InputKind.LIVE_TV } else null
         // Clear activeInputId when switching to an OTT app or TV Home/OS UI so full controls re-enable.
         _activeInputId.value = match?.id
+    }
+
+    private fun updateKeyboardFocus(focused: Boolean, isPassword: Boolean) {
+        val prev = _tvKeyboard.value
+        _tvKeyboard.value = KeyboardInputState(
+            focused = focused,
+            isPassword = isPassword,
+            seq = if (focused && !prev.focused) prev.seq + 1 else prev.seq,
+        )
     }
 
     private fun defaultTvInputs(): List<TvInput> = listOf(

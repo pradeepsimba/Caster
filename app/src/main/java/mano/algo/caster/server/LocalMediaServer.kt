@@ -103,12 +103,18 @@ class LocalMediaServer(
         }
         if (path == "/upnp/control/cds") {
             if (method != Method.POST && method != Method.GET) return error(Response.Status.METHOD_NOT_ALLOWED, "method_not_allowed")
-            if (method == Method.POST) runCatching { session.parseBody(HashMap()) }
+            if (method == Method.POST) {
+                tooLargeUnauthenticatedBody(session)?.let { return it }
+                runCatching { session.parseBody(HashMap()) }
+            }
             return upnpControlContentDirectory(session)
         }
         if (path == "/upnp/control/cm") {
             if (method != Method.POST && method != Method.GET) return error(Response.Status.METHOD_NOT_ALLOWED, "method_not_allowed")
-            if (method == Method.POST) runCatching { session.parseBody(HashMap()) }
+            if (method == Method.POST) {
+                tooLargeUnauthenticatedBody(session)?.let { return it }
+                runCatching { session.parseBody(HashMap()) }
+            }
             return upnpControlConnectionManager()
         }
         if (method != Method.GET && method != Method.HEAD) return error(Response.Status.METHOD_NOT_ALLOWED, "method_not_allowed")
@@ -187,6 +193,12 @@ class LocalMediaServer(
 
     // ---- pairing -------------------------------------------------------------------------------------
 
+    /** Routes that need no token can be hit by anyone on the network: a big body is refused, never read (NanoHTTPD would spool it to disk). */
+    private fun tooLargeUnauthenticatedBody(session: IHTTPSession): Response? {
+        val declared = session.headers["content-length"]?.trim()?.toLongOrNull() ?: 0L
+        return if (declared > MAX_UNAUTH_BODY) error(PAYLOAD_TOO_LARGE, "too_large").also { it.closeConnection(true) } else null
+    }
+
     private fun pairRequest(session: IHTTPSession): Response {
         // This needs no token, so anyone on the network can send it: a big body is refused, never read.
         val declared = session.headers["content-length"]?.trim()?.toLongOrNull() ?: 0L
@@ -259,7 +271,7 @@ class LocalMediaServer(
 
     /** Serves 4 MB of zero bytes so the caller can measure the LAN throughput to this phone. */
     private fun speedChunk(): Response {
-        val bytes = ByteArray(4 * 1024 * 1024)
+        val bytes = SPEED_BYTES
         return newFixedLengthResponse(Response.Status.OK, "application/octet-stream", ByteArrayInputStream(bytes), bytes.size.toLong())
             .apply { addHeader("Cache-Control", "no-store") }
     }
@@ -574,6 +586,19 @@ class LocalMediaServer(
         private var pending = ": ok\n\n".toByteArray(Charsets.UTF_8)
         private var pos = 0
 
+        init {
+            // One live stream per screen: a reloaded page's older stream must not keep taking (and losing) commands.
+            latest[deviceId] = this
+            RemoteControl.wake(deviceId)
+        }
+
+        private fun current() = latest[deviceId] === this
+
+        override fun close() {
+            latest.remove(deviceId, this)
+            super.close()
+        }
+
         override fun read(): Int {
             val one = ByteArray(1)
             val n = read(one, 0, 1)
@@ -583,9 +608,9 @@ class LocalMediaServer(
         override fun read(b: ByteArray, off: Int, len: Int): Int {
             if (len == 0) return 0
             while (pos >= pending.size) {
-                if (!isAllowed()) return -1
-                val cmds = RemoteControl.drainOrWait(deviceId, 10_000L)
-                if (!isAllowed()) return -1
+                if (!isAllowed() || !current()) return -1
+                val cmds = RemoteControl.drainOrWait(deviceId, 10_000L, ::current)
+                if (!isAllowed() || !current()) return -1
                 val payload = if (cmds.isEmpty()) ": ping\n\n"
                 else cmds.joinToString("") { "data: ${it.replace('\n', ' ')}\n\n" }
                 pending = payload.toByteArray(Charsets.UTF_8)
@@ -595,6 +620,10 @@ class LocalMediaServer(
             System.arraycopy(pending, pos, b, off, n)
             pos += n
             return n
+        }
+
+        private companion object {
+            val latest = java.util.concurrent.ConcurrentHashMap<String, RemoteEventStream>()
         }
     }
 
@@ -838,6 +867,10 @@ class LocalMediaServer(
         const val TAG = "LocalMediaServer"
         const val MAX_LISTED = 1000
         const val MAX_PAIR_BODY = 1024L
+        /** UPnP control requests are small SOAP envelopes. */
+        const val MAX_UNAUTH_BODY = 16 * 1024L
+        /** One zero-filled buffer shared by every speed-test request (it is only ever read). */
+        val SPEED_BYTES = ByteArray(4 * 1024 * 1024)
         const val MAX_CONNECTIONS = 128
         const val CHECK_EVERY_BYTES = 512L * 1024
         const val READ_AHEAD_BYTES = 256L * 1024

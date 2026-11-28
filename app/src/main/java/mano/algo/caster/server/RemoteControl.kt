@@ -61,14 +61,25 @@ object RemoteControl {
         return generateSequence { queue.poll() }.toList()
     }
 
-    /** Returns waiting commands immediately, or waits up to [waitMs] for a new command. */
-    fun drainOrWait(deviceId: String, waitMs: Long): List<String> {
+    /** Wakes anything waiting on [deviceId]'s commands, so a stream that was replaced can notice and end. */
+    fun wake(deviceId: String) {
+        waiters[deviceId]?.let { synchronized(it) { (it as Object).notifyAll() } }
+    }
+
+    /**
+     * Returns waiting commands immediately, or waits up to [waitMs] for a new command. [wanted] is checked before
+     * anything is taken off the queue, so a caller that has been replaced never swallows a command meant for its successor.
+     */
+    fun drainOrWait(deviceId: String, waitMs: Long, wanted: () -> Boolean = { true }): List<String> {
+        if (!wanted()) return emptyList()
         drain(deviceId).takeIf { it.isNotEmpty() }?.let { return it }
         if (waitMs <= 0L) return emptyList()
         val waiter = waiters.getOrPut(deviceId) { Any() }
         synchronized(waiter) {
+            if (!wanted()) return emptyList()
             drain(deviceId).takeIf { it.isNotEmpty() }?.let { return it }
             runCatching { (waiter as Object).wait(waitMs) }
+            if (!wanted()) return emptyList()
         }
         return drain(deviceId)
     }

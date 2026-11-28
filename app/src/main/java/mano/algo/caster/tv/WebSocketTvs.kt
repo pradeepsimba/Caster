@@ -455,6 +455,16 @@ object LgTvCommands {
         return jsonStr(message, "appId")
     }
 
+    /** Parses `registerRemoteKeyboard` `currentWidget` focus and password (`hiddenText`) state. */
+    fun parseKeyboardFocus(message: String): Pair<Boolean, Boolean>? {
+        if (!message.contains("\"currentWidget\"")) return null
+        val focused = Regex(""""focus"\s*:\s*(true|false)""").find(message)?.groupValues?.get(1)?.toBooleanStrictOrNull()
+            ?: return null
+        val hidden = Regex(""""hiddenText"\s*:\s*(true|false)""").find(message)?.groupValues?.get(1)?.toBooleanStrictOrNull()
+            ?: false
+        return focused to hidden
+    }
+
     // LG's sample registration (the one every open-source LG remote uses).
     private const val MANIFEST_SIGNED = """{"appVersion":"1.1","manifestVersion":1,"permissions":["LAUNCH","LAUNCH_WEBAPP","APP_TO_APP","CLOSE","TEST_OPEN","TEST_PROTECTED","CONTROL_AUDIO","CONTROL_DISPLAY","CONTROL_INPUT_JOYSTICK","CONTROL_INPUT_MEDIA_RECORDING","CONTROL_INPUT_MEDIA_PLAYBACK","CONTROL_INPUT_TV","CONTROL_POWER","CONTROL_TV_SCREEN","READ_APP_STATUS","READ_CURRENT_CHANNEL","READ_INPUT_DEVICE_LIST","READ_NETWORK_STATE","READ_RUNNING_APPS","READ_TV_CHANNEL_LIST","WRITE_NOTIFICATION_TOAST","READ_POWER_STATE","READ_COUNTRY_INFO","CONTROL_INPUT_TEXT","CONTROL_MOUSE_AND_KEYBOARD","READ_INSTALLED_APPS","READ_SETTINGS"],"signatures":[{"signature":"eyJhbGdvcml0aG0iOiJSU0EtU0hBMjU2Iiwia2V5SWQiOiJ0ZXN0LXNpZ25pbmctY2VydCIsInNpZ25hdHVyZVZlcnNpb24iOjF9.hrVRgjCwXVvE2OOSpDZ58hR+59aFNwYDyjQgKk3auukd7pcegmE2CzPCa0bJ0ZsRAcKkCTJrWo5iDzNhMBWRyaMOv5zWSrthlf7G128qvIlpMT0YNY+n/FaOHE73uLrS/g7swl3/qH/BGFG2Hu4RlL48eb3lLKqTt2xKHdCs6Cd4RMfJPYnzgvI4BNrFUKsjkcu+WD4OO2A27Pq1n50cMchmcaXadJhGrOqH5YmHdOCj5NSHzJYrsW0HPlpuAx/ECMeIZYDh6RMqaFM2DXzdKX9NmmyqzJ3o/0lkk/N97gfVRLW5hA29yeAwaCViZNCP8iC9aO0q9fQojoa7NQnAtw==","signatureVersion":1}],"signed":{"appId":"com.lge.test","created":"20140509","localizedAppNames":{"":"LG Remote App","ko-KR":"\ub9ac\ubaa8\ucee8 \uc571","zxx-XX":"\u041b\u0413 R\u044d\u043cot\u044d A\u041f\u041f"},"localizedVendorNames":{"":"LG Electronics"},"permissions":["TEST_SECURE","CONTROL_INPUT_TEXT","CONTROL_MOUSE_AND_KEYBOARD","READ_INSTALLED_APPS","READ_LGE_SDX","READ_NOTIFICATIONS","SEARCH","WRITE_SETTINGS","WRITE_NOTIFICATION_ALERT","CONTROL_POWER","READ_CURRENT_CHANNEL","READ_RUNNING_APPS","READ_UPDATE_INFO","UPDATE_FROM_REMOTE_APP","READ_LGE_TV_INPUT_EVENTS","READ_TV_CURRENT_TIME"],"serial":"2f930e2d2cfe083771f68e4fe7bb07","vendorId":"com.lge"}}"""
     private const val MANIFEST_UNSIGNED = """{"appVersion":"1.1","manifestVersion":1,"permissions":["APP_TO_APP","CLOSE","CONTROL_AUDIO","CONTROL_DISPLAY","CONTROL_INPUT_JOYSTICK","CONTROL_INPUT_MEDIA_PLAYBACK","CONTROL_INPUT_MEDIA_RECORDING","CONTROL_INPUT_TEXT","CONTROL_INPUT_TV","CONTROL_MOUSE_AND_KEYBOARD","CONTROL_POWER","CONTROL_TV_SCREEN","LAUNCH","LAUNCH_WEBAPP","READ_APP_STATUS","READ_COUNTRY_INFO","READ_CURRENT_CHANNEL","READ_INPUT_DEVICE_LIST","READ_INSTALLED_APPS","READ_LGE_SDX","READ_LGE_TV_INPUT_EVENTS","READ_NETWORK_STATE","READ_NOTIFICATIONS","READ_POWER_STATE","READ_RUNNING_APPS","READ_SETTINGS","READ_TV_CHANNEL_LIST","READ_TV_CURRENT_TIME","READ_UPDATE_INFO","SEARCH","TEST_OPEN","TEST_PROTECTED","TEST_SECURE","UPDATE_FROM_REMOTE_APP","WRITE_NOTIFICATION_ALERT","WRITE_NOTIFICATION_TOAST","WRITE_SETTINGS"]}"""
@@ -480,6 +490,7 @@ internal class LgTvLink private constructor(
     @Volatile var onInputsLoaded: ((List<TvInput>) -> Unit)? = null
     @Volatile var onAppsLoaded: ((List<InstalledTvApp>) -> Unit)? = null
     @Volatile var onForegroundApp: ((String) -> Unit)? = null
+    @Volatile var onKeyboardFocus: ((Boolean, Boolean) -> Unit)? = null
 
     override fun supports(code: Int) =
         LgTvCommands.buttonName(code) != null || code == TvKey.PLAY_PAUSE || code == TvKey.ENTER || code == TvKey.DELETE || code == TvKey.POWER || code == TvKey.TV_INPUT
@@ -546,6 +557,11 @@ internal class LgTvLink private constructor(
             }
             message.contains("\"appId\"") -> {
                 LgTvCommands.parseForegroundAppId(message)?.let { onForegroundApp?.invoke(it) }
+            }
+            message.contains("\"currentWidget\"") -> {
+                LgTvCommands.parseKeyboardFocus(message)?.let { (focused, hidden) ->
+                    onKeyboardFocus?.invoke(focused, hidden)
+                }
             }
         }
     }

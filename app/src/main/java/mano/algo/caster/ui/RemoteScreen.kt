@@ -77,6 +77,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -101,6 +103,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -542,6 +546,7 @@ fun RemoteScreen(
     val tvInputs by TvRemote.inputs.collectAsStateWithLifecycle()
     val activeTvInputId by TvRemote.activeInputId.collectAsStateWithLifecycle()
     val foregroundAppId by TvRemote.foregroundAppId.collectAsStateWithLifecycle()
+    val tvKeyboard by TvRemote.tvKeyboard.collectAsStateWithLifecycle()
     val installedApps by TvRemote.installedApps.collectAsStateWithLifecycle()
 
     LaunchedEffect(savedHost) {
@@ -668,6 +673,7 @@ fun RemoteScreen(
                     onRemote = onRemote,
                     onChangeLowerMode = { lowerMode = it },
                     onOpenPlaylist = { showPlaylistSheet = true },
+                    tvKeyboard = tvKeyboard,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
@@ -842,6 +848,7 @@ private fun UnifiedRemoteBody(
     onRemote: (String, String) -> Unit,
     onChangeLowerMode: (LowerMode) -> Unit,
     onOpenPlaylist: () -> Unit,
+    tvKeyboard: TvRemote.KeyboardInputState = TvRemote.KeyboardInputState(),
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -885,6 +892,14 @@ private fun UnifiedRemoteBody(
         if (pages.getOrNull(pagerState.currentPage) != UpperPage.EXTRA) {
             focusManager.clearFocus(force = true)
             keyboardController?.hide()
+        }
+    }
+    LaunchedEffect(tvKeyboard.focused, tvKeyboard.seq, pages) {
+        if (target is RemoteTarget.Tv && tvKeyboard.focused) {
+            val extraIdx = pages.indexOf(UpperPage.EXTRA)
+            if (extraIdx >= 0 && pagerState.currentPage != extraIdx) {
+                pagerState.animateScrollToPage(extraIdx)
+            }
         }
     }
 
@@ -932,6 +947,7 @@ private fun UnifiedRemoteBody(
                         target = target,
                         caps = caps,
                         shareUrl = shareUrl,
+                        tvKeyboard = tvKeyboard,
                         onTyped = onTyped,
                         onKey = onKey,
                         onOpenCaster = onOpenCaster,
@@ -1409,6 +1425,7 @@ private fun ExtraUpperPage(
     target: RemoteTarget?,
     caps: RemoteCapabilities,
     shareUrl: String?,
+    tvKeyboard: TvRemote.KeyboardInputState = TvRemote.KeyboardInputState(),
     onTyped: (String, String) -> Unit,
     onKey: (Int, Boolean) -> Unit,
     onOpenCaster: (String) -> Unit,
@@ -1467,9 +1484,26 @@ private fun ExtraUpperPage(
             }
             target is RemoteTarget.Tv -> {
                 val fullRemote = target.link != TvRemote.Link.FireTv
+                val keyboardController = LocalSoftwareKeyboardController.current
+                val focusRequester = remember { FocusRequester() }
                 // Key on the connected host so the box clears when a different TV is connected,
                 // avoiding a state-desync where the phone thinks the TV has old text it no longer has.
                 var typed by rememberSaveable(target.host) { mutableStateOf("") }
+                var wasTvFocused by remember { mutableStateOf(false) }
+
+                LaunchedEffect(tvKeyboard.focused, tvKeyboard.seq) {
+                    if (tvKeyboard.focused) {
+                        wasTvFocused = true
+                        typed = ""
+                        delay(150)
+                        runCatching { focusRequester.requestFocus() }
+                        keyboardController?.show()
+                    } else if (wasTvFocused) {
+                        wasTvFocused = false
+                        typed = ""
+                    }
+                }
+
                 Column(
                     modifier = Modifier.fillMaxSize().padding(12.dp),
                     verticalArrangement = Arrangement.SpaceBetween,
@@ -1482,16 +1516,22 @@ private fun ExtraUpperPage(
                         },
                         placeholder = { Text("Type text for TV…") },
                         singleLine = true,
+                        visualTransformation = if (tvKeyboard.focused && tvKeyboard.isPassword) {
+                            PasswordVisualTransformation()
+                        } else {
+                            VisualTransformation.None
+                        },
                         keyboardOptions = KeyboardOptions(
                             capitalization = KeyboardCapitalization.None,
                             autoCorrectEnabled = false,
+                            keyboardType = if (tvKeyboard.focused && tvKeyboard.isPassword) KeyboardType.Password else KeyboardType.Text,
                             imeAction = if (fullRemote) ImeAction.Send else ImeAction.Done,
                         ),
                         keyboardActions = KeyboardActions(onSend = {
                             onKey(TvKey.ENTER, false)
                             typed = ""
                         }),
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                         if (fullRemote) {

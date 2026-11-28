@@ -19,3 +19,4 @@ local.properties
 key
 gradlew
 keystore.properties
+*.log

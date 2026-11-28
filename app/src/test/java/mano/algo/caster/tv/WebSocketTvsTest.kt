@@ -444,10 +444,9 @@ class WebSocketTvsTest {
             peer.send("""{"type":"registered","id":"register_0","payload":{"client-key":"abc123"}}""")
             assertEquals(LgTvCommands.request(0, LgTvCommands.INPUT_SOCKET), peer.read())
             peer.send("""{"type":"response","id":0,"payload":{"returnValue":true,"socketPath":"ws:\/\/192.168.0.9:${input.port}\/resources\/x\/netinput.pointer.sock"}}""")
-            // typed("ab", "ac"): one letter deleted, one typed
-            assertEquals(LgTvCommands.request(1, "com.webos.service.ime/deleteCharacters", """{"count":1}"""), peer.read())
-            assertEquals(LgTvCommands.request(2, "com.webos.service.ime/insertText", """{"text":"c","replace":0}"""), peer.read())
-            assertEquals(LgTvCommands.request(3, "system.launcher/open", """{"target":"http://x/"}"""), peer.read())
+            // typed("ab", "ac"): the field is replaced with the whole new text in one request
+            assertEquals(LgTvCommands.request(1, "com.webos.service.ime/insertText", """{"text":"ac","replace":1}"""), peer.read())
+            assertEquals(LgTvCommands.request(2, "system.launcher/open", """{"target":"http://x/"}"""), peer.read())
         }
         val opened = LgTvLink.open("127.0.0.1", null, null, plain(main.port), {}, {})
         try {
