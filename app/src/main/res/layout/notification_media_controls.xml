@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="44dp"
+    android:gravity="center_vertical"
+    android:orientation="horizontal">
+
+    <TextView
+        android:id="@+id/notif_app_name"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:paddingEnd="10dp"
+        android:singleLine="true"
+        android:text="@string/app_name"
+        android:textColor="@color/notif_title"
+        android:textSize="15sp"
+        android:textStyle="bold" />
+
+    <!-- Stop sharing / casting (shown in expanded view) -->
+    <ImageView
+        android:id="@+id/notif_btn_stop"
+        android:layout_width="0dp"
+        android:layout_height="40dp"
+        android:layout_weight="1"
+        android:contentDescription="Stop"
+        android:padding="9dp"
+        android:src="@drawable/ic_notif_stop" />
+
+    <!-- Video: Rewind (<<) -->
+    <ImageView
+        android:id="@+id/notif_btn_rew"
+        android:layout_width="0dp"
+        android:layout_height="40dp"
+        android:layout_weight="1"
+        android:contentDescription="Rewind"
+        android:padding="8dp"
+        android:src="@drawable/ic_notif_rew" />
+
+    <!-- Image: Previous (<) -->
+    <ImageView
+        android:id="@+id/notif_btn_prev"
+        android:layout_width="0dp"
+        android:layout_height="40dp"
+        android:layout_weight="1"
+        android:contentDescription="Previous"
+        android:padding="8dp"
+        android:src="@drawable/ic_notif_prev_arrow" />
+
+    <!-- Video & Music: Play / Pause -->
+    <ImageView
+        android:id="@+id/notif_btn_play_pause"
+        android:layout_width="0dp"
+        android:layout_height="40dp"
+        android:layout_weight="1"
+        android:contentDescription="Play or pause"
+        android:padding="7dp"
+        android:src="@drawable/ic_notif_pause" />
+
+    <!-- Video: Fast-Forward (>>) -->
+    <ImageView
+        android:id="@+id/notif_btn_ff"
+        android:layout_width="0dp"
+        android:layout_height="40dp"
+        android:layout_weight="1"
+        android:contentDescription="Fast forward"
+        android:padding="8dp"
+        android:src="@drawable/ic_notif_ff" />
+
+    <!-- Video: Mute / Unmute -->
+    <ImageView
+        android:id="@+id/notif_btn_mute"
+        android:layout_width="0dp"
+        android:layout_height="40dp"
+        android:layout_weight="1"
+        android:contentDescription="Mute"
+        android:padding="8dp"
+        android:src="@drawable/ic_notif_volume_up" />
+
+    <!-- Music: Next (>|) -->
+    <ImageView
+        android:id="@+id/notif_btn_next_music"
+        android:layout_width="0dp"
+        android:layout_height="40dp"
+        android:layout_weight="1"
+        android:contentDescription="Next track"
+        android:padding="8dp"
+        android:src="@drawable/ic_notif_next" />
+
+    <!-- Image: Next (>) -->
+    <ImageView
+        android:id="@+id/notif_btn_next_image"
+        android:layout_width="0dp"
+        android:layout_height="40dp"
+        android:layout_weight="1"
+        android:contentDescription="Next"
+        android:padding="8dp"
+        android:src="@drawable/ic_notif_next_arrow" />
+</LinearLayout>

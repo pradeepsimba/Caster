@@ -8,6 +8,9 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.media.MediaMetadata
+import android.media.session.MediaSession
+import android.media.session.PlaybackState
 import android.view.View
 import android.widget.RemoteViews
 import android.net.ConnectivityManager
@@ -105,6 +108,7 @@ class MediaServerService : Service() {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var watchdog: kotlinx.coroutines.Job? = null
     private var lastNotificationText = "Starting video sharing…"
+    private var mediaSession: MediaSession? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -218,6 +222,7 @@ class MediaServerService : Service() {
         PairingManager.reset()
         CastController.stop()   // the Chromecast's access just ended with the server, so end its session too
         RemoteControl.clear()
+        releaseMediaSession()
         mdns?.stop()
         mdns = null
         upnp?.stop()
@@ -493,7 +498,18 @@ class MediaServerService : Service() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "Media server", NotificationManager.IMPORTANCE_LOW),
+            NotificationChannel(CHANNEL_ID, "Media server", NotificationManager.IMPORTANCE_LOW).apply {
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            },
+        )
+        // Silent default-importance channel so active media controls appear on the lock screen without alerting.
+        manager.createNotificationChannel(
+            NotificationChannel(MEDIA_CHANNEL_ID, "Media playback controls", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                setSound(null, null)
+                enableVibration(false)
+                setShowBadge(true)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            },
         )
         // High importance so a connection request pops up even while the screen is off or another app is open.
         manager.createNotificationChannel(
@@ -557,6 +573,7 @@ class MediaServerService : Service() {
         val stop = serviceAction(1, ACTION_STOP)
         val media = activeMediaTarget(CastController.state.value, RemoteControl.all.value)
         if (media == null) {
+            releaseMediaSession()
             return NotificationCompat.Builder(this, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_tile)
                 .setContentTitle(title)
@@ -564,37 +581,42 @@ class MediaServerService : Service() {
                 .setContentIntent(openApp)
                 .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stop)
                 .setCategory(NotificationCompat.CATEGORY_SERVICE)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .build()
         }
 
-        val compact = buildMediaRemoteViews(R.layout.notification_media_compact, media, ::serviceAction, includeStop = false)
-        val expanded = buildMediaRemoteViews(R.layout.notification_media, media, ::serviceAction, includeStop = true)
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val session = updateMediaSession(media)
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, MEDIA_CHANNEL_ID)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(this)
+        }
+        val compact = buildMediaRemoteViews(media, ::serviceAction, includeStop = false)
+        val expanded = buildMediaRemoteViews(media, ::serviceAction, includeStop = true)
+        builder
             .setSmallIcon(R.drawable.ic_tile)
-            .setContentTitle(media.title)
-            .setContentText(media.subtitle)
             .setContentIntent(openApp)
-            .setStyle(NotificationCompat.DecoratedCustomViewStyle())
             .setCustomContentView(compact)
             .setCustomBigContentView(expanded)
-            .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
+            .setCategory(Notification.CATEGORY_TRANSPORT)
+            .setVisibility(Notification.VISIBILITY_PUBLIC)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
-            .build()
+
+        builder.style = Notification.DecoratedMediaCustomViewStyle()
+            .setMediaSession(session.sessionToken)
+        return builder.build()
     }
 
     private fun buildMediaRemoteViews(
-        layoutId: Int,
         media: MediaNotificationTarget,
         actionIntent: (Int, String) -> PendingIntent,
         includeStop: Boolean,
     ): RemoteViews {
-        val views = RemoteViews(packageName, layoutId)
-        views.setTextViewText(R.id.notif_title, media.title)
-        views.setTextViewText(R.id.notif_subtitle, media.subtitle)
-
+        val views = RemoteViews(packageName, R.layout.notification_media_controls)
         val isVideo = media.kind == "v"
         val isMusic = media.kind == "a"
         val isImage = media.kind == "i"
@@ -606,6 +628,7 @@ class MediaServerService : Service() {
         views.setViewVisibility(R.id.notif_btn_next_music, if (isMusic) View.VISIBLE else View.GONE)
         views.setViewVisibility(R.id.notif_btn_prev, if (isImage) View.VISIBLE else View.GONE)
         views.setViewVisibility(R.id.notif_btn_next_image, if (isImage) View.VISIBLE else View.GONE)
+        views.setViewVisibility(R.id.notif_btn_stop, if (includeStop) View.VISIBLE else View.GONE)
 
         views.setImageViewResource(
             R.id.notif_btn_play_pause,
@@ -629,9 +652,72 @@ class MediaServerService : Service() {
         return views
     }
 
+    private fun updateMediaSession(media: MediaNotificationTarget): MediaSession {
+        val session = mediaSession ?: MediaSession(this, TAG).also { created ->
+            created.setCallback(
+                object : MediaSession.Callback() {
+                    override fun onPlay() = handleMediaAction(ACTION_PLAY_PAUSE)
+                    override fun onPause() = handleMediaAction(ACTION_PLAY_PAUSE)
+                    override fun onRewind() = handleMediaAction(ACTION_SEEK_BACK)
+                    override fun onFastForward() = handleMediaAction(ACTION_SEEK_FORWARD)
+                    override fun onSkipToNext() = handleMediaAction(ACTION_NEXT)
+                    override fun onSkipToPrevious() = handleMediaAction(ACTION_PREV)
+                    override fun onStop() = stopSelf()
+                    override fun onCustomAction(action: String, extras: android.os.Bundle?) {
+                        handleMediaAction(action)
+                    }
+                },
+            )
+            created.isActive = true
+            mediaSession = created
+        }
+
+        session.setMetadata(
+            MediaMetadata.Builder()
+                .putString(MediaMetadata.METADATA_KEY_TITLE, "")
+                .putString(MediaMetadata.METADATA_KEY_ARTIST, "")
+                .build(),
+        )
+
+        val actions = when (media.kind) {
+            "a" -> PlaybackState.ACTION_PLAY_PAUSE or PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or
+                PlaybackState.ACTION_SKIP_TO_NEXT or PlaybackState.ACTION_STOP
+            "i" -> PlaybackState.ACTION_SKIP_TO_PREVIOUS or PlaybackState.ACTION_SKIP_TO_NEXT or PlaybackState.ACTION_STOP
+            else -> PlaybackState.ACTION_PLAY_PAUSE or PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or
+                PlaybackState.ACTION_REWIND or PlaybackState.ACTION_FAST_FORWARD or PlaybackState.ACTION_STOP
+        }
+        val stateBuilder = PlaybackState.Builder()
+            .setState(
+                if (media.playing) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED,
+                PlaybackState.PLAYBACK_POSITION_UNKNOWN,
+                if (media.playing) 1.0f else 0.0f,
+            )
+            .setActions(actions)
+        if (media.kind == "v") {
+            stateBuilder.addCustomAction(
+                PlaybackState.CustomAction.Builder(
+                    ACTION_MUTE,
+                    if (media.muted) "Unmute" else "Mute",
+                    if (media.muted) R.drawable.ic_notif_volume_off else R.drawable.ic_notif_volume_up,
+                ).build(),
+            )
+        }
+        session.setPlaybackState(stateBuilder.build())
+        return session
+    }
+
+    private fun releaseMediaSession() {
+        mediaSession?.run {
+            isActive = false
+            release()
+        }
+        mediaSession = null
+    }
+
     companion object {
         private const val TAG = "MediaServerService"
         private const val CHANNEL_ID = "media_server"
+        private const val MEDIA_CHANNEL_ID = "media_controls"
         private const val NOTIFICATION_ID = 1001
         private const val PAIRING_CHANNEL_ID = "pairing"
         private const val PAIRING_NOTIFICATION_ID = 1002

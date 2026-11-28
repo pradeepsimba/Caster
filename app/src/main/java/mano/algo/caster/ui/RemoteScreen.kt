@@ -2542,6 +2542,7 @@ private fun RemoteBottomBar(
                 )
             }
             is RemoteTarget.Cast -> {
+                val streaming = target.state.playing || target.state.title != null
                 BottomPillButton(
                     label = "Previous",
                     onClick = { CastController.prev() },
@@ -2553,8 +2554,14 @@ private fun RemoteBottomBar(
                     label = "Stop",
                     onClick = { CastController.stop() },
                     modifier = Modifier.weight(1f),
+                    containerColor = if (streaming) RemotePowerRed.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceContainerHigh,
                 ) {
-                    Icon(StopSquareIcon, contentDescription = "Stop", modifier = Modifier.size(22.dp))
+                    Icon(
+                        StopSquareIcon,
+                        contentDescription = "Stop",
+                        tint = if (streaming) RemotePowerRed else LocalContentColor.current,
+                        modifier = Modifier.size(22.dp),
+                    )
                 }
                 BottomPillButton(
                     label = "Next",
@@ -2943,6 +2950,7 @@ private fun BottomPillButton(
     onClick: () -> Unit,
     onLongPress: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
+    containerColor: Color = MaterialTheme.colorScheme.surfaceContainerHigh,
     content: @Composable () -> Unit,
 ) {
     val haptic = LocalHapticFeedback.current
@@ -2954,7 +2962,7 @@ private fun BottomPillButton(
             .height(48.dp)
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(24.dp))
-            .background(if (pressed) scheme.surfaceContainerHighest else scheme.surfaceContainerHigh)
+            .background(if (pressed) scheme.surfaceContainerHighest else containerColor)
             .semantics {
                 contentDescription = label
                 role = Role.Button
