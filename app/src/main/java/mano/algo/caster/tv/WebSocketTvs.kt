@@ -517,6 +517,7 @@ internal class LgTvLink private constructor(
         request(LgTvCommands.GET_EXTERNAL_INPUTS, "{}")
         request(LgTvCommands.GET_LAUNCH_POINTS, "{}")
         request(LgTvCommands.GET_FOREGROUND_APP, "{}")
+        main.sendText("""{"id":${ids.getAndIncrement()},"type":"subscribe","uri":"ssap://com.webos.service.ime/registerRemoteKeyboard"}""")
     }
 
     internal fun handleMainMessage(message: String) {

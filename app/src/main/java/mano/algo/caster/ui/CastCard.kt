@@ -1,20 +1,32 @@
 package mano.algo.caster.ui
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -22,25 +34,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.mediarouter.app.MediaRouteButton
 import com.google.android.gms.cast.framework.CastButtonFactory
 import mano.algo.caster.cast.CastController
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.ui.draw.clip
 import mano.algo.caster.ui.theme.LiveGreen
-import androidx.compose.runtime.LaunchedEffect
 
 /** The Material "cast" glyph, which the core icon set doesn't include. */
 internal val CastIcon: ImageVector by lazy {
@@ -70,6 +78,8 @@ fun CastCard(onChooseVideo: () -> Unit, modifier: Modifier = Modifier) {
     val cast by CastController.state.collectAsStateWithLifecycle()
     val recent by CastController.recent.collectAsStateWithLifecycle()
     val nearby by CastController.nearby.collectAsStateWithLifecycle()
+    val directDevices by CastController.directDevices.collectAsStateWithLifecycle()
+    val scanningDirect by CastController.scanningDirect.collectAsStateWithLifecycle()
     // Looking for Chromecasts only costs battery while this card is on screen.
     DisposableEffect(cast.available) {
         if (cast.available) CastController.startDiscovery(context)
@@ -78,9 +88,21 @@ fun CastCard(onChooseVideo: () -> Unit, modifier: Modifier = Modifier) {
 
     // Google's chooser dialog is opened by clicking its own (invisible) button; the visible controls are ours.
     var routeButton by remember { mutableStateOf<MediaRouteButton?>(null) }
+    var showDirectChooser by remember { mutableStateOf(false) }
+    var showDeviceActions by remember { mutableStateOf(false) }
+
+    fun openChooser() {
+        if (CastController.hasGmsRoutes()) {
+            routeButton?.performClick()
+        } else {
+            showDirectChooser = true
+            if (directDevices.isEmpty()) CastController.scanDirect(context)
+        }
+    }
 
     // Asked for from elsewhere (a video was tapped while no Chromecast is connected): open the chooser.
-    LaunchedEffect(Unit) { CastController.chooserRequests.collect { routeButton?.performClick() } }
+    LaunchedEffect(Unit) { CastController.chooserRequests.collect { openChooser() } }
+    LaunchedEffect(cast.device) { if (cast.device == null) showDeviceActions = false }
 
     // A Box, so the invisible button adds no spacing to the Home column.
     Box(modifier = modifier.fillMaxWidth()) {
@@ -98,65 +120,199 @@ fun CastCard(onChooseVideo: () -> Unit, modifier: Modifier = Modifier) {
         }
 
         CasterCard(modifier = Modifier.fillMaxWidth(), high = true) {
-            Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Icon(CastIcon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                    Text("Chromecast", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            val scheme = MaterialTheme.colorScheme
+            val recentIds = recent.map { it.id }.toSet()
+            val extraDirect = directDevices.filter { it.id != cast.deviceId && it.id !in recentIds }
+            val hasAnyDevice = cast.device != null || recent.isNotEmpty() || extraDirect.isNotEmpty()
+
+            Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(scheme.primary.copy(alpha = 0.14f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(CastIcon, contentDescription = null, tint = scheme.primary, modifier = Modifier.size(20.dp))
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Chromecast", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        if (cast.device == null && !hasAnyDevice) {
+                            Text(
+                                if (scanningDirect) "Searching this network…" else "Cast to a TV on the same Wi-Fi",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = scheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    if (hasAnyDevice) {
+                        TextButton(onClick = { openChooser() }) { Text("Switch") }
+                    }
                 }
                 if (!cast.available) {
                     Text(
                         "Chromecast needs Google Play services, which this phone doesn't have.",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = scheme.onSurfaceVariant,
                     )
                     return@Column
                 }
 
-                // The connected one first, then the ones used before.
-                if (cast.device != null) DeviceRow(cast.device ?: "Chromecast", "Connected", DeviceDot.Connected, onClick = null)
+                // Connected device card: tap it to choose media, play/pause, or stop.
+                if (cast.device != null) {
+                    val subtitle = when {
+                        cast.title != null -> (if (cast.playing) "Playing · " else "Paused · ") + cast.title
+                        else -> "Tap to choose video or stop"
+                    }
+                    ConnectedCastRow(
+                        name = cast.device ?: "Chromecast",
+                        subtitle = subtitle,
+                        onClick = { showDeviceActions = true },
+                    )
+                }
                 recent.filter { it.id != cast.deviceId }.forEach { device ->
                     val here = device.id in nearby
-                    DeviceRow(device.name, if (here) "Nearby" else "Not found", if (here) DeviceDot.Nearby else DeviceDot.Away) {
+                    DeviceRow(device.name, if (here) "Nearby" else "Offline", if (here) DeviceDot.Nearby else DeviceDot.Away) {
                         CastController.connectTo(device)
                     }
                 }
-                if (cast.device == null && recent.isEmpty()) {
-                    Text(
-                        "Play a video from this phone on a Chromecast on the same Wi-Fi.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                extraDirect.forEach { device ->
+                    DeviceRow(device.name, "Nearby", DeviceDot.Nearby) {
+                        CastController.connectDirect(context, device)
+                    }
                 }
-                cast.error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+                cast.error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = scheme.error) }
 
-                if (cast.device != null) {
-                    cast.title?.let {
-                        Text(
-                            (if (cast.playing) "Playing " else "") + it,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Button(onClick = onChooseVideo, shape = RoundedCornerShape(14.dp)) { Text("Choose video") }
-                        if (cast.title != null && cast.error == null) {
-                            OutlinedButton(onClick = CastController::togglePlayback, shape = RoundedCornerShape(14.dp)) {
-                                Text(if (cast.playing) "Pause" else "Play")
-                            }
-                        }
-                        TextButton(onClick = CastController::stop) { Text("Stop") }
-                    }
-                }
-                if (cast.device == null && recent.isEmpty()) {
-                    Button(
-                        onClick = { routeButton?.performClick() },
+                if (!hasAnyDevice) {
+                    FilledTonalButton(
+                        onClick = { openChooser() },
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(14.dp),
                     ) { Text("Choose Chromecast") }
-                } else {
-                    TextButton(onClick = { routeButton?.performClick() }) { Text("Find another Chromecast") }
                 }
             }
+        }
+    }
+
+    if (showDeviceActions && cast.device != null) {
+        val mediaLoaded = CastController.hasLoadedMedia()
+        AlertDialog(
+            onDismissRequest = { showDeviceActions = false },
+            title = { Text(cast.device ?: "Chromecast", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    cast.title?.let {
+                        Text(
+                            (if (cast.playing) "Playing: " else if (mediaLoaded) "Paused: " else "Stopped on TV: ") + it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    if (cast.title == null) {
+                        Button(
+                            onClick = {
+                                showDeviceActions = false
+                                onChooseVideo()
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp),
+                        ) { Text("Choose video") }
+                    }
+                    if (cast.title != null && cast.error == null) {
+                        Button(
+                            onClick = {
+                                showDeviceActions = false
+                                CastController.togglePlayback()
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(14.dp),
+                        ) { Text(if (!mediaLoaded) "Connect" else if (cast.playing) "Pause" else "Play") }
+                    }
+                    FilledTonalButton(
+                        onClick = {
+                            showDeviceActions = false
+                            CastController.stop()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                    ) {
+                        Text("Disconnect", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDeviceActions = false }) { Text("Cancel") }
+            },
+        )
+    }
+
+    if (showDirectChooser) {
+        AlertDialog(
+            onDismissRequest = { showDirectChooser = false },
+            title = { Text("Choose Chromecast") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (scanningDirect && directDevices.isEmpty()) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(12.dp))
+                            Text("Searching on this network…", style = MaterialTheme.typography.bodyMedium)
+                        }
+                    } else if (directDevices.isEmpty()) {
+                        Text(
+                            "No Chromecasts found on this network. Make sure the TV is on and connected to the same Wi-Fi or hotspot.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        directDevices.forEach { device ->
+                            DeviceRow(device.name, "Nearby", DeviceDot.Nearby) {
+                                showDirectChooser = false
+                                CastController.connectDirect(context, device)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { CastController.scanDirect(context) },
+                    enabled = !scanningDirect,
+                ) { Text(if (scanningDirect) "Scanning…" else "Scan again") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDirectChooser = false }) { Text("Close") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun ConnectedCastRow(name: String, subtitle: String, onClick: () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(16.dp),
+        color = scheme.primary.copy(alpha = 0.12f),
+        border = BorderStroke(1.dp, LiveGreen.copy(alpha = 0.45f)),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Box(modifier = Modifier.size(10.dp).background(LiveGreen, CircleShape))
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Text("Connected", style = MaterialTheme.typography.labelMedium, color = LiveGreen, fontWeight = FontWeight.SemiBold)
         }
     }
 }
@@ -183,7 +339,7 @@ private fun DeviceRow(name: String, status: String, dot: DeviceDot, onClick: (()
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Box(modifier = Modifier.size(10.dp).background(color, CircleShape))
-        Text(name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f), maxLines = 1)
+        Text(name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
         Text(status, style = MaterialTheme.typography.labelMedium, color = if (dot == DeviceDot.Away) scheme.onSurfaceVariant else color)
     }
 }

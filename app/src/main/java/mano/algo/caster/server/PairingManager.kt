@@ -37,7 +37,13 @@ data class KnownDevice(
     val lastConnected: Long,
     /** The only videos this screen may see (null: all that are shared). Kept with the screen, so it applies again after re-approval. */
     val limit: Set<Long>? = null,
-)
+    /** The only photos this screen may see (null: none when limited, or all shared when unlimited). */
+    val photoLimit: Set<Long>? = null,
+    /** The only music tracks this screen may see (null: none when limited, or all shared when unlimited). */
+    val musicLimit: Set<Long>? = null,
+) {
+    fun hasAnyLimit(): Boolean = limit != null || photoLimit != null || musicLimit != null
+}
 
 sealed interface RequestResult {
     data class Created(val request: PairRequest, val ttlMs: Long) : RequestResult
@@ -77,9 +83,12 @@ object PairingManager {
         val clientId: String,
         val expiresAt: Long = 0L,
         @Volatile var limit: Set<Long>? = null,
+        @Volatile var photoLimit: Set<Long>? = null,
+        @Volatile var musicLimit: Set<Long>? = null,
     ) {
         @Volatile var lastSeen: Long = pairedAt
         @Volatile var published: Long = pairedAt
+        fun hasAnyLimit(): Boolean = limit != null || photoLimit != null || musicLimit != null
     }
 
     /** token -> client; the hot path (every video chunk) is a single lock-free lookup. */
@@ -107,10 +116,15 @@ object PairingManager {
         historyContext = context.applicationContext
         _known.value = context.applicationContext.getSharedPreferences(HISTORY_PREFS, android.content.Context.MODE_PRIVATE)
             .getString(HISTORY_KEY, "").orEmpty().lines().mapNotNull { line ->
-                val parts = line.split('\t', limit = 4)
+                val parts = line.split('\t', limit = 6)
                 val time = parts.getOrNull(0)?.toLongOrNull() ?: return@mapNotNull null
                 when {
-                    parts.size == 4 && parts[2].isNotBlank() -> KnownDevice(parts[1], parts[2], time, parseLimit(parts[3]))
+                    parts.size >= 4 && parts[2].isNotBlank() -> KnownDevice(
+                        parts[1], parts[2], time,
+                        limit = parseLimit(parts[3]),
+                        photoLimit = parts.getOrNull(4)?.let(::parseLimit),
+                        musicLimit = parts.getOrNull(5)?.let(::parseLimit),
+                    )
                     parts.size == 3 && parts[2].isNotBlank() -> KnownDevice(parts[1], parts[2], time)
                     // The older format had no id: the name stood in for it.
                     parts.size == 2 && parts[1].isNotBlank() -> KnownDevice("label:" + parts[1], parts[1], time)
@@ -135,13 +149,22 @@ object PairingManager {
     private fun saveKnown(list: List<KnownDevice>) {
         _known.value = list
         historyContext?.getSharedPreferences(HISTORY_PREFS, android.content.Context.MODE_PRIVATE)?.edit()
-            ?.putString(HISTORY_KEY, list.joinToString("\n") { it.lastConnected.toString() + "\t" + it.clientId + "\t" + it.label + "\t" + formatLimit(it.limit) })?.apply()
+            ?.putString(HISTORY_KEY, list.joinToString("\n") {
+                listOf(
+                    it.lastConnected.toString(),
+                    it.clientId,
+                    it.label,
+                    formatLimit(it.limit),
+                    formatLimit(it.photoLimit),
+                    formatLimit(it.musicLimit),
+                ).joinToString("\t")
+            })?.apply()
     }
 
     /** Keeps the newest screens, but a screen that has a limit is never dropped to make room: its limit would be lost with it. */
     internal fun trimKnown(list: List<KnownDevice>): List<KnownDevice> {
         var plain = 0
-        return list.filter { it.limit != null || ++plain <= HISTORY_MAX }
+        return list.filter { it.hasAnyLimit() || ++plain <= HISTORY_MAX }
     }
 
     @Synchronized
@@ -149,7 +172,7 @@ object PairingManager {
 
     /** What "Clear list" does: forgets the screens, except those with a limit (forgetting them would lift the limit). */
     @Synchronized
-    fun clearUnlimited() = saveKnown(_known.value.filter { it.limit != null })
+    fun clearUnlimited() = saveKnown(_known.value.filter { it.hasAnyLimit() })
 
     private val _devices = MutableStateFlow<List<PairedDevice>>(emptyList())
 
@@ -223,16 +246,20 @@ object PairingManager {
         // What this screen was limited to before is still its limit; a time limit counts from now.
         // A screen that comes back with a new id (its browser data was cleared) but the same name as a limited screen is limited
         // too: the id is chosen by the screen itself, so it can't be what keeps a limit in place. The owner can lift it on the row.
-        val limit = _known.value.firstOrNull { it.clientId == cid }?.limit
+        val knownMatch = _known.value.firstOrNull { it.clientId == cid }
             ?: if (_known.value.none { it.clientId == cid }) {
                 // (Only from a screen that is not connected now: one that is connected is another device with the same name.)
-                _known.value.firstOrNull { k -> k.limit != null && k.label == label && clients.values.none { it.clientId == k.clientId } }?.limit
+                _known.value.firstOrNull { k -> k.hasAnyLimit() && k.label == label && clients.values.none { it.clientId == k.clientId } }
             } else null
+        val limit = knownMatch?.limit
+        val photoLimit = knownMatch?.photoLimit
+        val musicLimit = knownMatch?.musicLimit
         clients[token] = Client(
             id = randomHex(4), label = request.label, pairedAt = now, clientId = cid,
-            expiresAt = if (durationMs > 0) now + durationMs else 0L, limit = limit,
+            expiresAt = if (durationMs > 0) now + durationMs else 0L,
+            limit = limit, photoLimit = photoLimit, musicLimit = musicLimit,
         )
-        saveKnown(trimKnown(listOf(KnownDevice(cid, label, now, limit)) + _known.value.filter { it.clientId != cid }))
+        saveKnown(trimKnown(listOf(KnownDevice(cid, label, now, limit, photoLimit, musicLimit)) + _known.value.filter { it.clientId != cid }))
         outcomes[request.id] = PairStatus.Approved(token)
         _pending.value = null
         publishDevices()
@@ -302,7 +329,7 @@ object PairingManager {
         return client.id to client.label
     }
 
-    /** Limits [clientId] to [ids] (null removes the limit), for the screen as it is now and for when it is approved again. */
+    /** Limits [clientId] to video [ids] (null removes the video limit), for the screen as it is now and for when it is approved again. */
     @Synchronized
     fun setLimit(clientId: String, ids: Set<Long>?) {
         saveKnown(_known.value.map { if (it.clientId == clientId) it.copy(limit = ids) else it })
@@ -310,18 +337,72 @@ object PairingManager {
         publishDevices()
     }
 
+    /** Limits [clientId] to photo [ids] (null removes the photo limit). */
+    @Synchronized
+    fun setPhotoLimit(clientId: String, ids: Set<Long>?) {
+        saveKnown(_known.value.map { if (it.clientId == clientId) it.copy(photoLimit = ids) else it })
+        clients.values.filter { it.clientId == clientId }.forEach { it.photoLimit = ids }
+        publishDevices()
+    }
+
+    /** Limits [clientId] to music [ids] (null removes the music limit). */
+    @Synchronized
+    fun setMusicLimit(clientId: String, ids: Set<Long>?) {
+        saveKnown(_known.value.map { if (it.clientId == clientId) it.copy(musicLimit = ids) else it })
+        clients.values.filter { it.clientId == clientId }.forEach { it.musicLimit = ids }
+        publishDevices()
+    }
+
+    /** Removes all video, photo, and music limits for [clientId]. */
+    @Synchronized
+    fun clearLimit(clientId: String) {
+        saveKnown(_known.value.map { if (it.clientId == clientId) it.copy(limit = null, photoLimit = null, musicLimit = null) else it })
+        clients.values.filter { it.clientId == clientId }.forEach {
+            it.limit = null
+            it.photoLimit = null
+            it.musicLimit = null
+        }
+        publishDevices()
+    }
+
     fun limitOf(clientId: String): Set<Long>? = _known.value.firstOrNull { it.clientId == clientId }?.limit
+
+    /** True when the connected screen [deviceId] is allowed to see video [videoId] under its "Limit" settings. */
+    fun isVideoAllowedForDevice(deviceId: String, videoId: Long): Boolean {
+        val client = clients.values.firstOrNull { it.id == deviceId } ?: return false
+        if (!client.hasAnyLimit()) return false
+        val limit = client.limit ?: return false
+        return videoId in limit
+    }
 
     /** True when [token] belongs to a local in-app player (such as Chromecast). */
     fun isLocal(token: String?): Boolean = (if (token == null) null else clients[token])?.clientId?.startsWith("local:") == true
 
-    /** True when the screen behind [token] has been limited to some videos. */
-    fun isLimited(token: String?): Boolean = (if (token == null) null else clients[token])?.limit != null
+    /** True when the screen behind [token] has any media limit (videos, photos, or music). */
+    fun isLimited(token: String?): Boolean = (if (token == null) null else clients[token])?.hasAnyLimit() == true
+
+    fun hasVideoLimit(token: String?): Boolean = (if (token == null) null else clients[token])?.limit != null
+
+    fun hasPhotoLimit(token: String?): Boolean = (if (token == null) null else clients[token])?.photoLimit != null
+
+    fun hasMusicLimit(token: String?): Boolean = (if (token == null) null else clients[token])?.musicLimit != null
 
     /** True when the screen behind [token] may see video [id] (the owner's own choice of shared videos is checked separately). */
     fun allows(token: String?, id: Long): Boolean {
         val client = (if (token == null) null else clients[token]) ?: return false
         val limit = client.limit
+        return limit == null || id in limit
+    }
+
+    fun allowsPhoto(token: String?, id: Long): Boolean {
+        val client = (if (token == null) null else clients[token]) ?: return false
+        val limit = client.photoLimit
+        return limit == null || id in limit
+    }
+
+    fun allowsMusic(token: String?, id: Long): Boolean {
+        val client = (if (token == null) null else clients[token]) ?: return false
+        val limit = client.musicLimit
         return limit == null || id in limit
     }
 
@@ -345,7 +426,7 @@ object PairingManager {
 
     private fun publishDevices() {
         _devices.value = clients.values
-            .map { PairedDevice(it.id, it.label, it.pairedAt, it.lastSeen, it.clientId, it.expiresAt, it.limit != null) }
+            .map { PairedDevice(it.id, it.label, it.pairedAt, it.lastSeen, it.clientId, it.expiresAt, it.hasAnyLimit()) }
             .sortedByDescending { it.pairedAt }
     }
 

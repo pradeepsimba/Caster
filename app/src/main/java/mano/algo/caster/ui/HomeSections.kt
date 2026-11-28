@@ -113,10 +113,13 @@ fun YourScreensSection(
             // Two screens with the same name get a short ending from their id, so they can be told apart.
             val twins = entries.count { it.label == entry.label } > 1
             val name = if (twins) entry.label + " · " + entry.clientId.takeLast(4) else entry.label
-            ScreenRow(name, live, entry.lastConnected, entry.limit, now, onTap, { onLimit(entry) }) { live.forEach { onDisconnect(it.id) } }
+            val limitedCount = if (entry.hasAnyLimit()) {
+                (entry.limit?.size ?: 0) + (entry.photoLimit?.size ?: 0) + (entry.musicLimit?.size ?: 0)
+            } else null
+            ScreenRow(name, live, entry.lastConnected, limitedCount, now, onTap, { onLimit(entry) }) { live.forEach { onDisconnect(it.id) } }
         }
         // (A screen with a limit stays in the list, so there is nothing to clear when only those are left.)
-        if (connected.isEmpty() && known.any { it.limit == null }) {
+        if (connected.isEmpty() && known.any { !it.hasAnyLimit() }) {
             TextButton(onClick = onClear) { Text("Clear list") }
         }
     }
@@ -136,7 +139,7 @@ private fun ScreenRow(
     label: String,
     live: List<PairedDevice>,
     last: Long?,
-    limit: Set<Long>?,
+    limitedCount: Int?,
     now: Long,
     onTap: () -> Unit,
     onLimit: () -> Unit,
@@ -191,7 +194,7 @@ private fun ScreenRow(
             }
             Column(horizontalAlignment = Alignment.End) {
                 if (live.isNotEmpty()) TextButton(onClick = onDisconnect) { Text("Disconnect") }
-                TextButton(onClick = onLimit) { Text(if (limit == null) "Limit" else "Limited · ${limit.size}") }
+                TextButton(onClick = onLimit) { Text(if (limitedCount == null) "Limit" else "Limited · $limitedCount") }
             }
         }
     }

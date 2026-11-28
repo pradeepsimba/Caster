@@ -1,0 +1,159 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingTop="2dp"
+    android:paddingBottom="4dp">
+
+    <TextView
+        android:id="@+id/notif_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textColor="@color/notif_title"
+        android:textSize="14sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/notif_subtitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="1dp"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textColor="@color/notif_subtitle"
+        android:textSize="12sp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <!-- Video: Skip Rewind -10 with << icon -->
+        <LinearLayout
+            android:id="@+id/notif_btn_rew"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:layout_marginEnd="6dp"
+            android:background="@drawable/notif_btn_bg"
+            android:contentDescription="Rewind 10 seconds"
+            android:gravity="center"
+            android:orientation="horizontal"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp">
+
+            <ImageView
+                android:layout_width="18dp"
+                android:layout_height="18dp"
+                android:importantForAccessibility="no"
+                android:src="@drawable/ic_notif_rew" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="3dp"
+                android:text="-10"
+                android:textColor="@color/notif_title"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <!-- Image: Previous (<) -->
+        <ImageView
+            android:id="@+id/notif_btn_prev"
+            android:layout_width="40dp"
+            android:layout_height="36dp"
+            android:layout_marginEnd="6dp"
+            android:background="@drawable/notif_btn_bg"
+            android:contentDescription="Previous"
+            android:padding="8dp"
+            android:src="@drawable/ic_notif_prev_arrow" />
+
+        <!-- Video & Music: Play / Pause -->
+        <ImageView
+            android:id="@+id/notif_btn_play_pause"
+            android:layout_width="44dp"
+            android:layout_height="36dp"
+            android:layout_marginEnd="6dp"
+            android:background="@drawable/notif_btn_bg"
+            android:contentDescription="Play or pause"
+            android:padding="7dp"
+            android:src="@drawable/ic_notif_pause" />
+
+        <!-- Video: Skip Fast-Forward +10 with >> icon -->
+        <LinearLayout
+            android:id="@+id/notif_btn_ff"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:layout_marginEnd="6dp"
+            android:background="@drawable/notif_btn_bg"
+            android:contentDescription="Forward 10 seconds"
+            android:gravity="center"
+            android:orientation="horizontal"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="3dp"
+                android:text="+10"
+                android:textColor="@color/notif_title"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <ImageView
+                android:layout_width="18dp"
+                android:layout_height="18dp"
+                android:importantForAccessibility="no"
+                android:src="@drawable/ic_notif_ff" />
+        </LinearLayout>
+
+        <!-- Video: Mute / Unmute -->
+        <ImageView
+            android:id="@+id/notif_btn_mute"
+            android:layout_width="40dp"
+            android:layout_height="36dp"
+            android:layout_marginEnd="6dp"
+            android:background="@drawable/notif_btn_bg"
+            android:contentDescription="Mute"
+            android:padding="8dp"
+            android:src="@drawable/ic_notif_volume_up" />
+
+        <!-- Music: Next (>|) -->
+        <ImageView
+            android:id="@+id/notif_btn_next_music"
+            android:layout_width="40dp"
+            android:layout_height="36dp"
+            android:layout_marginEnd="6dp"
+            android:background="@drawable/notif_btn_bg"
+            android:contentDescription="Next track"
+            android:padding="8dp"
+            android:src="@drawable/ic_notif_next" />
+
+        <!-- Image: Next (>) -->
+        <ImageView
+            android:id="@+id/notif_btn_next_image"
+            android:layout_width="40dp"
+            android:layout_height="36dp"
+            android:layout_marginEnd="6dp"
+            android:background="@drawable/notif_btn_bg"
+            android:contentDescription="Next"
+            android:padding="8dp"
+            android:src="@drawable/ic_notif_next_arrow" />
+
+        <!-- Stop sharing / casting -->
+        <ImageView
+            android:id="@+id/notif_btn_stop"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:background="@drawable/notif_btn_bg"
+            android:contentDescription="Stop"
+            android:padding="9dp"
+            android:src="@drawable/ic_notif_stop" />
+    </LinearLayout>
+</LinearLayout>

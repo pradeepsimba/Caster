@@ -1208,6 +1208,8 @@
   let queueIndex = -1, queueOpen = false, settingsOpen = false, uiTimer = null, toastTimer = null;
   let resumeAt = 0, lastSave = 0, currentId = null;
   let knownDurationSec = 0;
+  let retryCount = 0, retryTimer = null, silentResume = false;
+  const RETRY_DELAYS_MS = [1500, 3000, 6000, 10000];
 
   const getActualTime = () => video.currentTime || 0;
   const getActualDuration = () => {
@@ -1307,6 +1309,10 @@
   function openVideo(index) {
     const v = playQueue[index];
     if (!v) return;
+    clearTimeout(retryTimer);
+    retryTimer = null;
+    retryCount = 0;
+    silentResume = false;
     queueIndex = index;
     if (queueOpen) renderQueuePanel();
     settingsOpen = false;
@@ -1427,6 +1433,10 @@
     video.load();
     clearTimeout(uiTimer);
     clearTimeout(blackCheck);
+    clearTimeout(retryTimer);
+    retryTimer = null;
+    retryCount = 0;
+    silentResume = false;
     inspectToken++;
     clearSubs();
     $('photo').hidden = true;
@@ -1465,9 +1475,10 @@
     video.playbackRate = SPEEDS[speedIdx];
     if (resumeAt > 0 && resumeAt < video.duration - 15) {
       video.currentTime = resumeAt;
-      toast('Resumed at ' + fmtClock(resumeAt));
+      if (!silentResume) toast('Resumed at ' + fmtClock(resumeAt));
     }
     resumeAt = 0;
+    silentResume = false;
     updateTransport();
   });
   video.addEventListener('timeupdate', () => {
@@ -1475,23 +1486,54 @@
     updateTransport();
     savePosition(false);
   });
-  video.addEventListener('play', () => { updatePlayButton(); acquireWake(); });
-  video.addEventListener('pause', () => { updatePlayButton(); releaseWake(); });
+  video.addEventListener('play', () => { updatePlayButton(); acquireWake(); pushRemoteState(); });
+  video.addEventListener('pause', () => { updatePlayButton(); releaseWake(); pushRemoteState(); });
+  video.addEventListener('seeked', () => { pushRemoteState(); });
+  video.addEventListener('volumechange', () => { pushRemoteState(); });
   video.addEventListener('waiting', () => { $('buffering').hidden = false; });
-  video.addEventListener('playing', () => { $('buffering').hidden = true; showUi(); watchForBlackScreen(); });
+  video.addEventListener('playing', () => {
+    retryCount = 0;
+    $('buffering').hidden = true;
+    $('playerError').hidden = true;
+    showUi();
+    watchForBlackScreen();
+  });
   video.addEventListener('canplay', () => { $('buffering').hidden = true; });
   video.addEventListener('ended', () => {
     savePosition(true);
     if (queueIndex < playQueue.length - 1) openVideo(queueIndex + 1); else closePlayer();
   });
   video.addEventListener('error', () => {
-    $('buffering').hidden = true;
-    if (!video.getAttribute('src')) return;      // cleared on purpose (a photo, or the player closing)
+    if (!video.getAttribute('src')) { $('buffering').hidden = true; return; } // cleared on purpose (a photo, or the player closing)
     // MEDIA_ERR_NETWORK (2): the phone went away or stopped sharing; the format is not the problem.
     const lost = !!(video.error && video.error.code === 2);
+    const v = playQueue[queueIndex];
+    if (lost && remoteFailCount >= 3 && remoteFailSince && Date.now() - remoteFailSince > REMOTE_GONE_MS) {
+      handleRevoked('Sharing stopped on phone.');
+      return;
+    }
+    if (lost && isOpen() && v && retryCount < RETRY_DELAYS_MS.length) {
+      const waitMs = RETRY_DELAYS_MS[retryCount++];
+      const at = getActualTime();
+      if (at > 0) resumeAt = at;
+      silentResume = true;
+      $('buffering').hidden = false;
+      $('playerError').hidden = true;
+      toast('Connection lost, reconnecting…');
+      clearTimeout(retryTimer);
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        if (!isOpen() || playQueue[queueIndex] !== v) return;
+        video.src = mediaUrl(v) + '&r=' + retryCount;
+        video.load();
+        safePlay(video);
+      }, waitMs);
+      return;
+    }
+    $('buffering').hidden = true;
     $('playerError').textContent = lost ? 'The connection to the phone was lost. Go back and open the video again.' : 'This device can\'t play this file.';
     $('playerError').hidden = false;
-    if (!lost && kind === 'v' && playQueue[queueIndex]) showNote('This device can\'t play this video format.', mediaUrl(playQueue[queueIndex]));
+    if (!lost && kind === 'v' && v) showNote('This device can\'t play this video format.', mediaUrl(v));
     showUi();
   });
 
@@ -1587,6 +1629,22 @@
 
   // ---- phone as remote: report what is playing, run what the phone owner pressed -----------------------
   let remoteActive = false, remoteOk = true, remoteAbort = null;
+  let remoteStream = null, remoteStreamOpen = false, remoteFailCount = 0, remoteFailSince = 0, remotePushTimer = null;
+  // The phone counts as gone only after it has failed for a while, so a short Wi-Fi hiccup can still be ridden out by the video's own reconnect attempts.
+  const REMOTE_GONE_MS = 15000;
+  function remoteFailed() {
+    if (!remoteFailSince) remoteFailSince = Date.now();
+    remoteFailCount++;
+    return remoteFailCount >= 3 && Date.now() - remoteFailSince > REMOTE_GONE_MS;
+  }
+  function remoteRecovered() { remoteFailCount = 0; remoteFailSince = 0; }
+  function pushRemoteState() {
+    if (!remoteActive || remotePushTimer) return;
+    remotePushTimer = setTimeout(() => {
+      remotePushTimer = null;
+      if (remoteActive) syncRemote(false, false);
+    }, 60);
+  }
   async function syncRemote(idle, wait = false) {
     if (!current || !token(current) || currentView !== 'videos') { stopRemoteSync(); return false; }
     const v = playQueue[queueIndex];
@@ -1605,29 +1663,67 @@
         handleRevoked('Disconnected by phone.');
         return false;
       }
-      if (!r.ok) return false;
+      if (!r.ok) {
+        if (remoteFailed()) handleRevoked('Sharing stopped on phone.');
+        return false;
+      }
+      remoteRecovered();
       for (const c of (await r.json()).cmds || []) runRemoteCommand(c);
       return true;
-    } catch (_e) {
-      return false; /* the phone is momentarily unreachable or aborted; the next tick tries again */
+    } catch (e) {
+      if (e && e.name === 'AbortError') return false;
+      if (remoteFailed()) handleRevoked('Sharing stopped on phone.');
+      return false; /* the phone is momentarily unreachable; the next tick tries again */
     } finally {
       remoteAbort = null;
     }
   }
+  function openRemoteStream() {
+    if (remoteStream || typeof EventSource === 'undefined' || !current || !token(current)) return;
+    try {
+      const es = new EventSource(base(current) + '/api/remote/stream?t=' + encodeURIComponent(token(current)));
+      es.onopen = () => {
+        remoteStreamOpen = true;
+        if (remoteAbort) { try { remoteAbort.abort(); } catch (_e) {} remoteAbort = null; }
+      };
+      es.onmessage = e => {
+        remoteRecovered();
+        if (e.data) runRemoteCommand(e.data);
+      };
+      es.onerror = () => {
+        remoteStreamOpen = false;
+      };
+      remoteStream = es;
+    } catch (_e) {
+      remoteStreamOpen = false;
+    }
+  }
   async function remoteLoop() {
     while (remoteActive && remoteOk && current && token(current) && currentView === 'videos') {
-      const ok = await syncRemote(false, true);
-      if (!remoteActive) break;
-      await new Promise(res => setTimeout(res, ok ? 30 : 800));
+      if (remoteStreamOpen) {
+        await syncRemote(false, false);
+        if (!remoteActive) break;
+        await new Promise(res => setTimeout(res, 1500));
+      } else {
+        const ok = await syncRemote(false, true);
+        if (!remoteActive) break;
+        if (!ok) await new Promise(res => setTimeout(res, 800));
+      }
     }
   }
   function startRemoteSync() {
     if (!remoteOk || remoteActive) return;
+    remoteRecovered();
     remoteActive = true;
+    openRemoteStream();
     remoteLoop();
   }
   function stopRemoteSync() {
     remoteActive = false;
+    remoteStreamOpen = false;
+    clearTimeout(remotePushTimer);
+    remotePushTimer = null;
+    if (remoteStream) { try { remoteStream.close(); } catch (_e) {} remoteStream = null; }
     if (remoteAbort) { try { remoteAbort.abort(); } catch (_e) {} remoteAbort = null; }
   }
   function runRemoteCommand(c) {
@@ -1653,6 +1749,20 @@
         const cur = document.querySelector('.remote-focus') || document.activeElement;
         const target = cur && cur !== document.body && !$('player').contains(cur) ? cur : document.querySelector('#videos .video, #videos button');
         if (target) { setRemoteFocus(target); target.click(); }
+      }
+      return;
+    }
+    if (c.startsWith('play:')) {
+      const id = c.slice(5);
+      const list = visible.length ? visible : videos;
+      const v = list.find(x => String(x.id) === id) || videos.find(x => String(x.id) === id);
+      if (v) {
+        if (isOpen()) {
+          const idx = playQueue.findIndex(x => String(x.id) === id);
+          if (idx >= 0) openVideo(idx); else play(v, list);
+        } else {
+          play(v, list);
+        }
       }
       return;
     }
@@ -1756,7 +1866,7 @@
     if (!el) return;
     el.classList.add('remote-focus');
     el.focus({ preventScroll: true });
-    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
+    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'auto' });
   }
   document.addEventListener('pointerdown', () => setRemoteFocus(null), { passive: true });
 

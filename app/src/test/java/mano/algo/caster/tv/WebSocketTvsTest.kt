@@ -588,4 +588,35 @@ class WebSocketTvsTest {
         val fgJson = """{"type":"response","id":3,"payload":{"appId":"com.webos.app.hdmi1","returnValue":true}}"""
         assertEquals("com.webos.app.hdmi1", LgTvCommands.parseForegroundAppId(fgJson))
     }
+
+    @Test
+    fun lgSendsChannelUpDownAndDigitsOverInputSocket() {
+        val sentInput = mutableListOf<String>()
+        val input = FakeTv { peer ->
+            sentInput += peer.read()
+            sentInput += peer.read()
+            sentInput += peer.read()
+        }
+        val main = FakeTv { peer ->
+            peer.read(); peer.send("""{"type":"hello","payload":{}}""")
+            peer.read(); peer.send("""{"type":"response","payload":{}}""")
+            peer.read(); peer.send("""{"type":"registered","id":"register_0","payload":{}}""")
+            peer.read(); peer.send("""{"type":"response","id":0,"payload":{"socketPath":"ws://127.0.0.1:${input.port}/p"}}""")
+            release.await(15, TimeUnit.SECONDS)
+        }
+        val opened = LgTvLink.open("127.0.0.1", "saved", null, plain(main.port), {}, {})
+        try {
+            opened.link.press(TvKey.CHANNEL_UP)
+            opened.link.press(TvKey.CHANNEL_DOWN)
+            opened.link.press(TvKey.DIGIT_5)
+            input.finish()
+            assertTrue(sentInput.any { it.contains("name:CHANNELUP") })
+            assertTrue(sentInput.any { it.contains("name:CHANNELDOWN") })
+            assertTrue(sentInput.any { it.contains("name:5") })
+        } finally {
+            opened.link.close()
+            main.close()
+            input.close()
+        }
+    }
 }

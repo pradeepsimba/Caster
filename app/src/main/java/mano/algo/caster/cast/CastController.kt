@@ -31,6 +31,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import mano.algo.caster.server.NetworkUtils
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * Plays a video from this phone on a Chromecast. The Chromecast fetches the file itself from the phone's media
@@ -50,6 +53,9 @@ object CastController {
         val kind: String = "v",
         val currentIndex: Int = 0,
         val totalCount: Int = 0,
+        val muted: Boolean = false,
+        val positionSec: Int = 0,
+        val durationSec: Int = 0,
     )
 
     data class CastItem(val id: Long, val name: String, val kind: String = "v")
@@ -75,6 +81,7 @@ object CastController {
 
     private const val PREFS = "caster_cast"
     private const val KEY_RECENT = "recent"
+    private const val KEY_DIRECT_HOSTS = "direct_hosts"
     private const val RECENT_MAX = 6
 
     private val _recent = MutableStateFlow<List<Recent>>(emptyList())
@@ -87,11 +94,21 @@ object CastController {
     /** The ids of the Chromecasts answering on this Wi-Fi right now (looked for while the Chromecast card is on screen). */
     val nearby: StateFlow<Set<String>> = _nearby.asStateFlow()
 
+    private val _directDevices = MutableStateFlow<List<DirectCastDevice>>(emptyList())
+
+    /** Chromecasts found directly on the local subnet (used on a phone's hotspot, where Google's scanner sees nothing). */
+    val directDevices: StateFlow<List<DirectCastDevice>> = _directDevices.asStateFlow()
+
+    private val _scanningDirect = MutableStateFlow(false)
+    val scanningDirect: StateFlow<Boolean> = _scanningDirect.asStateFlow()
+
     private var appContext: Context? = null
     private var router: MediaRouter? = null
 
     private var castContext: CastContext? = null
     private var client: RemoteMediaClient? = null
+    @Volatile private var directSession: DirectCastSession? = null
+    private var directHosts: MutableMap<String, String> = mutableMapOf()
 
     private val mediaCallback = object : RemoteMediaClient.Callback() {
         override fun onStatusUpdated() = refresh()
@@ -118,6 +135,7 @@ object CastController {
         if (appContext == null) {
             appContext = context.applicationContext
             _recent.value = loadRecent(context.applicationContext)
+            directHosts = loadDirectHosts(context.applicationContext)
         }
         val cc = runCatching { CastContext.getSharedInstance(context.applicationContext) }.getOrNull()
         if (cc == null) {
@@ -130,11 +148,15 @@ object CastController {
     }
 
     private fun attach(session: CastSession) {
+        directSession?.let { old ->
+            directSession = null
+            background.launch { runCatching { old.stopAndClose() } }
+        }
         client?.unregisterCallback(mediaCallback)
         client?.removeProgressListener(progress)
         client = session.remoteMediaClient?.also {
             it.registerCallback(mediaCallback)
-            it.addProgressListener(progress, 5_000L)
+            it.addProgressListener(progress, 1_000L)
         }
         val device = session.castDevice
         if (device != null) rememberDevice(device.deviceId, device.friendlyName ?: "Chromecast")
@@ -146,7 +168,7 @@ object CastController {
         client?.removeProgressListener(progress)
         client?.unregisterCallback(mediaCallback)
         client = null
-        _state.value = State()
+        if (directSession == null) _state.value = State()
     }
 
     private fun refresh() {
@@ -155,11 +177,17 @@ object CastController {
         val failed = status?.playerState == MediaStatus.PLAYER_STATE_IDLE &&
             status.idleReason == MediaStatus.IDLE_REASON_ERROR
         val title = c.mediaInfo?.metadata?.getString(MediaMetadata.KEY_TITLE)
+        val isMuted = runCatching { castContext?.sessionManager?.currentCastSession?.isMute }.getOrNull() ?: _state.value.muted
+        val posSec = (c.approximateStreamPosition / 1000L).toInt().coerceAtLeast(0)
+        val durSec = ((c.mediaInfo?.streamDuration ?: 0L) / 1000L).toInt().coerceAtLeast(0)
         _state.value = _state.value.copy(
             title = title ?: _state.value.title,
             kind = _currentKind.value,
             currentIndex = _currentIndex.value,
             totalCount = _playlist.value.size,
+            muted = isMuted,
+            positionSec = posSec,
+            durationSec = if (durSec > 0) durSec else _state.value.durationSec,
             // Buffering and loading count as playing, so the button reads "Pause" rather than "Play" while it starts.
             playing = status?.playerState.let {
                 it == MediaStatus.PLAYER_STATE_PLAYING || it == MediaStatus.PLAYER_STATE_BUFFERING || it == MediaStatus.PLAYER_STATE_LOADING
@@ -168,13 +196,14 @@ object CastController {
         )
     }
 
+    private fun hasActiveConnection(): Boolean = client != null || directSession != null
+
     /**
      * Starts [name] on the connected Chromecast. [baseUrl] is the media server's address (an IP, because a
      * Chromecast can't resolve `.local` names). Returns false when no Chromecast is connected.
      */
     fun cast(context: Context, id: Long, name: String, baseUrl: String, kind: String = "v"): Boolean {
-        val c = client
-        if (c == null) {
+        if (!hasActiveConnection()) {
             // The Chromecast went away (or never connected): say so instead of doing nothing.
             _state.value = _state.value.copy(error = "Not connected to a Chromecast. Choose one first.")
             return false
@@ -187,69 +216,93 @@ object CastController {
         return true
     }
 
+    private data class ResolvedMedia(
+        val contentUrl: String,
+        val thumbUrl: String,
+        val mime: String,
+        val metadataType: Int,
+        val title: String,
+        val subtitleUrl: String?,
+    )
+
+    private fun resolveMedia(context: Context, id: Long, name: String, baseUrl: String, token: String, kind: String): ResolvedMedia {
+        val query = "?t=" + Uri.encode(token) + "&k=" + Uri.encode(kind)
+        val (contentUri, fallbackMime, metadataType) = when (kind) {
+            "i" -> Triple(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image/jpeg", MediaMetadata.MEDIA_TYPE_PHOTO)
+            "a" -> Triple(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, "audio/mpeg", MediaMetadata.MEDIA_TYPE_MUSIC_TRACK)
+            else -> Triple(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, "video/mp4", MediaMetadata.MEDIA_TYPE_MOVIE)
+        }
+        val uri = ContentUris.withAppendedId(contentUri, id)
+        val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull() ?: fallbackMime
+        val subUrl = if (kind == "v" && runCatching { SubtitleFinder.find(context, uri) }.getOrNull() != null) {
+            baseUrl + "api/sub/" + id + query
+        } else null
+        return ResolvedMedia(
+            contentUrl = baseUrl + "video/" + id + query,
+            thumbUrl = baseUrl + "api/thumb/" + id + query,
+            mime = mime,
+            metadataType = metadataType,
+            title = name,
+            subtitleUrl = subUrl,
+        )
+    }
+
     /** Everything the Chromecast needs to fetch one item: the address (with the pass), a picture, and subtitles when there are any. */
     private fun mediaInfo(context: Context, id: Long, name: String, baseUrl: String, token: String, kind: String = "v"): MediaInfo {
-        val query = "?t=" + Uri.encode(token) + "&k=" + Uri.encode(kind)
-        return when (kind) {
-            "i" -> {
-                val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
-                val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull() ?: "image/jpeg"
-                val metadata = MediaMetadata(MediaMetadata.MEDIA_TYPE_PHOTO).apply {
-                    putString(MediaMetadata.KEY_TITLE, name)
-                    addImage(WebImage(Uri.parse(baseUrl + "api/thumb/" + id + query)))
-                }
-                MediaInfo.Builder(baseUrl + "video/" + id + query)
-                    .setStreamType(MediaInfo.STREAM_TYPE_BUFFERED)
-                    .setContentType(mime)
-                    .setMetadata(metadata)
-                    .build()
-            }
-            "a" -> {
-                val uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id)
-                val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull() ?: "audio/mpeg"
-                val metadata = MediaMetadata(MediaMetadata.MEDIA_TYPE_MUSIC_TRACK).apply {
-                    putString(MediaMetadata.KEY_TITLE, name)
-                    addImage(WebImage(Uri.parse(baseUrl + "api/thumb/" + id + query)))
-                }
-                MediaInfo.Builder(baseUrl + "video/" + id + query)
-                    .setStreamType(MediaInfo.STREAM_TYPE_BUFFERED)
-                    .setContentType(mime)
-                    .setMetadata(metadata)
-                    .build()
-            }
-            else -> {
-                val uri = ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
-                val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull() ?: "video/mp4"
-                val metadata = MediaMetadata(MediaMetadata.MEDIA_TYPE_MOVIE).apply {
-                    putString(MediaMetadata.KEY_TITLE, name)
-                    addImage(WebImage(Uri.parse(baseUrl + "api/thumb/" + id + query)))
-                }
-                val builder = MediaInfo.Builder(baseUrl + "video/" + id + query)
-                    .setStreamType(MediaInfo.STREAM_TYPE_BUFFERED)
-                    .setContentType(mime)
-                    .setMetadata(metadata)
-                // A .srt or .vtt next to the video: the phone serves it as WebVTT, which the Chromecast shows.
-                if (runCatching { SubtitleFinder.find(context, uri) }.getOrNull() != null) {
-                    builder.setMediaTracks(
-                        listOf(
-                            MediaTrack.Builder(SUBTITLE_TRACK, MediaTrack.TYPE_TEXT)
-                                .setContentId(baseUrl + "api/sub/" + id + query)
-                                .setContentType("text/vtt")
-                                .setSubtype(MediaTrack.SUBTYPE_SUBTITLES)
-                                .setName("Subtitles")
-                                .setLanguage("en")
-                                .build(),
-                        ),
-                    )
-                }
-                builder.build()
-            }
+        val m = resolveMedia(context, id, name, baseUrl, token, kind)
+        val metadata = MediaMetadata(m.metadataType).apply {
+            putString(MediaMetadata.KEY_TITLE, m.title)
+            addImage(WebImage(Uri.parse(m.thumbUrl)))
         }
+        val builder = MediaInfo.Builder(m.contentUrl)
+            .setStreamType(MediaInfo.STREAM_TYPE_BUFFERED)
+            .setContentType(m.mime)
+            .setMetadata(metadata)
+        if (m.subtitleUrl != null) {
+            builder.setMediaTracks(
+                listOf(
+                    MediaTrack.Builder(SUBTITLE_TRACK, MediaTrack.TYPE_TEXT)
+                        .setContentId(m.subtitleUrl)
+                        .setContentType("text/vtt")
+                        .setSubtype(MediaTrack.SUBTYPE_SUBTITLES)
+                        .setName("Subtitles")
+                        .setLanguage("en")
+                        .build(),
+                ),
+            )
+        }
+        return builder.build()
+    }
+
+    private fun directMediaJson(context: Context, id: Long, name: String, baseUrl: String, token: String, kind: String = "v"): JSONObject {
+        val m = resolveMedia(context, id, name, baseUrl, token, kind)
+        val metadata = JSONObject()
+            .put("metadataType", m.metadataType)
+            .put("title", m.title)
+            .put("images", JSONArray().put(JSONObject().put("url", m.thumbUrl)))
+        val media = JSONObject()
+            .put("contentId", m.contentUrl)
+            .put("streamType", "BUFFERED")
+            .put("contentType", m.mime)
+            .put("metadata", metadata)
+        if (m.subtitleUrl != null) {
+            val track = JSONObject()
+                .put("trackId", SUBTITLE_TRACK)
+                .put("type", "TEXT")
+                .put("trackContentId", m.subtitleUrl)
+                .put("trackContentType", "text/vtt")
+                .put("subtype", "SUBTITLES")
+                .put("name", "Subtitles")
+                .put("language", "en")
+            media.put("tracks", JSONArray().put(track))
+        }
+        return media
     }
 
     /** Hands the Chromecast the address of the selected media and starts it (where it was stopped, when that is known). */
     private fun load(context: Context, id: Long, name: String, baseUrl: String, kind: String = "v") {
-        if (client == null) return
+        val direct = directSession
+        if (client == null && direct == null) return
         val token = PairingManager.issueLocal(TOKEN_LABEL)
         _state.value = _state.value.copy(
             title = name,
@@ -259,13 +312,20 @@ object CastController {
             totalCount = _playlist.value.size.coerceAtLeast(1),
         )
         background.launch {
-            val info = mediaInfo(context, id, name, baseUrl, token, kind)
-            val request = MediaLoadRequestData.Builder().setMediaInfo(info).setAutoplay(true)
-            if (kind == "v") {
-                ResumeStore.get(id)?.let { request.setCurrentTime(it.positionSec * 1000L) }
-                if (!info.mediaTracks.isNullOrEmpty()) request.setActiveTrackIds(longArrayOf(SUBTITLE_TRACK))
+            if (direct != null) {
+                val media = directMediaJson(context, id, name, baseUrl, token, kind)
+                val resumeSec = if (kind == "v") ResumeStore.get(id)?.positionSec?.toDouble() else null
+                val tracks = if (kind == "v" && media.has("tracks")) longArrayOf(SUBTITLE_TRACK) else null
+                direct.load(media, autoplay = true, currentTimeSec = resumeSec, activeTrackIds = tracks)
+            } else {
+                val info = mediaInfo(context, id, name, baseUrl, token, kind)
+                val request = MediaLoadRequestData.Builder().setMediaInfo(info).setAutoplay(true)
+                if (kind == "v") {
+                    ResumeStore.get(id)?.let { request.setCurrentTime(it.positionSec * 1000L) }
+                    if (!info.mediaTracks.isNullOrEmpty()) request.setActiveTrackIds(longArrayOf(SUBTITLE_TRACK))
+                }
+                withContext(Dispatchers.Main) { client?.load(request.build()) }
             }
-            withContext(Dispatchers.Main) { client?.load(request.build()) }
         }
     }
 
@@ -276,8 +336,8 @@ object CastController {
 
     /** Plays [items] one after the other on the connected Chromecast. False when none is connected. */
     fun castPlaylist(context: Context, items: List<CastItem>, startIndex: Int = 0, baseUrl: String): Boolean {
-        val c = client
-        if (c == null) {
+        val direct = directSession
+        if (client == null && direct == null) {
             _state.value = _state.value.copy(error = "Not connected to a Chromecast. Choose one first.")
             return false
         }
@@ -299,15 +359,29 @@ object CastController {
         )
 
         background.launch {
-            val queueItems = clamped.map { item ->
-                MediaQueueItem.Builder(mediaInfo(context, item.id, item.name, baseUrl, token, item.kind))
-                    .setAutoplay(true)
-                    .setPreloadTime(20.0)
-                    .apply { if (item.kind == "v") ResumeStore.get(item.id)?.let { setStartTime(it.positionSec.toDouble()) } }
-                    .build()
-            }
-            withContext(Dispatchers.Main) {
-                client?.queueLoad(queueItems.toTypedArray(), start, MediaStatus.REPEAT_MODE_REPEAT_OFF, null)
+            if (direct != null) {
+                val arr = JSONArray()
+                clamped.forEach { item ->
+                    val media = directMediaJson(context, item.id, item.name, baseUrl, token, item.kind)
+                    val qItem = JSONObject()
+                        .put("media", media)
+                        .put("autoplay", true)
+                        .put("preloadTime", 20.0)
+                    if (item.kind == "v") ResumeStore.get(item.id)?.let { qItem.put("startTime", it.positionSec.toDouble()) }
+                    arr.put(qItem)
+                }
+                direct.queueLoad(arr, start)
+            } else {
+                val queueItems = clamped.map { item ->
+                    MediaQueueItem.Builder(mediaInfo(context, item.id, item.name, baseUrl, token, item.kind))
+                        .setAutoplay(true)
+                        .setPreloadTime(20.0)
+                        .apply { if (item.kind == "v") ResumeStore.get(item.id)?.let { setStartTime(it.positionSec.toDouble()) } }
+                        .build()
+                }
+                withContext(Dispatchers.Main) {
+                    client?.queueLoad(queueItems.toTypedArray(), start, MediaStatus.REPEAT_MODE_REPEAT_OFF, null)
+                }
             }
         }
         return true
@@ -321,9 +395,23 @@ object CastController {
         return castPlaylist(context, items, 0, baseUrl)
     }
 
+    /** Jumps to [index] in the current Chromecast playlist. */
+    fun playAt(index: Int, context: Context? = appContext): Boolean {
+        if (!hasActiveConnection()) return false
+        val list = _playlist.value
+        if (index !in list.indices) return false
+        _currentIndex.value = index
+        val item = list[index]
+        val ctx = context ?: appContext ?: return false
+        load(ctx, item.id, item.name, lastBaseUrl, item.kind)
+        return true
+    }
+
     /** Switches to the next slide, video, or music track. */
     fun next(context: Context? = appContext): Boolean {
-        val c = client ?: return false
+        val c = client
+        val direct = directSession
+        if (c == null && direct == null) return false
         val list = _playlist.value
         val nextIdx = _currentIndex.value + 1
         if (list.isNotEmpty() && nextIdx < list.size) {
@@ -333,13 +421,16 @@ object CastController {
             load(ctx, item.id, item.name, lastBaseUrl, item.kind)
             return true
         }
-        c.queueNext(null)
+        c?.queueNext(null)
+        if (direct != null) background.launch { runCatching { direct.queueNext() } }
         return true
     }
 
     /** Switches to the previous slide, video, or music track. */
     fun prev(context: Context? = appContext): Boolean {
-        val c = client ?: return false
+        val c = client
+        val direct = directSession
+        if (c == null && direct == null) return false
         val list = _playlist.value
         val prevIdx = _currentIndex.value - 1
         if (list.isNotEmpty() && prevIdx >= 0) {
@@ -349,7 +440,8 @@ object CastController {
             load(ctx, item.id, item.name, lastBaseUrl, item.kind)
             return true
         }
-        c.queuePrev(null)
+        c?.queuePrev(null)
+        if (direct != null) background.launch { runCatching { direct.queuePrev() } }
         return true
     }
 
@@ -359,8 +451,11 @@ object CastController {
         val state = c.playerState
         // Not while loading: the position is still 0 then, and would wipe the point being resumed from.
         if (durationMs <= 0 || (state != MediaStatus.PLAYER_STATE_PLAYING && state != MediaStatus.PLAYER_STATE_PAUSED)) return@ProgressListener
+        val posSec = (progressMs / 1000L).toInt().coerceAtLeast(0)
+        val durSec = (durationMs / 1000L).toInt().coerceAtLeast(0)
+        _state.value = _state.value.copy(positionSec = posSec, durationSec = durSec)
         val id = c.mediaInfo?.contentId?.let { VIDEO_ID.find(it)?.groupValues?.get(1)?.toLongOrNull() } ?: return@ProgressListener
-        ResumeStore.record(id, (progressMs / 1000).toInt(), (durationMs / 1000).toInt())
+        ResumeStore.record(id, posSec, durSec)
     }
 
     private val VIDEO_ID = Regex("/video/(\\d+)")
@@ -399,27 +494,72 @@ object CastController {
         override fun onRouteChanged(router: MediaRouter, route: MediaRouter.RouteInfo) = refreshNearby()
     }
 
+    private fun loadDirectHosts(context: Context): MutableMap<String, String> =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_DIRECT_HOSTS, "").orEmpty()
+            .lines().mapNotNull { line ->
+                val parts = line.split('\t', limit = 2)
+                if (parts.size == 2 && parts[0].isNotBlank() && parts[1].isNotBlank()) parts[0] to parts[1] else null
+            }.toMap().toMutableMap()
+
+    private fun saveDirectHost(id: String, host: String) {
+        val context = appContext ?: return
+        directHosts[id] = host
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putString(KEY_DIRECT_HOSTS, directHosts.entries.joinToString("\n") { it.key + "\t" + it.value }).apply()
+    }
+
     /** Starts looking for Chromecasts on this Wi-Fi (the list [nearby] follows). Call [stopDiscovery] when the card goes away. */
     fun startDiscovery(context: Context) {
         init(context)
         if (_state.value.device == null) _state.value = _state.value.copy(error = null) // an old "isn't answering" doesn't stay
-        val selector = castContext?.mergedSelector ?: return
-        val r = MediaRouter.getInstance(context.applicationContext)
-        router = r
-        r.addCallback(selector, discoveryCallback, MediaRouter.CALLBACK_FLAG_REQUEST_DISCOVERY)
+        val selector = castContext?.mergedSelector
+        if (selector != null) {
+            val r = MediaRouter.getInstance(context.applicationContext)
+            router = r
+            r.addCallback(selector, discoveryCallback, MediaRouter.CALLBACK_FLAG_REQUEST_DISCOVERY)
+        }
         refreshNearby()
+        if (NetworkUtils.isHotspot(context.applicationContext) || !hasGmsRoutes()) {
+            scanDirect(context)
+        }
     }
 
     fun stopDiscovery() {
         router?.removeCallback(discoveryCallback)
     }
 
+    fun hasGmsRoutes(): Boolean {
+        val r = router ?: return false
+        val selector = castContext?.mergedSelector ?: return false
+        return r.routes.any { it.matchesSelector(selector) }
+    }
+
+    /** Scans the local subnet directly for Chromecasts (needed on a phone's hotspot, where Google's scanner sees nothing). */
+    fun scanDirect(context: Context) {
+        if (_scanningDirect.value) return
+        _scanningDirect.value = true
+        background.launch {
+            try {
+                val found = DirectCastDiscovery.scan(context.applicationContext)
+                _directDevices.value = found
+                found.forEach { saveDirectHost(it.id, it.host) }
+                withContext(Dispatchers.Main) { refreshNearby() }
+            } finally {
+                _scanningDirect.value = false
+            }
+        }
+    }
+
     private fun idOf(route: MediaRouter.RouteInfo): String? = route.extras?.let { CastDevice.getFromBundle(it)?.deviceId }
 
     private fun refreshNearby() {
-        val r = router ?: return
-        val selector = castContext?.mergedSelector ?: return
-        _nearby.value = r.routes.filter { it.matchesSelector(selector) }.mapNotNull(::idOf).toSet()
+        val r = router
+        val selector = castContext?.mergedSelector
+        val gmsIds = if (r != null && selector != null) {
+            r.routes.filter { it.matchesSelector(selector) }.mapNotNull(::idOf).toSet()
+        } else emptySet()
+        val directIds = _directDevices.value.map { it.id }.toSet()
+        _nearby.value = gmsIds + directIds
     }
 
     /** Connects to a Chromecast used before. False when it isn't answering on this Wi-Fi right now. */
@@ -427,13 +567,67 @@ object CastController {
         val r = router
         val selector = castContext?.mergedSelector
         val route = r?.routes?.firstOrNull { (selector == null || it.matchesSelector(selector)) && idOf(it) == device.id }
-        if (r == null || route == null) {
-            _state.value = _state.value.copy(error = "${device.name} isn't answering. Check that it is on, and on the same Wi-Fi.")
-            return false
+        if (r != null && route != null) {
+            _state.value = _state.value.copy(error = null)
+            r.selectRoute(route)
+            return true
         }
-        _state.value = _state.value.copy(error = null)
-        r.selectRoute(route)
-        return true
+        val directHost = _directDevices.value.firstOrNull { it.id == device.id }?.host ?: directHosts[device.id]
+        val ctx = appContext
+        if (directHost != null && ctx != null) {
+            connectDirect(ctx, DirectCastDevice(device.id, device.name, directHost))
+            return true
+        }
+        _state.value = _state.value.copy(error = "${device.name} isn't answering. Check that it is on, and on the same Wi-Fi.")
+        return false
+    }
+
+    /** Connects directly over Cast v2 TLS (port 8009), bypassing Google Play services' Wi-Fi-only discovery. */
+    fun connectDirect(context: Context, device: DirectCastDevice) {
+        init(context)
+        castContext?.sessionManager?.endCurrentSession(true)
+        directSession?.let { old ->
+            directSession = null
+            background.launch { runCatching { old.stopAndClose() } }
+        }
+        saveDirectHost(device.id, device.host)
+        _state.value = State(device = device.name, deviceId = device.id)
+        val appId = DirectCastSession.receiverAppId(context.applicationContext)
+        lateinit var session: DirectCastSession
+        session = DirectCastSession(
+            device = device,
+            appId = appId,
+            onStatus = { status ->
+                if (directSession !== session) return@DirectCastSession
+                _state.value = _state.value.copy(
+                    title = status.title ?: _state.value.title,
+                    kind = _currentKind.value,
+                    currentIndex = _currentIndex.value,
+                    totalCount = _playlist.value.size,
+                    muted = status.muted,
+                    playing = status.playing,
+                    positionSec = status.positionSec,
+                    durationSec = if (status.durationSec > 0) status.durationSec else _state.value.durationSec,
+                    error = status.error,
+                )
+                if (status.recordResume) {
+                    val id = status.contentId?.let { VIDEO_ID.find(it)?.groupValues?.get(1)?.toLongOrNull() }
+                    if (id != null) ResumeStore.record(id, status.positionSec, status.durationSec)
+                }
+            },
+            onClosed = { err ->
+                if (directSession === session) {
+                    directSession = null
+                    _state.value = if (err != null) State(error = err) else State()
+                }
+            },
+        )
+        directSession = session
+        background.launch {
+            if (session.connect()) {
+                rememberDevice(device.id, device.name)
+            }
+        }
     }
 
     private val _chooserRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
@@ -445,12 +639,45 @@ object CastController {
         _chooserRequests.tryEmit(Unit)
     }
 
+    fun hasLoadedMedia(): Boolean {
+        directSession?.let { return it.hasActiveMedia() }
+        val ps = client?.mediaStatus?.playerState ?: return false
+        return ps == MediaStatus.PLAYER_STATE_PLAYING ||
+            ps == MediaStatus.PLAYER_STATE_PAUSED ||
+            ps == MediaStatus.PLAYER_STATE_BUFFERING ||
+            ps == MediaStatus.PLAYER_STATE_LOADING
+    }
+
     fun togglePlayback() {
+        if (!hasLoadedMedia() && _playlist.value.isNotEmpty() && lastBaseUrl.isNotBlank()) {
+            playAt(_currentIndex.value)
+            return
+        }
+        directSession?.let { s ->
+            background.launch { runCatching { s.togglePlayback() } }
+            return
+        }
         client?.togglePlayback()
+    }
+
+    /** Seeks to an absolute [positionMs] milliseconds on the active Chromecast stream. */
+    fun seekTo(positionMs: Long) {
+        val clampedMs = positionMs.coerceAtLeast(0L)
+        _state.value = _state.value.copy(positionSec = (clampedMs / 1000L).toInt())
+        directSession?.let { s ->
+            background.launch { runCatching { s.seek(clampedMs / 1000.0) } }
+            return
+        }
+        val c = client ?: return
+        c.seek(com.google.android.gms.cast.MediaSeekOptions.Builder().setPosition(clampedMs).build())
     }
 
     /** Seeks forward or backward by [deltaMs] milliseconds on the active Chromecast stream. */
     fun seekBy(deltaMs: Long) {
+        directSession?.let { s ->
+            background.launch { runCatching { s.seek((s.approximatePositionSec() + deltaMs / 1000.0).coerceAtLeast(0.0)) } }
+            return
+        }
         val c = client ?: return
         val target = (c.approximateStreamPosition + deltaMs).coerceAtLeast(0L)
         c.seek(com.google.android.gms.cast.MediaSeekOptions.Builder().setPosition(target).build())
@@ -458,18 +685,39 @@ object CastController {
 
     /** Adjusts the Chromecast receiver volume by [delta] (clamped to 0.0..1.0). */
     fun adjustVolume(delta: Double) {
+        directSession?.let { s ->
+            background.launch { runCatching { s.adjustVolume(delta) } }
+            return
+        }
         val session = castContext?.sessionManager?.currentCastSession ?: return
         runCatching { session.volume = (session.volume + delta).coerceIn(0.0, 1.0) }
     }
 
     /** Toggles mute on the active Chromecast session. */
     fun toggleMute() {
+        directSession?.let { s ->
+            val next = !_state.value.muted
+            _state.value = _state.value.copy(muted = next)
+            background.launch { runCatching { _state.value = _state.value.copy(muted = s.toggleMute()) } }
+            return
+        }
         val session = castContext?.sessionManager?.currentCastSession ?: return
-        runCatching { session.isMute = !session.isMute }
+        val next = !session.isMute
+        runCatching { session.isMute = next }
+        _state.value = _state.value.copy(muted = next)
     }
 
     /** Stops the video and disconnects from the Chromecast. */
     fun stop() {
+        _playlist.value = emptyList()
+        _currentIndex.value = 0
+        lastBaseUrl = ""
+        directSession?.let { s ->
+            directSession = null
+            background.launch { runCatching { s.stopAndClose() } }
+            _state.value = State()
+            return
+        }
         castContext?.sessionManager?.endCurrentSession(true)
     }
 }

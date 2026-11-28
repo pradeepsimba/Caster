@@ -66,6 +66,9 @@ class LocalMediaServer(
         appContext.assets.open("index.html").bufferedReader().use { it.readText() }
     }
 
+    override fun useGzipWhenAccepted(r: Response): Boolean =
+        r.mimeType?.startsWith("text/event-stream") != true && super.useGzipWhenAccepted(r)
+
     override fun serve(session: IHTTPSession): Response = try {
         withCors(route(session))
     } catch (e: OutOfMemoryError) {
@@ -136,6 +139,7 @@ class LocalMediaServer(
             path == "/api/videos" -> listMedia("v", token, query, sort)
             path == "/api/list" -> listMedia(kind, token, query, sort)
             path == "/api/remote" -> remote(session)
+            path == "/api/remote/stream" -> remoteStream(session)
             path == "/api/resume" -> resumeList(token)
             path.startsWith("/api/thumb/") -> thumbnail(mediaUri(path.removePrefix("/api/thumb/"), kind, token), kind)
             path.startsWith("/api/info/") -> videoInfo(mediaUri(path.removePrefix("/api/info/"), "v", token))
@@ -157,8 +161,12 @@ class LocalMediaServer(
                 if (method == Method.GET && kind == "v") recordWatching(token, uri)
                 val stillAllowed = {
                     if (isUpnpVideo) ShareSettings.isAllowed(id)
-                    else PairingManager.isValid(token) &&
-                        (if (kind == "v") isWebVideoAllowed(token, id) else extrasAllowed(token))
+                    else PairingManager.isValid(token) && when (kind) {
+                        "v" -> isWebVideoAllowed(token, id)
+                        "i" -> isWebPhotoAllowed(token, id)
+                        "a" -> isWebMusicAllowed(token, id)
+                        else -> false
+                    }
                 }
                 if (isTranscode) {
                     val startSec = session.parameters["start"]?.firstOrNull()?.toLongOrNull() ?: 0L
@@ -268,7 +276,7 @@ class LocalMediaServer(
     /** Lists videos ("v"), music ("a") or photos ("i"). */
     private fun listMedia(kind: String, token: String?, query: String? = null, sort: String? = null): Response {
         val table = tableFor(kind) ?: return error(Response.Status.NOT_FOUND, "not_found")
-        if (kind != "v" && !extrasAllowed(token)) return error(Response.Status.FORBIDDEN, "extras_off")
+        if (kind != "v" && !extrasAllowed(token, kind)) return error(Response.Status.FORBIDDEN, "extras_off")
         val items = JSONArray()
         val limit = if (kind == "v") MAX_LISTED else MAX_LISTED * 3   // phones hold far more photos than videos
         var truncated = false // more than the limit exist: the page says so instead of silently missing the older ones
@@ -314,8 +322,8 @@ class LocalMediaServer(
                     val id = c.getLong(0)
                     val bucket = if (bucketCol >= 0) c.getLong(bucketCol) else null
                     if (kind == "v" && !isWebVideoAllowed(token, id, bucket)) continue
-                    if (kind == "i" && !ShareSettings.isPhotoAllowed(id, bucket)) continue
-                    if (kind == "a" && !ShareSettings.isMusicAllowed(id, bucket)) continue
+                    if (kind == "i" && !isWebPhotoAllowed(token, id, bucket)) continue
+                    if (kind == "a" && !isWebMusicAllowed(token, id, bucket)) continue
                     val itemName = c.getString(nameCol) ?: "item"
                     if (filterQuery != null && !itemName.lowercase().contains(filterQuery)) continue
                     if (items.length() >= limit) {
@@ -349,10 +357,33 @@ class LocalMediaServer(
      */
     private fun isWebVideoAllowed(token: String?, id: Long, bucketId: Long? = null): Boolean =
         if (PairingManager.isLocal(token)) ShareSettings.isAllowed(id, bucketId)
-        else PairingManager.isLimited(token) && PairingManager.allows(token, id) && ShareSettings.isAllowed(id, bucketId)
+        else PairingManager.hasVideoLimit(token) && PairingManager.allows(token, id) && ShareSettings.isAllowed(id, bucketId)
 
-    /** Photos and music are all-or-nothing, so a screen limited to some videos is not given them either. */
-    private fun extrasAllowed(token: String?) = ShareSettings.state.value.shareExtras && !PairingManager.isLimited(token)
+    private fun extrasAllowed(token: String?, kind: String): Boolean {
+        if (!ShareSettings.state.value.shareExtras) return false
+        if (PairingManager.isLocal(token)) return true
+        return when (kind) {
+            "i" -> PairingManager.hasPhotoLimit(token) || !PairingManager.isLimited(token)
+            "a" -> PairingManager.hasMusicLimit(token) || !PairingManager.isLimited(token)
+            else -> !PairingManager.isLimited(token)
+        }
+    }
+
+    private fun isWebPhotoAllowed(token: String?, id: Long, bucketId: Long? = null): Boolean {
+        if (!ShareSettings.state.value.shareExtras) return false
+        if (!ShareSettings.isPhotoAllowed(id, bucketId)) return false
+        if (PairingManager.isLocal(token)) return true
+        return if (PairingManager.hasPhotoLimit(token)) PairingManager.allowsPhoto(token, id)
+        else !PairingManager.isLimited(token)
+    }
+
+    private fun isWebMusicAllowed(token: String?, id: Long, albumId: Long? = null): Boolean {
+        if (!ShareSettings.state.value.shareExtras) return false
+        if (!ShareSettings.isMusicAllowed(id, albumId)) return false
+        if (PairingManager.isLocal(token)) return true
+        return if (PairingManager.hasMusicLimit(token)) PairingManager.allowsMusic(token, id)
+        else !PairingManager.isLimited(token)
+    }
 
     /**
      * Only numeric MediaStore ids are accepted, so a client can never name an arbitrary file or Uri.
@@ -364,8 +395,8 @@ class LocalMediaServer(
         val table = tableFor(kind) ?: return null
         val allowed = when (kind) {
             "v" -> isWebVideoAllowed(token, id)
-            "i" -> extrasAllowed(token) && ShareSettings.isPhotoAllowed(id)
-            "a" -> extrasAllowed(token) && ShareSettings.isMusicAllowed(id)
+            "i" -> isWebPhotoAllowed(token, id)
+            "a" -> isWebMusicAllowed(token, id)
             else -> false
         }
         if (!allowed) return null
@@ -500,6 +531,7 @@ class LocalMediaServer(
                     durationSec = p["d"]?.firstOrNull()?.toDoubleOrNull()?.toInt() ?: 0,
                     reportedAt = System.currentTimeMillis(),
                     volume = (p["vol"]?.firstOrNull()?.toIntOrNull() ?: -1).coerceIn(-1, 100),
+                    kind = p["k"]?.firstOrNull() ?: "v",
                 ),
             )
         }
@@ -520,6 +552,50 @@ class LocalMediaServer(
         val list = if (wait) RemoteControl.drainOrWait(deviceId, 1_200L) else RemoteControl.drain(deviceId)
         list.forEach { cmds.put(it) }
         return json(JSONObject().put("cmds", cmds))
+    }
+
+    /** Server-Sent Events stream for instant remote-control command delivery. */
+    private fun remoteStream(session: IHTTPSession): Response {
+        val token = session.parameters["t"]?.firstOrNull()
+        if (!PairingManager.isValid(token)) return error(Response.Status.UNAUTHORIZED, "unauthorized")
+        val (deviceId, _) = PairingManager.clientOf(token) ?: return error(Response.Status.UNAUTHORIZED, "unauthorized")
+        return newChunkedResponse(Response.Status.OK, "text/event-stream; charset=utf-8", RemoteEventStream(deviceId, token)).apply {
+            setGzipEncoding(false)
+            addHeader("Cache-Control", "no-cache, no-store")
+            addHeader("X-Accel-Buffering", "no")
+        }
+    }
+
+    internal class RemoteEventStream(
+        private val deviceId: String,
+        private val token: String?,
+        private val isAllowed: () -> Boolean = { PairingManager.isValid(token) },
+    ) : InputStream() {
+        private var pending = ": ok\n\n".toByteArray(Charsets.UTF_8)
+        private var pos = 0
+
+        override fun read(): Int {
+            val one = ByteArray(1)
+            val n = read(one, 0, 1)
+            return if (n <= 0) -1 else one[0].toInt() and 0xFF
+        }
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            if (len == 0) return 0
+            while (pos >= pending.size) {
+                if (!isAllowed()) return -1
+                val cmds = RemoteControl.drainOrWait(deviceId, 10_000L)
+                if (!isAllowed()) return -1
+                val payload = if (cmds.isEmpty()) ": ping\n\n"
+                else cmds.joinToString("") { "data: ${it.replace('\n', ' ')}\n\n" }
+                pending = payload.toByteArray(Charsets.UTF_8)
+                pos = 0
+            }
+            val n = minOf(len, pending.size - pos)
+            System.arraycopy(pending, pos, b, off, n)
+            pos += n
+            return n
+        }
     }
 
     /** Where each video was stopped, for the pages to offer "continue". Only videos this screen may see. */

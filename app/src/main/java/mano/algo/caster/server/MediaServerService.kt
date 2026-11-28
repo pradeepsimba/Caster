@@ -8,6 +8,8 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.view.View
+import android.widget.RemoteViews
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -32,6 +34,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
@@ -101,6 +104,7 @@ class MediaServerService : Service() {
     private var multicastLock: WifiManager.MulticastLock? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var watchdog: kotlinx.coroutines.Job? = null
+    private var lastNotificationText = "Starting video sharing…"
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -113,6 +117,7 @@ class MediaServerService : Service() {
         ShareSettings.init(this)
         createNotificationChannel()
         watchPairingRequests()
+        watchMediaPlayback()
         // The home-screen widget and app-icon shortcut follow the state.
         scope.launch {
             state.collect {
@@ -159,6 +164,14 @@ class MediaServerService : Service() {
                 }
                 return START_NOT_STICKY
             }
+            ACTION_PLAY_PAUSE, ACTION_SEEK_BACK, ACTION_SEEK_FORWARD, ACTION_MUTE, ACTION_NEXT, ACTION_PREV -> {
+                if (!started) {
+                    stopSelf()
+                } else {
+                    handleMediaAction(intent?.action.orEmpty())
+                }
+                return START_NOT_STICKY
+            }
         }
         // Must be promoted within seconds of startForegroundService(), so do it before anything else.
         try {
@@ -201,6 +214,10 @@ class MediaServerService : Service() {
         scope.cancel()
         getSystemService(NotificationManager::class.java).cancel(PAIRING_NOTIFICATION_ID) // no question left to answer
         // Cancelled scope means no new reconcile; stop synchronously (closing sockets is quick).
+        // Wake up any blocked SSE streams before stopping the HTTP server.
+        PairingManager.reset()
+        CastController.stop()   // the Chromecast's access just ended with the server, so end its session too
+        RemoteControl.clear()
         mdns?.stop()
         mdns = null
         upnp?.stop()
@@ -208,9 +225,6 @@ class MediaServerService : Service() {
         server?.stop()
         server = null
         boundHost = null
-        PairingManager.reset()
-        CastController.stop()   // the Chromecast's access just ended with the server, so end its session too
-        RemoteControl.clear()
         releaseLocks()
         // A start that failed leaves its reason on screen instead of replacing it with a plain "stopped".
         if (!startFailed) _state.value = ServerState.Stopped
@@ -338,8 +352,62 @@ class MediaServerService : Service() {
     private fun publish(state: ServerState, notificationText: String) {
         if (destroyed) return
         _state.value = state
+        lastNotificationText = notificationText
+        refreshNotification()
+    }
+
+    private fun refreshNotification() {
+        if (destroyed || !started) return
         getSystemService(NotificationManager::class.java)
-            .notify(NOTIFICATION_ID, buildNotification(getString(R.string.app_name), notificationText))
+            .notify(NOTIFICATION_ID, buildNotification(getString(R.string.app_name), lastNotificationText))
+    }
+
+    private fun watchMediaPlayback() {
+        scope.launch {
+            var lastTarget: MediaNotificationTarget? = null
+            combine(CastController.state, RemoteControl.all) { cast, remotes ->
+                activeMediaTarget(cast, remotes)
+            }.collectLatest { target ->
+                if (target != lastTarget) {
+                    lastTarget = target
+                    refreshNotification()
+                }
+                if (target is MediaNotificationTarget.Web) {
+                    delay(RemoteControl.FRESH_MS * 2)
+                    val current = activeMediaTarget(CastController.state.value, RemoteControl.all.value)
+                    if (current != lastTarget) {
+                        lastTarget = current
+                        refreshNotification()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun handleMediaAction(action: String) {
+        when (val target = activeMediaTarget(CastController.state.value, RemoteControl.all.value)) {
+            is MediaNotificationTarget.Cast -> when (action) {
+                ACTION_PLAY_PAUSE -> CastController.togglePlayback()
+                ACTION_SEEK_BACK -> CastController.seekBy(-10_000L)
+                ACTION_SEEK_FORWARD -> CastController.seekBy(10_000L)
+                ACTION_MUTE -> CastController.toggleMute()
+                ACTION_NEXT -> CastController.next()
+                ACTION_PREV -> CastController.prev()
+            }
+            is MediaNotificationTarget.Web -> {
+                val cmd = when (action) {
+                    ACTION_PLAY_PAUSE -> "toggle"
+                    ACTION_SEEK_BACK -> "seek:-10"
+                    ACTION_SEEK_FORWARD -> "seek:10"
+                    ACTION_MUTE -> "mute"
+                    ACTION_NEXT -> "next"
+                    ACTION_PREV -> "prev"
+                    else -> return
+                }
+                RemoteControl.send(target.deviceId, cmd)
+            }
+            null -> Unit
+        }
     }
 
     private fun registerNetworkCallback() {
@@ -482,20 +550,83 @@ class MediaServerService : Service() {
             this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val stop = PendingIntent.getService(
-            this, 1, Intent(this, MediaServerService::class.java).setAction(ACTION_STOP),
+        fun serviceAction(requestCode: Int, action: String) = PendingIntent.getService(
+            this, requestCode, Intent(this, MediaServerService::class.java).setAction(action),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
+        val stop = serviceAction(1, ACTION_STOP)
+        val media = activeMediaTarget(CastController.state.value, RemoteControl.all.value)
+        if (media == null) {
+            return NotificationCompat.Builder(this, CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_tile)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setContentIntent(openApp)
+                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stop)
+                .setCategory(NotificationCompat.CATEGORY_SERVICE)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .build()
+        }
+
+        val compact = buildMediaRemoteViews(R.layout.notification_media_compact, media, ::serviceAction, includeStop = false)
+        val expanded = buildMediaRemoteViews(R.layout.notification_media, media, ::serviceAction, includeStop = true)
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_tile)
-            .setContentTitle(title)
-            .setContentText(text)
+            .setContentTitle(media.title)
+            .setContentText(media.subtitle)
             .setContentIntent(openApp)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stop)
-            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setStyle(NotificationCompat.DecoratedCustomViewStyle())
+            .setCustomContentView(compact)
+            .setCustomBigContentView(expanded)
+            .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .build()
+    }
+
+    private fun buildMediaRemoteViews(
+        layoutId: Int,
+        media: MediaNotificationTarget,
+        actionIntent: (Int, String) -> PendingIntent,
+        includeStop: Boolean,
+    ): RemoteViews {
+        val views = RemoteViews(packageName, layoutId)
+        views.setTextViewText(R.id.notif_title, media.title)
+        views.setTextViewText(R.id.notif_subtitle, media.subtitle)
+
+        val isVideo = media.kind == "v"
+        val isMusic = media.kind == "a"
+        val isImage = media.kind == "i"
+
+        views.setViewVisibility(R.id.notif_btn_rew, if (isVideo) View.VISIBLE else View.GONE)
+        views.setViewVisibility(R.id.notif_btn_ff, if (isVideo) View.VISIBLE else View.GONE)
+        views.setViewVisibility(R.id.notif_btn_mute, if (isVideo) View.VISIBLE else View.GONE)
+        views.setViewVisibility(R.id.notif_btn_play_pause, if (isVideo || isMusic) View.VISIBLE else View.GONE)
+        views.setViewVisibility(R.id.notif_btn_next_music, if (isMusic) View.VISIBLE else View.GONE)
+        views.setViewVisibility(R.id.notif_btn_prev, if (isImage) View.VISIBLE else View.GONE)
+        views.setViewVisibility(R.id.notif_btn_next_image, if (isImage) View.VISIBLE else View.GONE)
+
+        views.setImageViewResource(
+            R.id.notif_btn_play_pause,
+            if (media.playing) R.drawable.ic_notif_pause else R.drawable.ic_notif_play,
+        )
+        views.setImageViewResource(
+            R.id.notif_btn_mute,
+            if (media.muted) R.drawable.ic_notif_volume_off else R.drawable.ic_notif_volume_up,
+        )
+
+        views.setOnClickPendingIntent(R.id.notif_btn_rew, actionIntent(10, ACTION_SEEK_BACK))
+        views.setOnClickPendingIntent(R.id.notif_btn_play_pause, actionIntent(11, ACTION_PLAY_PAUSE))
+        views.setOnClickPendingIntent(R.id.notif_btn_ff, actionIntent(12, ACTION_SEEK_FORWARD))
+        views.setOnClickPendingIntent(R.id.notif_btn_mute, actionIntent(13, ACTION_MUTE))
+        views.setOnClickPendingIntent(R.id.notif_btn_next_music, actionIntent(14, ACTION_NEXT))
+        views.setOnClickPendingIntent(R.id.notif_btn_prev, actionIntent(15, ACTION_PREV))
+        views.setOnClickPendingIntent(R.id.notif_btn_next_image, actionIntent(16, ACTION_NEXT))
+        if (includeStop) {
+            views.setOnClickPendingIntent(R.id.notif_btn_stop, actionIntent(1, ACTION_STOP))
+        }
+        return views
     }
 
     companion object {
@@ -507,6 +638,12 @@ class MediaServerService : Service() {
         private const val ACTION_APPROVE = "mano.algo.caster.action.APPROVE_PAIRING"
         private const val ACTION_DENY = "mano.algo.caster.action.DENY_PAIRING"
         private const val ACTION_STOP = "mano.algo.caster.action.STOP_SERVER"
+        private const val ACTION_PLAY_PAUSE = "mano.algo.caster.action.MEDIA_PLAY_PAUSE"
+        private const val ACTION_SEEK_BACK = "mano.algo.caster.action.MEDIA_SEEK_BACK"
+        private const val ACTION_SEEK_FORWARD = "mano.algo.caster.action.MEDIA_SEEK_FORWARD"
+        private const val ACTION_MUTE = "mano.algo.caster.action.MEDIA_MUTE"
+        private const val ACTION_NEXT = "mano.algo.caster.action.MEDIA_NEXT"
+        private const val ACTION_PREV = "mano.algo.caster.action.MEDIA_PREV"
         /** `name`, `name-2` ... up to this many, when other devices already use the name. */
         private const val MAX_NAME_ATTEMPTS = 9
         private const val WATCHDOG_INTERVAL_MS = 30_000L
@@ -535,4 +672,56 @@ class MediaServerService : Service() {
             if (_state.value is ServerState.Error) _state.value = ServerState.Stopped
         }
     }
+}
+
+internal sealed interface MediaNotificationTarget {
+    val title: String
+    val subtitle: String
+    val kind: String
+    val playing: Boolean
+    val muted: Boolean
+
+    data class Cast(
+        override val title: String,
+        override val subtitle: String,
+        override val kind: String,
+        override val playing: Boolean,
+        override val muted: Boolean,
+    ) : MediaNotificationTarget
+
+    data class Web(
+        val deviceId: String,
+        override val title: String,
+        override val subtitle: String,
+        override val kind: String,
+        override val playing: Boolean,
+        override val muted: Boolean,
+    ) : MediaNotificationTarget
+}
+
+internal fun activeMediaTarget(
+    cast: CastController.State,
+    remotes: List<RemoteState>,
+    nowMs: Long = System.currentTimeMillis(),
+): MediaNotificationTarget? {
+    val castTitle = cast.title?.takeIf { it.isNotBlank() }
+    if (cast.device != null && castTitle != null) {
+        return MediaNotificationTarget.Cast(
+            title = castTitle,
+            subtitle = cast.device,
+            kind = cast.kind,
+            playing = cast.playing,
+            muted = cast.muted,
+        )
+    }
+    val web = remotes.firstOrNull { nowMs - it.reportedAt < RemoteControl.FRESH_MS * 2 && it.title.isNotBlank() }
+        ?: return null
+    return MediaNotificationTarget.Web(
+        deviceId = web.deviceId,
+        title = web.title,
+        subtitle = web.deviceLabel,
+        kind = web.kind,
+        playing = web.playing,
+        muted = web.volume == 0,
+    )
 }

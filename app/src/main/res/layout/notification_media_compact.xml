@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:gravity="center_vertical"
+    android:orientation="horizontal">
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:orientation="vertical"
+        android:paddingEnd="8dp">
+
+        <TextView
+            android:id="@+id/notif_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="@color/notif_title"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/notif_subtitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="@color/notif_subtitle"
+            android:textSize="12sp" />
+    </LinearLayout>
+
+    <!-- Video: Skip Rewind -10 (<<) -->
+    <ImageView
+        android:id="@+id/notif_btn_rew"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:layout_marginEnd="2dp"
+        android:contentDescription="Rewind 10 seconds"
+        android:padding="5dp"
+        android:src="@drawable/ic_notif_rew" />
+
+    <!-- Image: Previous (<) -->
+    <ImageView
+        android:id="@+id/notif_btn_prev"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:layout_marginEnd="2dp"
+        android:contentDescription="Previous"
+        android:padding="5dp"
+        android:src="@drawable/ic_notif_prev_arrow" />
+
+    <!-- Video & Music: Play / Pause -->
+    <ImageView
+        android:id="@+id/notif_btn_play_pause"
+        android:layout_width="34dp"
+        android:layout_height="34dp"
+        android:layout_marginEnd="2dp"
+        android:contentDescription="Play or pause"
+        android:padding="5dp"
+        android:src="@drawable/ic_notif_pause" />
+
+    <!-- Video: Skip Fast-Forward +10 (>>) -->
+    <ImageView
+        android:id="@+id/notif_btn_ff"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:layout_marginEnd="2dp"
+        android:contentDescription="Forward 10 seconds"
+        android:padding="5dp"
+        android:src="@drawable/ic_notif_ff" />
+
+    <!-- Video: Mute / Unmute -->
+    <ImageView
+        android:id="@+id/notif_btn_mute"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:contentDescription="Mute"
+        android:padding="5dp"
+        android:src="@drawable/ic_notif_volume_up" />
+
+    <!-- Music: Next (>|) -->
+    <ImageView
+        android:id="@+id/notif_btn_next_music"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:contentDescription="Next track"
+        android:padding="5dp"
+        android:src="@drawable/ic_notif_next" />
+
+    <!-- Image: Next (>) -->
+    <ImageView
+        android:id="@+id/notif_btn_next_image"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:contentDescription="Next"
+        android:padding="5dp"
+        android:src="@drawable/ic_notif_next_arrow" />
+</LinearLayout>

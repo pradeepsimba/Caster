@@ -64,9 +64,9 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 
-private data class PickerVideo(val id: Long, val name: String, val durationMs: Long, val size: Long, val bucketId: Long)
+internal data class PickerVideo(val id: Long, val name: String, val durationMs: Long, val size: Long, val bucketId: Long)
 
-private fun queryVideos(context: Context): List<PickerVideo> {
+internal fun queryVideos(context: Context): List<PickerVideo> {
     val projection = arrayOf(
         MediaStore.Video.Media._ID,
         MediaStore.Video.Media.DISPLAY_NAME,
@@ -297,6 +297,8 @@ fun CastPickerScreen(
         "Music" -> music to "a"
         else -> videos to "v"
     }
+    var selectMode by rememberSaveable(currentKind) { mutableStateOf(false) }
+    var selectedIds by rememberSaveable(currentKind) { mutableStateOf(setOf<Long>()) }
 
     BackHandler(onBack = onCancel)
 
@@ -314,7 +316,16 @@ fun CastPickerScreen(
                 },
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
             )
+            if (!items.isNullOrEmpty()) {
+                TextButton(onClick = {
+                    selectMode = !selectMode
+                    if (!selectMode) selectedIds = emptySet()
+                }) {
+                    Text(if (selectMode) "Done" else "Select")
+                }
+            }
         }
 
         if (tabs.size > 1) {
@@ -335,18 +346,29 @@ fun CastPickerScreen(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                val castItems = list.map { CastController.CastItem(it.id, it.name, currentKind) }
-                androidx.compose.material3.FilledTonalButton(
-                    onClick = { onPlayAll(castItems, false) },
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text(if (currentKind == "i") "Start slideshow" else "Play all")
-                }
-                androidx.compose.material3.FilledTonalButton(
-                    onClick = { onPlayAll(castItems, true) },
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text("Shuffle")
+                if (selectMode) {
+                    val chosen = list.filter { it.id in selectedIds }.map { CastController.CastItem(it.id, it.name, currentKind) }
+                    Button(
+                        onClick = { onPlayAll(chosen, false) },
+                        enabled = chosen.isNotEmpty(),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(if (chosen.isEmpty()) "Select items to cast" else "Cast ${chosen.size} selected")
+                    }
+                } else {
+                    val castItems = list.map { CastController.CastItem(it.id, it.name, currentKind) }
+                    androidx.compose.material3.FilledTonalButton(
+                        onClick = { onPlayAll(castItems, false) },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(if (currentKind == "i") "Start slideshow" else "Play all")
+                    }
+                    androidx.compose.material3.FilledTonalButton(
+                        onClick = { onPlayAll(castItems, true) },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Shuffle")
+                    }
                 }
             }
             Text(
@@ -366,13 +388,29 @@ fun CastPickerScreen(
                 )
                 else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
                     items(list, key = { it.id }) { item ->
+                        val checked = item.id in selectedIds
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { onPick(item.id, item.name, currentKind) }
+                                .clickable {
+                                    if (selectMode) {
+                                        selectedIds = if (checked) selectedIds - item.id else selectedIds + item.id
+                                    } else {
+                                        onPick(item.id, item.name, currentKind)
+                                    }
+                                }
                                 .padding(horizontal = 16.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
+                            if (selectMode) {
+                                Checkbox(
+                                    checked = checked,
+                                    onCheckedChange = {
+                                        selectedIds = if (checked) selectedIds - item.id else selectedIds + item.id
+                                    },
+                                )
+                                Spacer(Modifier.width(8.dp))
+                            }
                             if (currentKind != "a") {
                                 Thumbnail(item.id, kind = currentKind)
                                 Spacer(Modifier.width(14.dp))
@@ -391,13 +429,14 @@ fun CastPickerScreen(
 
 // ----------------- Photo Picker -----------------
 
-data class PickerPhoto(val id: Long, val name: String, val size: Long)
+data class PickerPhoto(val id: Long, val name: String, val size: Long, val bucketId: Long = 0L)
 
 fun queryPhotos(context: Context): List<PickerPhoto> {
     val projection = arrayOf(
         MediaStore.Images.Media._ID,
         MediaStore.Images.Media.DISPLAY_NAME,
         MediaStore.Images.Media.SIZE,
+        MediaStore.Images.Media.BUCKET_ID,
     )
     val result = ArrayList<PickerPhoto>()
     try {
@@ -406,7 +445,7 @@ fun queryPhotos(context: Context): List<PickerPhoto> {
             "${MediaStore.Images.Media.DATE_ADDED} DESC",
         )?.use { c ->
             while (c.moveToNext()) {
-                result += PickerPhoto(c.getLong(0), c.getString(1) ?: "photo", c.getLong(2))
+                result += PickerPhoto(c.getLong(0), c.getString(1) ?: "photo", c.getLong(2), c.getLong(3))
             }
         }
     } catch (_: Exception) {
@@ -419,11 +458,15 @@ fun PhotoPickerScreen(
     initialSelection: Set<Long>,
     onCancel: () -> Unit,
     onDone: (Set<Long>) -> Unit,
+    onlyShared: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    val photos by produceState<List<PickerPhoto>?>(initialValue = null) {
-        value = withContext(Dispatchers.IO) { queryPhotos(context) }
+    val photos by produceState<List<PickerPhoto>?>(initialValue = null, onlyShared) {
+        value = withContext(Dispatchers.IO) {
+            val all = queryPhotos(context)
+            if (onlyShared) all.filter { mano.algo.caster.server.ShareSettings.isPhotoAllowed(it.id, it.bucketId) } else all
+        }
     }
     val selected = rememberSaveable(
         saver = listSaver<SnapshotStateSet<Long>, Long>(
@@ -490,7 +533,7 @@ fun PhotoPickerScreen(
 
 // ----------------- Music Picker -----------------
 
-data class PickerMusic(val id: Long, val name: String, val durationMs: Long, val size: Long)
+data class PickerMusic(val id: Long, val name: String, val durationMs: Long, val size: Long, val albumId: Long = 0L)
 
 fun queryMusic(context: Context): List<PickerMusic> {
     val projection = arrayOf(
@@ -498,6 +541,7 @@ fun queryMusic(context: Context): List<PickerMusic> {
         MediaStore.Audio.Media.TITLE,
         MediaStore.Audio.Media.DURATION,
         MediaStore.Audio.Media.SIZE,
+        MediaStore.Audio.Media.ALBUM_ID,
     )
     val result = ArrayList<PickerMusic>()
     try {
@@ -507,7 +551,7 @@ fun queryMusic(context: Context): List<PickerMusic> {
             "${MediaStore.Audio.Media.DATE_ADDED} DESC",
         )?.use { c ->
             while (c.moveToNext()) {
-                result += PickerMusic(c.getLong(0), c.getString(1) ?: "track", c.getLong(2), c.getLong(3))
+                result += PickerMusic(c.getLong(0), c.getString(1) ?: "track", c.getLong(2), c.getLong(3), c.getLong(4))
             }
         }
     } catch (_: Exception) {
@@ -520,11 +564,15 @@ fun MusicPickerScreen(
     initialSelection: Set<Long>,
     onCancel: () -> Unit,
     onDone: (Set<Long>) -> Unit,
+    onlyShared: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    val music by produceState<List<PickerMusic>?>(initialValue = null) {
-        value = withContext(Dispatchers.IO) { queryMusic(context) }
+    val music by produceState<List<PickerMusic>?>(initialValue = null, onlyShared) {
+        value = withContext(Dispatchers.IO) {
+            val all = queryMusic(context)
+            if (onlyShared) all.filter { mano.algo.caster.server.ShareSettings.isMusicAllowed(it.id, it.albumId) } else all
+        }
     }
     val selected = rememberSaveable(
         saver = listSaver<SnapshotStateSet<Long>, Long>(

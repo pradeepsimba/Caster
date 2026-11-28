@@ -15,6 +15,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -152,12 +153,15 @@ private fun openBatteryScreen(context: Context) {
 }
 
 private fun openNotificationSettings(context: Context) {
-    val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-    try {
-        context.startActivity(intent)
-    } catch (e: ActivityNotFoundException) {
-        openAppSettings(context)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+        try {
+            context.startActivity(intent)
+            return
+        } catch (_: ActivityNotFoundException) {
+        }
     }
+    openAppSettings(context)
 }
 
 private fun openAppSettings(context: Context) {
@@ -219,7 +223,7 @@ fun CasterApp() {
     var pinDialog by remember { mutableStateOf<String?>(null) }   // "set", "change" (asks the old PIN), "new" or "remove"
     var showHistory by rememberSaveable { mutableStateOf(false) }
     var limitFor by rememberSaveable { mutableStateOf<String?>(null) }     // clientId of the screen being limited
-    var limitPicking by rememberSaveable { mutableStateOf(false) }
+    var limitPickingKind by rememberSaveable { mutableStateOf<String?>(null) }
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) { PinLock.leftAt = android.os.SystemClock.elapsedRealtime() }
     LifecycleEventEffect(Lifecycle.Event.ON_START) {
         val left = PinLock.leftAt
@@ -228,7 +232,7 @@ fun CasterApp() {
             unlocked = false
             pinDialog = null // a PIN dialog left open must not come back after the next unlock
             limitFor = null
-            limitPicking = false
+            limitPickingKind = null
         }
         PinLock.leftAt = 0L
     }
@@ -328,7 +332,7 @@ fun CasterApp() {
     val pickerPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         hasStorage = ok
         // (Asked from the "Only some" chip or from a screen's own limit: open the one that asked.)
-        if (ok) { if (limitFor != null) limitPicking = true else picking = true } else storageDenied()
+        if (ok) { if (limitFor != null) limitPickingKind = "v" else picking = true } else storageDenied()
     }
     // Only the permission, nothing opens afterwards (the library card's "Allow video access").
     val accessPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
@@ -380,7 +384,7 @@ fun CasterApp() {
         if (id != null && id != seenRequest) {
             seenRequest = id
             showSettings = false; showRemote = false; showHistory = false
-            picking = false; castPicking = false; limitPicking = false; limitFor = null
+            picking = false; castPicking = false; limitPickingKind = null; limitFor = null
         }
     }
 
@@ -492,39 +496,105 @@ fun CasterApp() {
         )
     }
 
-    // The videos one screen may see: chosen like "Only some", but kept with that screen.
+    // The media one screen may see: chosen like "Only some", but kept with that screen.
     val limitTarget = knownScreens.firstOrNull { it.clientId == limitFor }
-    LaunchedEffect(limitTarget == null) { if (limitTarget == null) { limitPicking = false; limitFor = null } } // the screen is gone: nothing to pick for
-    if (limitPicking && limitTarget != null) {
+    LaunchedEffect(limitTarget == null) { if (limitTarget == null) { limitPickingKind = null; limitFor = null } } // the screen is gone: nothing to pick for
+    if (limitPickingKind != null && limitTarget != null) {
         FullScreenPage {
-            VideoPickerScreen(
-                initialSelection = limitTarget.limit.orEmpty(),
-                onlyShared = true,
-                onCancel = { limitPicking = false; limitFor = null },
-                onDone = { ids ->
-                    PairingManager.setLimit(limitTarget.clientId, ids)
-                    limitPicking = false
-                    limitFor = null
-                },
-            )
+            when (limitPickingKind) {
+                "i" -> PhotoPickerScreen(
+                    initialSelection = limitTarget.photoLimit.orEmpty(),
+                    onlyShared = true,
+                    onCancel = { limitPickingKind = null },
+                    onDone = { ids ->
+                        PairingManager.setPhotoLimit(limitTarget.clientId, ids)
+                        limitPickingKind = null
+                    },
+                )
+                "a" -> MusicPickerScreen(
+                    initialSelection = limitTarget.musicLimit.orEmpty(),
+                    onlyShared = true,
+                    onCancel = { limitPickingKind = null },
+                    onDone = { ids ->
+                        PairingManager.setMusicLimit(limitTarget.clientId, ids)
+                        limitPickingKind = null
+                    },
+                )
+                else -> VideoPickerScreen(
+                    initialSelection = limitTarget.limit.orEmpty(),
+                    onlyShared = true,
+                    onCancel = { limitPickingKind = null },
+                    onDone = { ids ->
+                        PairingManager.setLimit(limitTarget.clientId, ids)
+                        limitPickingKind = null
+                    },
+                )
+            }
         }
         return
     }
     if (limitTarget != null) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { limitFor = null },
-            title = { Text("Videos for ${limitTarget.label}") },
+            title = { Text("Limit ${limitTarget.label}") },
             text = {
-                Text(
-                    if (limitTarget.limit == null) "No videos are chosen for this screen yet. Choose which videos it can see."
-                    else "This screen sees only ${limitTarget.limit.size} chosen videos.",
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Videos", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                if (limitTarget.limit == null) "None chosen" else "${limitTarget.limit.size} chosen",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        TextButton(onClick = { if (granted(STORAGE_PERMISSION)) limitPickingKind = "v" else pickerPermission.launch(STORAGE_PERMISSION) }) {
+                            Text("Choose")
+                        }
+                    }
+                    if (selection.shareExtras) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Photos", style = MaterialTheme.typography.titleSmall)
+                                Text(
+                                    if (limitTarget.photoLimit == null) "None chosen" else "${limitTarget.photoLimit.size} chosen",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            TextButton(onClick = { limitPickingKind = "i" }) {
+                                Text("Choose")
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Music", style = MaterialTheme.typography.titleSmall)
+                                Text(
+                                    if (limitTarget.musicLimit == null) "None chosen" else "${limitTarget.musicLimit.size} chosen",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            TextButton(onClick = { limitPickingKind = "a" }) {
+                                Text("Choose")
+                            }
+                        }
+                    }
+                }
             },
-            confirmButton = { TextButton(onClick = { if (granted(STORAGE_PERMISSION)) limitPicking = true else pickerPermission.launch(STORAGE_PERMISSION) }) { Text("Choose videos") } },
+            confirmButton = { TextButton(onClick = { limitFor = null }) { Text("Done") } },
             dismissButton = {
-                Row {
-                    if (limitTarget.limit != null) TextButton(onClick = { PairingManager.setLimit(limitTarget.clientId, null); limitFor = null }) { Text("Remove limit") }
-                    TextButton(onClick = { limitFor = null }) { Text("Cancel") }
+                if (limitTarget.hasAnyLimit()) {
+                    TextButton(onClick = { PairingManager.clearLimit(limitTarget.clientId); limitFor = null }) { Text("Remove limit") }
                 }
             },
         )
@@ -872,7 +942,7 @@ fun CasterApp() {
         ModalBottomSheet(
             onDismissRequest = { showRemote = false },
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-            containerColor = androidx.compose.ui.graphics.Color(0xFF141416),
+            containerColor = MaterialTheme.colorScheme.surface,
         ) {
             RemoteScreen(
                 state = tvState,

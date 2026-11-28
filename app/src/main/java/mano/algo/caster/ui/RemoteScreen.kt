@@ -31,9 +31,11 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -67,6 +69,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -85,7 +88,9 @@ import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
@@ -102,14 +107,17 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import mano.algo.caster.cast.CastController
+import mano.algo.caster.server.PairingManager
 import mano.algo.caster.server.RemoteControl
 import mano.algo.caster.server.RemoteState
+import mano.algo.caster.server.ShareSettings
 import mano.algo.caster.tv.InstalledTvApp
 import mano.algo.caster.tv.TvApp
 import mano.algo.caster.tv.TvInput
@@ -137,13 +145,13 @@ val RemoteIcon: ImageVector by lazy {
 
 val SkipPreviousIcon: ImageVector by lazy {
     ImageVector.Builder("SkipPrevious", 24.dp, 24.dp, 24f, 24f).apply {
-        addPath(pathData = addPathNodes("M6,6h2v12H6zm3.5,6l8.5,6V6z"), fill = SolidColor(Color.Black))
+        addPath(pathData = addPathNodes("M6,6H8V18H6V6ZM9.5,12L18,18V6L9.5,12Z"), fill = SolidColor(Color.Black))
     }.build()
 }
 
 val SkipNextIcon: ImageVector by lazy {
     ImageVector.Builder("SkipNext", 24.dp, 24.dp, 24f, 24f).apply {
-        addPath(pathData = addPathNodes("M6,18l8.5,-6L6,6v12zM16,6v12h2V6h-2z"), fill = SolidColor(Color.Black))
+        addPath(pathData = addPathNodes("M6,18L14.5,12L6,6V18ZM16,6V18H18V6H16Z"), fill = SolidColor(Color.Black))
     }.build()
 }
 
@@ -334,20 +342,29 @@ private val FullscreenIcon: ImageVector by lazy {
     }.build()
 }
 
-// ---- Remote Palette (matching the dark reference screenshots) ------------------------------------
+private val PlaylistIcon: ImageVector by lazy {
+    ImageVector.Builder("Playlist", 24.dp, 24.dp, 24f, 24f).apply {
+        addPath(
+            pathData = addPathNodes("M3,10h11v2H3v-2zm0,-4h11v2H3V6zm0,8h7v2H3v-2zm13,-1v8l6,-4 -6,-4z"),
+            fill = SolidColor(Color.Black),
+        )
+    }.build()
+}
 
-private val RemoteBg = Color(0xFF141416)
-private val RemoteSheetBg = Color(0xFF1D1D20)
-private val RemotePillDark = Color(0xFF0A0A0C)
-private val RemoteTileBg = Color(0xFF3A3A3E)
-private val RemoteTilePressed = Color(0xFF4E4E54)
-private val RemoteWellBg = Color(0xFF070708)
-private val RemoteOkRingBg = Color(0xFF424246)
-private val RemoteBottomBarBg = Color(0xFF1E1E22)
+private val ArchiveIcon: ImageVector by lazy {
+    ImageVector.Builder("Archive", 24.dp, 24.dp, 24f, 24f).apply {
+        addPath(
+            pathData = addPathNodes(
+                "M20,4H4C2.9,4 2,4.9 2,6V8C2,8.55 2.45,9 3,9V19C3,20.1 3.9,21 5,21H19C20.1,21 21,20.1 21,19V9C21.55,9 22,8.55 22,8V6C22,4.9 21.1,4 20,4ZM20,7.5H4V6H20V7.5ZM5,19V9H19V19H5ZM9,12H15V14H9V12Z",
+            ),
+            fill = SolidColor(Color.Black),
+        )
+    }.build()
+}
+
+// ---- Remote Semantic Accents (surface & content colors come from MaterialTheme.colorScheme) ------
+
 private val RemotePowerRed = Color(0xFFE03A3A)
-private val RemoteInputBlue = Color(0xFF5E6BF5)
-private val RemoteAccentBlue = Color(0xFF5EA8FF)
-private val RemoteBorderSubtle = Color(0xFF2C2C30)
 
 // ---- State & Capabilities ------------------------------------------------------------------------
 
@@ -519,7 +536,9 @@ fun RemoteScreen(
     }
 
     val now = System.currentTimeMillis()
-    val liveRemotes = remotes.filter { now - it.reportedAt < RemoteControl.FRESH_MS * 2 }
+    val liveRemotes = remotes
+        .filter { now - it.reportedAt < RemoteControl.FRESH_MS * 2 }
+        .sortedWith(compareBy({ it.deviceLabel.lowercase() }, { it.deviceId }))
 
     val targets = buildList {
         if (castState.device != null) add(RemoteTarget.Cast(castState))
@@ -528,25 +547,27 @@ fun RemoteScreen(
     }
 
     var selectedTargetId by rememberSaveable { mutableStateOf<String?>(null) }
+    var seenTargetIds by remember { mutableStateOf(emptySet<String>()) }
 
-    // Automatically switch remote when a device starts playing or connects
-    val playingWebId = liveRemotes.firstOrNull { it.playing }?.let { "web:${it.deviceId}" }
-    LaunchedEffect(castState.device, castState.playing) {
-        if (castState.device != null && castState.playing) selectedTargetId = "cast"
-    }
-    LaunchedEffect(playingWebId) {
-        if (playingWebId != null) selectedTargetId = playingWebId
-    }
-    LaunchedEffect(state) {
-        if (state is TvRemote.State.Connected) selectedTargetId = "tv"
+    // Keep the Inputs list stable and stay on the last-connected (or manually selected) remote
+    val targetIds = targets.map { it.id }
+    LaunchedEffect(targetIds) {
+        val newlyConnected = targets.firstOrNull { it.id !in seenTargetIds }
+        if (newlyConnected != null) {
+            selectedTargetId = newlyConnected.id
+        } else if (selectedTargetId == null || targets.none { it.id == selectedTargetId }) {
+            selectedTargetId = targets.lastOrNull()?.id
+        }
+        seenTargetIds = targetIds.toSet()
     }
 
-    val activeTarget = targets.firstOrNull { it.id == selectedTargetId } ?: targets.firstOrNull()
+    val activeTarget = targets.firstOrNull { it.id == selectedTargetId } ?: targets.lastOrNull()
     val caps = capabilitiesFor(activeTarget, volume)
 
     var lowerMode by rememberSaveable { mutableStateOf(LowerMode.DPAD) }
     var showDevicesPanel by rememberSaveable { mutableStateOf(false) }
     var showInputsSheet by rememberSaveable { mutableStateOf(false) }
+    var showPlaylistSheet by rememberSaveable { mutableStateOf(false) }
 
     val forceDevices = activeTarget == null || state is TvRemote.State.Connecting || state is TvRemote.State.NeedsPin
     val showingDevices = forceDevices || showDevicesPanel
@@ -559,15 +580,15 @@ fun RemoteScreen(
 
     Box(
         modifier = modifier
-            .fillMaxSize()
+            .fillMaxWidth()
             .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
-            .background(RemoteBg),
+            .background(MaterialTheme.colorScheme.surface),
     ) {
         Column(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 16.dp, vertical = 6.dp),
-            verticalArrangement = Arrangement.SpaceBetween,
+                .fillMaxWidth()
+                .padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             // Top Bar: Power (left) | Inputs / Active Device v (center) | Settings (right)
             RemoteTopBar(
@@ -581,10 +602,8 @@ fun RemoteScreen(
                 },
             )
 
-            Spacer(Modifier.height(10.dp))
-
             if (showingDevices) {
-                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                Box(modifier = Modifier.fillMaxWidth().heightIn(min = 300.dp, max = 500.dp)) {
                     DevicesPanel(
                         state = state,
                         savedHost = savedHost,
@@ -629,21 +648,23 @@ fun RemoteScreen(
                     onVoiceEnd = onVoiceEnd,
                     onRemote = onRemote,
                     onChangeLowerMode = { lowerMode = it },
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    onOpenPlaylist = { showPlaylistSheet = true },
+                    modifier = Modifier.fillMaxWidth(),
                 )
             }
         }
 
-        // 1st Image: Inputs bottom sheet overlay showing connected device & available ports
+        // Inputs bottom sheet overlay showing connected device & available ports
         AnimatedVisibility(
             visible = showInputsSheet,
             enter = fadeIn(tween(150)),
             exit = fadeOut(tween(150)),
+            modifier = Modifier.matchParentSize(),
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.62f))
+                    .background(Color.Black.copy(alpha = 0.52f))
                     .clickable(onClick = { showInputsSheet = false }),
             )
         }
@@ -675,6 +696,35 @@ fun RemoteScreen(
                 },
             )
         }
+
+        // Playlist bottom sheet overlay for choosing a video to play on Web or Chromecast
+        AnimatedVisibility(
+            visible = showPlaylistSheet,
+            enter = fadeIn(tween(150)),
+            exit = fadeOut(tween(150)),
+            modifier = Modifier.matchParentSize(),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.52f))
+                    .clickable(onClick = { showPlaylistSheet = false }),
+            )
+        }
+
+        AnimatedVisibility(
+            visible = showPlaylistSheet,
+            enter = slideInVertically(initialOffsetY = { it }),
+            exit = slideOutVertically(targetOffsetY = { it }),
+            modifier = Modifier.align(Alignment.BottomCenter),
+        ) {
+            PlaylistSheetOverlay(
+                target = activeTarget,
+                shareUrl = shareUrl,
+                onRemote = onRemote,
+                onDismiss = { showPlaylistSheet = false },
+            )
+        }
     }
 }
 
@@ -687,6 +737,7 @@ private fun RemoteTopBar(
     onOpenInputs: () -> Unit,
     onToggleSettings: () -> Unit,
 ) {
+    val scheme = MaterialTheme.colorScheme
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
@@ -696,29 +747,31 @@ private fun RemoteTopBar(
         if (hasPower) {
             CircleRemoteButton(
                 label = "Power",
-                size = 44.dp,
+                size = 42.dp,
                 containerColor = RemotePowerRed,
+                contentColor = Color.White,
                 onClick = onPower,
             ) {
-                Icon(PowerIcon, contentDescription = "Power", tint = Color.White, modifier = Modifier.size(22.dp))
+                Icon(PowerIcon, contentDescription = "Power", modifier = Modifier.size(20.dp))
             }
         } else {
-            Spacer(Modifier.size(44.dp))
+            Spacer(Modifier.size(42.dp))
         }
 
         // Center: Inputs / Device switcher pill
         Surface(
             onClick = onOpenInputs,
-            shape = RoundedCornerShape(22.dp),
-            color = RemotePillDark,
-            modifier = Modifier.height(44.dp).width(176.dp),
+            shape = RoundedCornerShape(21.dp),
+            color = scheme.surfaceContainerHigh,
+            border = BorderStroke(1.dp, scheme.outlineVariant.copy(alpha = 0.45f)),
+            modifier = Modifier.height(42.dp).widthIn(min = 148.dp, max = 200.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
             ) {
-                Icon(InputPlugIcon, contentDescription = null, tint = Color.White.copy(alpha = 0.9f), modifier = Modifier.size(18.dp))
+                Icon(InputPlugIcon, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
                 Text(
                     text = when {
                         active == null -> "Devices"
@@ -727,23 +780,24 @@ private fun RemoteTopBar(
                     },
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Medium,
-                    color = Color.White,
+                    color = scheme.onSurface,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false),
                 )
-                Icon(ChevronDownIcon, contentDescription = null, tint = Color.White.copy(alpha = 0.85f), modifier = Modifier.size(18.dp))
+                Icon(ChevronDownIcon, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
             }
         }
 
-        // Right: Settings / Devices gear button
+        // Right: Devices archive button
         CircleRemoteButton(
-            label = "Devices and settings",
-            size = 44.dp,
-            containerColor = RemotePillDark,
+            label = "Devices",
+            size = 42.dp,
+            containerColor = scheme.surfaceContainerHigh,
+            contentColor = scheme.onSurface,
             onClick = onToggleSettings,
         ) {
-            Icon(Icons.Filled.Settings, contentDescription = "Devices", tint = Color.White, modifier = Modifier.size(20.dp))
+            Icon(ArchiveIcon, contentDescription = "Devices", modifier = Modifier.size(20.dp))
         }
     }
 }
@@ -768,10 +822,12 @@ private fun UnifiedRemoteBody(
     onVoiceEnd: () -> Unit,
     onRemote: (String, String) -> Unit,
     onChangeLowerMode: (LowerMode) -> Unit,
+    onOpenPlaylist: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val scheme = MaterialTheme.colorScheme
     val holdToTalk = (target as? RemoteTarget.Tv)?.link == TvRemote.Link.AndroidTv
 
     var typedForDictation by rememberSaveable { mutableStateOf("") }
@@ -804,19 +860,27 @@ private fun UnifiedRemoteBody(
         }
     }
     val pagerState = rememberPagerState(pageCount = { pages.size.coerceAtLeast(1) })
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    LaunchedEffect(pagerState.currentPage, pages) {
+        if (pages.getOrNull(pagerState.currentPage) != UpperPage.EXTRA) {
+            focusManager.clearFocus(force = true)
+            keyboardController?.hide()
+        }
+    }
 
     Column(
         modifier = modifier,
-        verticalArrangement = Arrangement.SpaceBetween,
+        verticalArrangement = Arrangement.spacedBy(10.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // 1. Upper Paged Controls (TV / Media / Apps / Keyboard)
+        // 1. Upper Paged Controls (TV / Media / Apps / Keyboard) + Page Dots below
         if (pages.isNotEmpty()) {
             HorizontalPager(
                 state = pagerState,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(if (pages.size > 1) 166.dp else 152.dp),
+                    .height(if (pages.size > 1) 156.dp else 148.dp),
             ) { index ->
                 when (pages[index]) {
                     UpperPage.TV -> TvUpperPage(
@@ -853,10 +917,9 @@ private fun UnifiedRemoteBody(
                 }
             }
 
-            // Page indicator dots
             if (pages.size > 1) {
                 Row(
-                    modifier = Modifier.padding(vertical = 8.dp),
+                    modifier = Modifier.padding(vertical = 2.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -866,13 +929,11 @@ private fun UnifiedRemoteBody(
                             modifier = Modifier
                                 .size(7.dp)
                                 .clip(CircleShape)
-                                .background(if (active) Color(0xFFB5B5BC) else Color(0xFF424248))
+                                .background(if (active) scheme.onSurface.copy(alpha = 0.85f) else scheme.outlineVariant)
                                 .clickable { scope.launch { pagerState.animateScrollToPage(index) } },
                         )
                     }
                 }
-            } else {
-                Spacer(Modifier.height(8.dp))
             }
         }
 
@@ -882,10 +943,7 @@ private fun UnifiedRemoteBody(
 
         // 2. Lower Control Area (D-pad / Touchpad / Numpad for TV; Media & Volume Pad for Cast/Web)
         Box(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(vertical = 4.dp),
+            modifier = Modifier.fillMaxWidth(),
             contentAlignment = Alignment.Center,
         ) {
             when {
@@ -916,12 +974,11 @@ private fun UnifiedRemoteBody(
                         target = target,
                         caps = caps,
                         onRemote = onRemote,
+                        onOpenPlaylist = onOpenPlaylist,
                     )
                 }
             }
         }
-
-        Spacer(Modifier.height(8.dp))
 
         // 3. Bottom Bar: 3 wide pill buttons (Back | Home | Assistant for TV; Prev | Stop | Next/CC for Cast/Web)
         RemoteBottomBar(
@@ -947,9 +1004,10 @@ private fun TvUpperPage(
     onKey: (Int, Boolean) -> Unit,
     onToggleNumpad: () -> Unit,
 ) {
+    val scheme = MaterialTheme.colorScheme
     Row(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
+        modifier = Modifier.fillMaxSize(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // Left: VOL pill
@@ -965,21 +1023,21 @@ private fun TvUpperPage(
         // Middle: 123 (with 4 color dots) + GUIDE
         Column(
             modifier = Modifier.weight(1.05f).fillMaxHeight(),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Surface(
                 onClick = onToggleNumpad,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
-                shape = RoundedCornerShape(26.dp),
-                color = RemoteTileBg,
+                shape = RoundedCornerShape(22.dp),
+                color = scheme.surfaceContainerHigh,
             ) {
                 Column(
                     modifier = Modifier.fillMaxSize(),
                     verticalArrangement = Arrangement.Center,
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Text("123", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = Color.White)
-                    Spacer(Modifier.height(4.dp))
+                    Text("123", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = scheme.onSurface)
+                    Spacer(Modifier.height(3.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                         listOf(Color(0xFFE53935), Color(0xFFFDD835), Color(0xFF43A047), Color(0xFF1E88E5)).forEach { c ->
                             Box(modifier = Modifier.size(6.dp).background(c, CircleShape))
@@ -991,16 +1049,16 @@ private fun TvUpperPage(
             Surface(
                 onClick = { onKey(TvKey.GUIDE, false) },
                 modifier = Modifier.weight(1f).fillMaxWidth(),
-                shape = RoundedCornerShape(26.dp),
-                color = RemoteTileBg,
+                shape = RoundedCornerShape(22.dp),
+                color = scheme.surfaceContainerHigh,
             ) {
                 Column(
                     modifier = Modifier.fillMaxSize(),
                     verticalArrangement = Arrangement.Center,
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Icon(GuideListIcon, contentDescription = null, tint = Color.White, modifier = Modifier.size(22.dp))
-                    Text("GUIDE", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold, color = Color.White.copy(alpha = 0.85f))
+                    Icon(GuideListIcon, contentDescription = null, tint = scheme.onSurface, modifier = Modifier.size(20.dp))
+                    Text("GUIDE", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold, color = scheme.onSurfaceVariant)
                 }
             }
         }
@@ -1026,9 +1084,10 @@ private fun MediaUpperPage(
     onKey: (Int, Boolean) -> Unit,
     onRemote: (String, String) -> Unit,
 ) {
+    val scheme = MaterialTheme.colorScheme
     Row(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier.fillMaxSize(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (caps.volumeButtons || caps.volumeSetup) {
@@ -1058,13 +1117,13 @@ private fun MediaUpperPage(
                         null -> Unit
                     }
                 },
-                modifier = Modifier.width(96.dp).fillMaxHeight(),
+                modifier = Modifier.width(92.dp).fillMaxHeight(),
             )
         }
 
         Column(
             modifier = Modifier.weight(1f).fillMaxHeight(),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             // Top wide Play/Pause pill
             Surface(
@@ -1077,8 +1136,8 @@ private fun MediaUpperPage(
                     }
                 },
                 modifier = Modifier.weight(1f).fillMaxWidth(),
-                shape = RoundedCornerShape(26.dp),
-                color = RemoteTileBg,
+                shape = RoundedCornerShape(22.dp),
+                color = scheme.surfaceContainerHigh,
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     val icon = when (target) {
@@ -1086,15 +1145,15 @@ private fun MediaUpperPage(
                         is RemoteTarget.Web -> if (target.remote.playing) PauseIcon else Icons.Filled.PlayArrow
                         else -> PlayPauseIcon
                     }
-                    Icon(icon, contentDescription = "Play or pause", tint = Color.White, modifier = Modifier.size(28.dp))
+                    Icon(icon, contentDescription = "Play or pause", tint = scheme.onSurface, modifier = Modifier.size(28.dp))
                 }
             }
 
             // Bottom wide Rewind | Fast-Forward pill
             Surface(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
-                shape = RoundedCornerShape(26.dp),
-                color = RemoteTileBg,
+                shape = RoundedCornerShape(22.dp),
+                color = scheme.surfaceContainerHigh,
             ) {
                 Row(modifier = Modifier.fillMaxSize()) {
                     Box(
@@ -1111,7 +1170,7 @@ private fun MediaUpperPage(
                             },
                         contentAlignment = Alignment.Center,
                     ) {
-                        Icon(RewindIcon, contentDescription = "Rewind", tint = Color.White, modifier = Modifier.size(26.dp))
+                        Icon(RewindIcon, contentDescription = "Rewind", tint = scheme.onSurface, modifier = Modifier.size(24.dp))
                     }
                     Box(
                         modifier = Modifier
@@ -1127,7 +1186,7 @@ private fun MediaUpperPage(
                             },
                         contentAlignment = Alignment.Center,
                     ) {
-                        Icon(FastForwardIcon, contentDescription = "Fast forward", tint = Color.White, modifier = Modifier.size(26.dp))
+                        Icon(FastForwardIcon, contentDescription = "Fast forward", tint = scheme.onSurface, modifier = Modifier.size(24.dp))
                     }
                 }
             }
@@ -1175,27 +1234,28 @@ private fun AppsUpperPage(
         )
     }
 
+    val scheme = MaterialTheme.colorScheme
     Surface(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 4.dp),
-        shape = RoundedCornerShape(28.dp),
-        color = RemoteTileBg,
+        modifier = Modifier.fillMaxSize(),
+        shape = RoundedCornerShape(24.dp),
+        color = scheme.surfaceContainerHigh,
     ) {
         if (apps.isEmpty()) {
             Box(contentAlignment = Alignment.Center) {
-                Text("No apps reported by TV", color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.bodyMedium)
+                Text("No apps reported by TV", color = scheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
             }
         } else {
             val hasOverflow = apps.size > 8
             val shown = if (hasOverflow) apps.take(7) else apps.take(8)
             Column(
-                modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 val firstRow = shown.take(4)
                 val secondRow = shown.drop(4)
                 Row(
                     modifier = Modifier.weight(1f).fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     firstRow.forEach { app ->
                         AppTileButton(
@@ -1211,7 +1271,7 @@ private fun AppsUpperPage(
                 }
                 Row(
                     modifier = Modifier.weight(1f).fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     secondRow.forEach { app ->
                         AppTileButton(
@@ -1228,10 +1288,10 @@ private fun AppsUpperPage(
                             onClick = { showAllDialog = true },
                             modifier = Modifier.weight(1f).fillMaxHeight(),
                             shape = RoundedCornerShape(14.dp),
-                            color = Color(0xFF28282C),
+                            color = scheme.surfaceContainerHighest,
                         ) {
                             Box(contentAlignment = Alignment.Center) {
-                                Text("•••", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                                Text("•••", color = scheme.onSurface, style = MaterialTheme.typography.titleMedium)
                             }
                         }
                     }
@@ -1249,7 +1309,10 @@ private fun AppTileButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val scheme = MaterialTheme.colorScheme
     val lower = app.title.lowercase()
+    val isFallback = !("youtube" in lower || "netflix" in lower || "prime" in lower || "hotstar" in lower ||
+        "spotify" in lower || "xstream" in lower || "browser" in lower || "web" in lower)
     val bg = when {
         "youtube" in lower -> Color(0xFFFFFFFF)
         "netflix" in lower -> Color(0xFF141414)
@@ -1258,9 +1321,13 @@ private fun AppTileButton(
         "spotify" in lower -> Color(0xFF1DB954)
         "xstream" in lower -> Color(0xFFB71C1C)
         "browser" in lower || "web" in lower -> Color(0xFF5C6BC0)
-        else -> Color(0xFF505056)
+        else -> scheme.surfaceContainerHighest
     }
-    val fg = if ("youtube" in lower) Color(0xFFFF0000) else Color.White
+    val fg = when {
+        "youtube" in lower -> Color(0xFFFF0000)
+        isFallback -> scheme.onSurface
+        else -> Color.White
+    }
 
     Surface(
         onClick = onClick,
@@ -1293,23 +1360,24 @@ private fun ExtraUpperPage(
     onOpenBrowser: () -> Unit,
     onRemote: (String, String) -> Unit,
 ) {
+    val scheme = MaterialTheme.colorScheme
     Surface(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 4.dp),
-        shape = RoundedCornerShape(28.dp),
-        color = RemoteTileBg,
+        modifier = Modifier.fillMaxSize(),
+        shape = RoundedCornerShape(24.dp),
+        color = scheme.surfaceContainerHigh,
     ) {
         when {
             target is RemoteTarget.Web -> {
                 val remote = target.remote
                 Column(
-                    modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
+                    modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 10.dp),
                     verticalArrangement = Arrangement.SpaceBetween,
                 ) {
                     Text(
                         remote.title.ifBlank { "Playing on screen" },
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
-                        color = Color.White,
+                        color = scheme.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -1328,17 +1396,16 @@ private fun ExtraUpperPage(
                             valueRange = 0f..remote.durationSec.toFloat(),
                         )
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text(formatClock(shown.toInt()), style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.7f))
-                            Text(formatClock(remote.durationSec), style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.7f))
+                            Text(formatClock(shown.toInt()), style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant)
+                            Text(formatClock(remote.durationSec), style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant)
                         }
                     }
                     if (caps.subtitles) {
                         OutlinedButton(
                             onClick = { onRemote(remote.deviceId, "subs") },
                             shape = RoundedCornerShape(12.dp),
-                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.3f)),
                         ) {
-                            Text("Subtitles (CC)", color = Color.White)
+                            Text("Subtitles (CC)")
                         }
                     }
                 }
@@ -1356,7 +1423,7 @@ private fun ExtraUpperPage(
                             onTyped(typed, new)
                             typed = new
                         },
-                        placeholder = { Text("Type text for TV…", color = Color.White.copy(alpha = 0.55f)) },
+                        placeholder = { Text("Type text for TV…") },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(
                             capitalization = KeyboardCapitalization.None,
@@ -1381,7 +1448,7 @@ private fun ExtraUpperPage(
                                 },
                                 shape = RoundedCornerShape(12.dp),
                                 modifier = Modifier.weight(1f),
-                            ) { Text("⌫", color = Color.White) }
+                            ) { Text("⌫") }
                             Button(
                                 onClick = { onKey(TvKey.ENTER, false); typed = "" },
                                 shape = RoundedCornerShape(12.dp),
@@ -1395,7 +1462,7 @@ private fun ExtraUpperPage(
                                 onClick = { onTyped("", shareUrl); typed = "" },
                                 modifier = Modifier.weight(1f),
                                 shape = RoundedCornerShape(12.dp),
-                            ) { Text("Type URL", color = Color.White, maxLines = 1) }
+                            ) { Text("Type URL", maxLines = 1) }
                         }
                         if (shareUrl != null && fullRemote) {
                             Button(
@@ -1421,46 +1488,65 @@ private fun DpadLowerArea(
     onEnableTouchpad: () -> Unit,
 ) {
     val haptic = LocalHapticFeedback.current
-    Box(modifier = Modifier.fillMaxSize()) {
+    val scheme = MaterialTheme.colorScheme
+    var tvMuted by rememberSaveable { mutableStateOf(false) }
+    Box(modifier = Modifier.fillMaxWidth().height(228.dp)) {
         if (hasMute) {
-            IconButton(
+            CircleRemoteButton(
+                label = if (tvMuted) "Unmute" else "Mute",
+                size = 42.dp,
+                containerColor = if (tvMuted) scheme.primary else scheme.surfaceContainerHigh,
+                contentColor = if (tvMuted) scheme.onPrimary else scheme.onSurface,
                 onClick = {
-                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    tvMuted = !tvMuted
                     onKey(TvKey.MUTE, false)
                 },
-                modifier = Modifier.align(Alignment.TopStart).padding(4.dp),
+                modifier = Modifier.align(Alignment.TopStart),
             ) {
-                Icon(VolumeOffIcon, contentDescription = "Mute", tint = Color.White.copy(alpha = 0.85f), modifier = Modifier.size(24.dp))
+                Icon(if (tvMuted) VolumeOffIcon else VolumeUpIcon, contentDescription = if (tvMuted) "Unmute" else "Mute", modifier = Modifier.size(20.dp))
             }
         }
 
-        // Large dark circular D-pad matching Image 2
+        // Top-right: Device settings / Menu button
+        CircleRemoteButton(
+            label = "TV settings",
+            size = 42.dp,
+            containerColor = scheme.surfaceContainerHigh,
+            contentColor = scheme.onSurface,
+            onClick = { onKey(TvKey.MENU, false) },
+            modifier = Modifier.align(Alignment.TopEnd),
+        ) {
+            Icon(Icons.Filled.Settings, contentDescription = "TV settings", modifier = Modifier.size(20.dp))
+        }
+
+        // Circular D-pad
         Box(
             modifier = Modifier
-                .size(242.dp)
+                .size(224.dp)
                 .align(Alignment.Center)
-                .background(RemoteWellBg, CircleShape),
+                .background(scheme.surfaceContainer, CircleShape)
+                .border(1.dp, scheme.outlineVariant.copy(alpha = 0.5f), CircleShape),
             contentAlignment = Alignment.Center,
         ) {
-            DpadDirectionHitArea("Up", TvKey.UP, onKey, Modifier.align(Alignment.TopCenter).padding(top = 12.dp)) {
-                Text("▲", fontSize = 14.sp, color = Color.White.copy(alpha = 0.85f))
+            DpadDirectionHitArea("Up", TvKey.UP, onKey, Modifier.align(Alignment.TopCenter).padding(top = 10.dp)) {
+                Text("▲", fontSize = 14.sp, color = scheme.onSurface)
             }
-            DpadDirectionHitArea("Down", TvKey.DOWN, onKey, Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp)) {
-                Text("▼", fontSize = 14.sp, color = Color.White.copy(alpha = 0.85f))
+            DpadDirectionHitArea("Down", TvKey.DOWN, onKey, Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp)) {
+                Text("▼", fontSize = 14.sp, color = scheme.onSurface)
             }
-            DpadDirectionHitArea("Left", TvKey.LEFT, onKey, Modifier.align(Alignment.CenterStart).padding(start = 16.dp)) {
-                Text("◀", fontSize = 14.sp, color = Color.White.copy(alpha = 0.85f))
+            DpadDirectionHitArea("Left", TvKey.LEFT, onKey, Modifier.align(Alignment.CenterStart).padding(start = 12.dp)) {
+                Text("◀", fontSize = 14.sp, color = scheme.onSurface)
             }
-            DpadDirectionHitArea("Right", TvKey.RIGHT, onKey, Modifier.align(Alignment.CenterEnd).padding(end = 16.dp)) {
-                Text("▶", fontSize = 14.sp, color = Color.White.copy(alpha = 0.85f))
+            DpadDirectionHitArea("Right", TvKey.RIGHT, onKey, Modifier.align(Alignment.CenterEnd).padding(end = 12.dp)) {
+                Text("▶", fontSize = 14.sp, color = scheme.onSurface)
             }
 
-            // Center grey ring + dark rounded-square OK button
+            // Center ring + OK button
             Box(
                 modifier = Modifier
-                    .size(94.dp)
+                    .size(86.dp)
                     .clip(CircleShape)
-                    .background(RemoteOkRingBg)
+                    .background(scheme.primaryContainer)
                     .pointerInput(Unit) {
                         detectTapGestures(
                             onTap = {
@@ -1477,22 +1563,31 @@ private fun DpadLowerArea(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(54.dp)
-                        .background(RemoteWellBg, RoundedCornerShape(14.dp)),
-                )
+                        .size(48.dp)
+                        .background(scheme.surface, RoundedCornerShape(14.dp)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "OK",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = scheme.onSurface,
+                    )
+                }
             }
         }
 
         // Bottom-left: Enable Touchpad button (only when supported)
         if (hasTouchpad) {
-            IconButton(
-                onClick = {
-                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    onEnableTouchpad()
-                },
-                modifier = Modifier.align(Alignment.BottomStart).padding(4.dp),
+            CircleRemoteButton(
+                label = "Enable touchpad",
+                size = 42.dp,
+                containerColor = scheme.surfaceContainerHigh,
+                contentColor = scheme.onSurface,
+                onClick = onEnableTouchpad,
+                modifier = Modifier.align(Alignment.BottomStart),
             ) {
-                Icon(TouchpadIcon, contentDescription = "Enable touchpad", tint = Color.White.copy(alpha = 0.85f), modifier = Modifier.size(24.dp))
+                Icon(TouchpadIcon, contentDescription = "Enable touchpad", modifier = Modifier.size(20.dp))
             }
         }
     }
@@ -1506,14 +1601,18 @@ private fun TouchpadLowerCard(
     onSwitchToDpad: () -> Unit,
 ) {
     val haptic = LocalHapticFeedback.current
+    val scheme = MaterialTheme.colorScheme
     var sliderFrac by remember { mutableFloatStateOf(0.5f) }
+    var tvMuted by rememberSaveable { mutableStateOf(false) }
 
     Box(
         modifier = Modifier
-            .fillMaxSize()
-            .clip(RoundedCornerShape(26.dp))
-            .background(RemoteWellBg)
-            .padding(14.dp),
+            .fillMaxWidth()
+            .height(228.dp)
+            .clip(RoundedCornerShape(24.dp))
+            .background(scheme.surfaceContainer)
+            .border(1.dp, scheme.outlineVariant.copy(alpha = 0.5f), RoundedCornerShape(24.dp))
+            .padding(12.dp),
     ) {
         // Main swipe + tap touchpad area
         Box(
@@ -1552,17 +1651,30 @@ private fun TouchpadLowerCard(
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     if (isLg) TvRemote.pointerClick() else onKey(TvKey.OK, false)
                 },
-        )
+        ) {
+            Text(
+                "Swipe to move · Tap to select",
+                style = MaterialTheme.typography.labelSmall,
+                color = scheme.onSurfaceVariant.copy(alpha = 0.65f),
+                modifier = Modifier.align(Alignment.Center),
+            )
+        }
 
         if (hasMute) {
             IconButton(
                 onClick = {
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    tvMuted = !tvMuted
                     onKey(TvKey.MUTE, false)
                 },
                 modifier = Modifier.align(Alignment.TopStart).size(36.dp),
             ) {
-                Icon(VolumeOffIcon, contentDescription = "Mute", tint = Color.White.copy(alpha = 0.85f), modifier = Modifier.size(22.dp))
+                Icon(
+                    if (tvMuted) VolumeOffIcon else VolumeUpIcon,
+                    contentDescription = if (tvMuted) "Unmute" else "Mute",
+                    tint = if (tvMuted) scheme.primary else scheme.onSurface,
+                    modifier = Modifier.size(20.dp),
+                )
             }
         }
 
@@ -1574,10 +1686,10 @@ private fun TouchpadLowerCard(
             },
             modifier = Modifier.align(Alignment.BottomStart).size(36.dp),
         ) {
-            Icon(DpadIcon, contentDescription = "Switch to D-pad", tint = Color.White.copy(alpha = 0.85f), modifier = Modifier.size(22.dp))
+            Icon(DpadIcon, contentDescription = "Switch to D-pad", tint = scheme.onSurface, modifier = Modifier.size(20.dp))
         }
 
-        // Right-side vertical scroll/slider strip matching Image 3 & 4
+        // Right-side vertical scroll/slider strip
         VerticalTouchSlider(
             fraction = sliderFrac,
             onStepUp = {
@@ -1588,7 +1700,7 @@ private fun TouchpadLowerCard(
                 sliderFrac = (sliderFrac + 0.15f).coerceIn(0.15f, 0.85f)
                 onKey(TvKey.DOWN, false)
             },
-            modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight(0.82f),
+            modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight(0.84f),
         )
     }
 }
@@ -1598,11 +1710,12 @@ private fun CastOrWebLowerCard(
     target: RemoteTarget?,
     caps: RemoteCapabilities,
     onRemote: (String, String) -> Unit,
+    onOpenPlaylist: () -> Unit,
 ) {
     val haptic = LocalHapticFeedback.current
+    val scheme = MaterialTheme.colorScheme
     var lastNonZeroWebVol by remember(target?.id) { mutableStateOf(100) }
     var optimisticWebMuted by remember(target?.id) { mutableStateOf<Boolean?>(null) }
-    var optimisticCastMuted by remember(target?.id) { mutableStateOf(false) }
 
     val webVol = (target as? RemoteTarget.Web)?.remote?.volume ?: -1
     LaunchedEffect(webVol) {
@@ -1611,7 +1724,7 @@ private fun CastOrWebLowerCard(
     }
     val isMuted = when (target) {
         is RemoteTarget.Web -> optimisticWebMuted ?: (webVol == 0)
-        is RemoteTarget.Cast -> optimisticCastMuted
+        is RemoteTarget.Cast -> target.state.muted
         else -> false
     }
 
@@ -1619,8 +1732,8 @@ private fun CastOrWebLowerCard(
         val remote = target.remote
         val hasVideo = remote.title.isNotBlank()
         Column(
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             // Compact title & seekbar when a video is open
@@ -1633,7 +1746,7 @@ private fun CastOrWebLowerCard(
                         remote.title,
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = FontWeight.Medium,
-                        color = Color.White,
+                        color = scheme.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -1653,8 +1766,8 @@ private fun CastOrWebLowerCard(
                             modifier = Modifier.height(28.dp),
                         )
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text(formatClock(shown.toInt()), style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.6f))
-                            Text(formatClock(remote.durationSec), style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.6f))
+                            Text(formatClock(shown.toInt()), style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant)
+                            Text(formatClock(remote.durationSec), style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant)
                         }
                     }
                 }
@@ -1662,12 +1775,15 @@ private fun CastOrWebLowerCard(
                 Text(
                     "Browse index & select a video",
                     style = MaterialTheme.typography.labelMedium,
-                    color = Color.White.copy(alpha = 0.6f),
+                    color = scheme.onSurfaceVariant,
                 )
             }
 
             // D-pad (Up, Down, Left, Right, Click) + corner action buttons
-            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            val dpadSize = if (hasVideo) 182.dp else 216.dp
+            val okRingSize = if (hasVideo) 70.dp else 84.dp
+            val okInnerSize = if (hasVideo) 40.dp else 48.dp
+            Box(modifier = Modifier.fillMaxWidth().height(dpadSize + 8.dp)) {
                 if (caps.volumeButtons) {
                     Surface(
                         onClick = {
@@ -1682,34 +1798,33 @@ private fun CastOrWebLowerCard(
                                 onRemote(remote.deviceId, "volume:0")
                             }
                         },
-                        modifier = Modifier.align(Alignment.TopStart).size(44.dp),
+                        modifier = Modifier.align(Alignment.TopStart).size(42.dp),
                         shape = CircleShape,
-                        color = if (isMuted) RemoteInputBlue else RemoteTileBg,
+                        color = if (isMuted) scheme.primary else scheme.surfaceContainerHigh,
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 if (isMuted) VolumeOffIcon else VolumeUpIcon,
                                 contentDescription = if (isMuted) "Unmute" else "Mute",
-                                tint = Color.White,
+                                tint = if (isMuted) scheme.onPrimary else scheme.onSurface,
                                 modifier = Modifier.size(20.dp),
                             )
                         }
                     }
                 }
 
-                if (hasVideo && caps.subtitles) {
-                    Surface(
-                        onClick = {
-                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                            onRemote(remote.deviceId, "subs")
-                        },
-                        modifier = Modifier.align(Alignment.TopEnd).size(44.dp),
-                        shape = CircleShape,
-                        color = RemoteTileBg,
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Text("CC", style = MaterialTheme.typography.labelMedium, color = Color.White, fontWeight = FontWeight.Bold)
-                        }
+                // Top-right: Playlist button (replaces CC subtitles)
+                Surface(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onOpenPlaylist()
+                    },
+                    modifier = Modifier.align(Alignment.TopEnd).size(42.dp),
+                    shape = CircleShape,
+                    color = scheme.surfaceContainerHigh,
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(PlaylistIcon, contentDescription = "Playlist", tint = scheme.onSurface, modifier = Modifier.size(20.dp))
                     }
                 }
 
@@ -1719,25 +1834,23 @@ private fun CastOrWebLowerCard(
                             haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                             onRemote(remote.deviceId, "fs")
                         },
-                        modifier = Modifier.align(Alignment.BottomEnd).size(44.dp),
+                        modifier = Modifier.align(Alignment.BottomEnd).size(42.dp),
                         shape = CircleShape,
-                        color = RemoteTileBg,
+                        color = scheme.surfaceContainerHigh,
                     ) {
                         Box(contentAlignment = Alignment.Center) {
-                            Icon(FullscreenIcon, contentDescription = "Fullscreen", tint = Color.White, modifier = Modifier.size(20.dp))
+                            Icon(FullscreenIcon, contentDescription = "Fullscreen", tint = scheme.onSurface, modifier = Modifier.size(20.dp))
                         }
                     }
                 }
 
                 // Circular D-Pad for index page & player navigation
-                val dpadSize = if (hasVideo) 182.dp else 222.dp
-                val okRingSize = if (hasVideo) 72.dp else 88.dp
-                val okInnerSize = if (hasVideo) 42.dp else 50.dp
                 Box(
                     modifier = Modifier
                         .size(dpadSize)
                         .align(Alignment.Center)
-                        .background(RemoteWellBg, CircleShape),
+                        .background(scheme.surfaceContainer, CircleShape)
+                        .border(1.dp, scheme.outlineVariant.copy(alpha = 0.5f), CircleShape),
                     contentAlignment = Alignment.Center,
                 ) {
                     Box(
@@ -1751,7 +1864,7 @@ private fun CastOrWebLowerCard(
                                 onRemote(remote.deviceId, "nav:up")
                             },
                         contentAlignment = Alignment.Center,
-                    ) { Text("▲", fontSize = 14.sp, color = Color.White.copy(alpha = 0.85f)) }
+                    ) { Text("▲", fontSize = 14.sp, color = scheme.onSurface) }
 
                     Box(
                         modifier = Modifier
@@ -1764,7 +1877,7 @@ private fun CastOrWebLowerCard(
                                 onRemote(remote.deviceId, "nav:down")
                             },
                         contentAlignment = Alignment.Center,
-                    ) { Text("▼", fontSize = 14.sp, color = Color.White.copy(alpha = 0.85f)) }
+                    ) { Text("▼", fontSize = 14.sp, color = scheme.onSurface) }
 
                     Box(
                         modifier = Modifier
@@ -1777,7 +1890,7 @@ private fun CastOrWebLowerCard(
                                 onRemote(remote.deviceId, "nav:left")
                             },
                         contentAlignment = Alignment.Center,
-                    ) { Text("◀", fontSize = 14.sp, color = Color.White.copy(alpha = 0.85f)) }
+                    ) { Text("◀", fontSize = 14.sp, color = scheme.onSurface) }
 
                     Box(
                         modifier = Modifier
@@ -1790,14 +1903,14 @@ private fun CastOrWebLowerCard(
                                 onRemote(remote.deviceId, "nav:right")
                             },
                         contentAlignment = Alignment.Center,
-                    ) { Text("▶", fontSize = 14.sp, color = Color.White.copy(alpha = 0.85f)) }
+                    ) { Text("▶", fontSize = 14.sp, color = scheme.onSurface) }
 
                     // Center Click / OK button
                     Box(
                         modifier = Modifier
                             .size(okRingSize)
                             .clip(CircleShape)
-                            .background(RemoteOkRingBg)
+                            .background(scheme.primaryContainer)
                             .clickable {
                                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                 onRemote(remote.deviceId, "nav:ok")
@@ -1807,8 +1920,16 @@ private fun CastOrWebLowerCard(
                         Box(
                             modifier = Modifier
                                 .size(okInnerSize)
-                                .background(RemoteWellBg, RoundedCornerShape(12.dp)),
-                        )
+                                .background(scheme.surface, RoundedCornerShape(12.dp)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                "OK",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = scheme.onSurface,
+                            )
+                        }
                     }
                 }
             }
@@ -1816,14 +1937,29 @@ private fun CastOrWebLowerCard(
         return
     }
 
-    // Chromecast lower card
+    // Chromecast lower card (with seekbar / track pad, Mute/Unmute, and Playlist)
+    val castState = (target as? RemoteTarget.Cast)?.state
+    val durSec = castState?.durationSec ?: 0
+    var livePosSec by remember(castState?.title, castState?.positionSec) {
+        mutableStateOf((castState?.positionSec ?: 0).toFloat())
+    }
+    LaunchedEffect(castState?.playing, castState?.positionSec, durSec) {
+        if (castState?.playing == true && durSec > 0) {
+            while (true) {
+                delay(1_000)
+                livePosSec = (livePosSec + 1f).coerceAtMost(durSec.toFloat())
+            }
+        }
+    }
+
     Column(
         modifier = Modifier
-            .fillMaxSize()
-            .clip(RoundedCornerShape(26.dp))
-            .background(RemoteWellBg)
-            .padding(16.dp),
-        verticalArrangement = Arrangement.SpaceBetween,
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(24.dp))
+            .background(scheme.surfaceContainer)
+            .border(1.dp, scheme.outlineVariant.copy(alpha = 0.5f), RoundedCornerShape(24.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Column(
@@ -1831,12 +1967,12 @@ private fun CastOrWebLowerCard(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            val title = (target as? RemoteTarget.Cast)?.state?.title ?: target?.label ?: "No media"
+            val title = castState?.title ?: target?.label ?: "No media"
             Text(
                 title,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Medium,
-                color = Color.White,
+                color = scheme.onSurface,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
                 textAlign = TextAlign.Center,
@@ -1844,75 +1980,283 @@ private fun CastOrWebLowerCard(
             Text(
                 target?.subtitle.orEmpty(),
                 style = MaterialTheme.typography.bodySmall,
-                color = Color.White.copy(alpha = 0.55f),
+                color = scheme.onSurfaceVariant,
                 maxLines = 1,
             )
         }
 
+        if (castState?.kind != "i" && (durSec > 0 || castState?.title != null)) {
+            var dragging by remember(castState?.title) { mutableStateOf<Float?>(null) }
+            val maxDur = durSec.coerceAtLeast(1).toFloat()
+            val shown = (dragging ?: livePosSec).coerceIn(0f, maxDur)
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Slider(
+                    value = shown,
+                    enabled = durSec > 0,
+                    onValueChange = { dragging = it },
+                    onValueChangeFinished = {
+                        dragging?.let { pos ->
+                            livePosSec = pos
+                            CastController.seekTo((pos * 1000L).toLong())
+                        }
+                        dragging = null
+                    },
+                    valueRange = 0f..maxDur,
+                    modifier = Modifier.height(28.dp),
+                )
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(formatClock(shown.toInt()), style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant)
+                    Text(formatClock(durSec), style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant)
+                }
+            }
+        }
+
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (caps.volumeButtons) {
                 Surface(
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        optimisticCastMuted = !optimisticCastMuted
                         CastController.toggleMute()
                     },
                     modifier = Modifier.weight(1f).height(52.dp),
                     shape = RoundedCornerShape(18.dp),
-                    color = if (isMuted) RemoteInputBlue else RemoteTileBg,
+                    color = if (isMuted) scheme.primary else scheme.surfaceContainerHigh,
                 ) {
                     Row(
-                        modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+                        modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Icon(
                             if (isMuted) VolumeOffIcon else VolumeUpIcon,
                             contentDescription = if (isMuted) "Unmute" else "Mute",
-                            tint = Color.White,
+                            tint = if (isMuted) scheme.onPrimary else scheme.onSurface,
                             modifier = Modifier.size(20.dp),
                         )
                         Text(
                             if (isMuted) "Unmute" else "Mute",
                             style = MaterialTheme.typography.labelLarge,
-                            color = Color.White,
+                            color = if (isMuted) scheme.onPrimary else scheme.onSurface,
                             maxLines = 1,
                         )
                     }
                 }
             }
-            if (caps.seekButtons) {
-                Surface(
-                    onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        CastController.seekBy(-10_000L)
-                    },
-                    modifier = Modifier.weight(0.75f).height(52.dp),
-                    shape = RoundedCornerShape(18.dp),
-                    color = RemoteTileBg,
+            Surface(
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onOpenPlaylist()
+                },
+                modifier = Modifier.weight(1f).height(52.dp),
+                shape = RoundedCornerShape(18.dp),
+                color = scheme.surfaceContainerHigh,
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text("−10s", style = MaterialTheme.typography.labelLarge, color = Color.White, fontWeight = FontWeight.SemiBold)
-                    }
+                    Icon(PlaylistIcon, contentDescription = "Playlist", tint = scheme.onSurface, modifier = Modifier.size(20.dp))
+                    Text("Playlist", style = MaterialTheme.typography.labelLarge, color = scheme.onSurface, maxLines = 1)
                 }
-                Surface(
-                    onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        CastController.seekBy(10_000L)
-                    },
-                    modifier = Modifier.weight(0.75f).height(52.dp),
-                    shape = RoundedCornerShape(18.dp),
-                    color = RemoteTileBg,
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text("+10s", style = MaterialTheme.typography.labelLarge, color = Color.White, fontWeight = FontWeight.SemiBold)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaylistSheetOverlay(
+    target: RemoteTarget?,
+    shareUrl: String?,
+    onRemote: (String, String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val scheme = MaterialTheme.colorScheme
+    val context = LocalContext.current
+    val castPlaylist by CastController.playlist.collectAsStateWithLifecycle()
+    val castIndex by CastController.currentIndex.collectAsStateWithLifecycle()
+    val devices by PairingManager.devices.collectAsStateWithLifecycle()
+    val sharedVideos by produceState<List<PickerVideo>?>(initialValue = null, target?.id, devices) {
+        value = withContext(Dispatchers.IO) {
+            queryVideos(context).filter {
+                ShareSettings.isAllowed(it.id, it.bucketId) &&
+                    (target !is RemoteTarget.Web || PairingManager.isVideoAllowedForDevice(target.remote.deviceId, it.id))
+            }
+        }
+    }
+
+    var editingCastQueue by rememberSaveable(target?.id) { mutableStateOf(false) }
+    var selectedCastIds by remember(castPlaylist, editingCastQueue) {
+        mutableStateOf(castPlaylist.map { it.id }.toSet())
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = false, onClick = {}),
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        color = scheme.surfaceContainerLow,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .size(width = 42.dp, height = 4.dp)
+                    .background(scheme.outlineVariant, RoundedCornerShape(2.dp)),
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Playlist", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = scheme.onSurface)
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (target is RemoteTarget.Cast && shareUrl != null) {
+                        TextButton(onClick = { editingCastQueue = !editingCastQueue }) {
+                            Text(if (editingCastQueue) "View queue" else "Select videos", color = scheme.primary)
+                        }
+                    }
+                    TextButton(onClick = onDismiss) { Text("Close", color = scheme.primary) }
+                }
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(260.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (target is RemoteTarget.Cast && editingCastQueue) {
+                    val list = sharedVideos
+                    if (list == null) {
+                        Box(modifier = Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(modifier = Modifier.size(24.dp), color = scheme.primary)
+                        }
+                    } else if (list.isEmpty()) {
+                        Text("No shared videos found.", style = MaterialTheme.typography.bodyMedium, color = scheme.onSurfaceVariant)
+                    } else {
+                        list.forEach { video ->
+                            val checked = video.id in selectedCastIds
+                            PlaylistRow(
+                                title = video.name,
+                                active = checked,
+                                onClick = {
+                                    selectedCastIds = if (checked) selectedCastIds - video.id else selectedCastIds + video.id
+                                },
+                            )
+                        }
+                    }
+                } else if (target is RemoteTarget.Cast && castPlaylist.isNotEmpty()) {
+                    castPlaylist.forEachIndexed { idx, item ->
+                        PlaylistRow(
+                            title = item.name,
+                            active = idx == castIndex,
+                            onClick = {
+                                CastController.playAt(idx, context)
+                                onDismiss()
+                            },
+                        )
+                    }
+                } else {
+                    val list = sharedVideos
+                    if (list == null) {
+                        Box(modifier = Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(modifier = Modifier.size(24.dp), color = scheme.primary)
+                        }
+                    } else if (list.isEmpty()) {
+                        Text("No shared videos found.", style = MaterialTheme.typography.bodyMedium, color = scheme.onSurfaceVariant)
+                    } else {
+                        val currentTitle = when (target) {
+                            is RemoteTarget.Web -> target.remote.title
+                            is RemoteTarget.Cast -> target.state.title.orEmpty()
+                            else -> ""
+                        }
+                        list.forEach { video ->
+                            val active = currentTitle.isNotBlank() && video.name == currentTitle
+                            PlaylistRow(
+                                title = video.name,
+                                active = active,
+                                onClick = {
+                                    when (target) {
+                                        is RemoteTarget.Web -> onRemote(target.remote.deviceId, "play:${video.id}")
+                                        is RemoteTarget.Cast -> if (shareUrl != null) {
+                                            CastController.cast(context, video.id, video.name, shareUrl)
+                                        }
+                                        else -> Unit
+                                    }
+                                    onDismiss()
+                                },
+                            )
+                        }
                     }
                 }
             }
+
+            if (target is RemoteTarget.Cast && editingCastQueue && shareUrl != null) {
+                val chosen = sharedVideos.orEmpty()
+                    .filter { it.id in selectedCastIds }
+                    .map { CastController.CastItem(it.id, it.name, "v") }
+                Button(
+                    onClick = {
+                        CastController.castPlaylist(context, chosen, 0, shareUrl)
+                        editingCastQueue = false
+                        onDismiss()
+                    },
+                    enabled = chosen.isNotEmpty(),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (chosen.isEmpty()) "Select videos to cast" else "Play ${chosen.size} selected")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaylistRow(
+    title: String,
+    active: Boolean,
+    onClick: () -> Unit,
+) {
+    val scheme = MaterialTheme.colorScheme
+    Surface(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = if (active) scheme.primary.copy(alpha = 0.16f) else scheme.surfaceContainerHigh,
+        border = if (active) BorderStroke(1.dp, scheme.primary) else null,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Icon(
+                if (active) Icons.Filled.PlayArrow else PlaylistIcon,
+                contentDescription = null,
+                tint = if (active) scheme.primary else scheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
+            )
+            Text(
+                title,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                color = scheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
         }
     }
 }
@@ -1924,12 +2268,13 @@ private fun VerticalTouchSlider(
     onStepDown: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val scheme = MaterialTheme.colorScheme
     var dragAcc by remember { mutableFloatStateOf(0f) }
     Box(
         modifier = modifier
             .width(24.dp)
             .clip(RoundedCornerShape(12.dp))
-            .background(Color(0xFF7A7A82))
+            .background(scheme.surfaceContainerHighest)
             .pointerInput(Unit) {
                 detectVerticalDragGestures(
                     onDragEnd = { dragAcc = 0f },
@@ -1959,7 +2304,7 @@ private fun VerticalTouchSlider(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(48.dp)
-                    .background(RemoteWellBg, RoundedCornerShape(9.dp)),
+                    .background(scheme.primary, RoundedCornerShape(9.dp)),
             )
             Box(
                 modifier = Modifier
@@ -1977,6 +2322,7 @@ private fun NumpadLowerCard(
     onBackToDpad: () -> Unit,
 ) {
     val haptic = LocalHapticFeedback.current
+    val scheme = MaterialTheme.colorScheme
     val digitKeys = mapOf(
         "0" to TvKey.DIGIT_0, "1" to TvKey.DIGIT_1, "2" to TvKey.DIGIT_2,
         "3" to TvKey.DIGIT_3, "4" to TvKey.DIGIT_4, "5" to TvKey.DIGIT_5,
@@ -1991,15 +2337,17 @@ private fun NumpadLowerCard(
     )
     Column(
         modifier = Modifier
-            .fillMaxSize()
-            .clip(RoundedCornerShape(26.dp))
-            .background(RemoteWellBg)
+            .fillMaxWidth()
+            .height(228.dp)
+            .clip(RoundedCornerShape(24.dp))
+            .background(scheme.surfaceContainer)
+            .border(1.dp, scheme.outlineVariant.copy(alpha = 0.5f), RoundedCornerShape(24.dp))
             .padding(10.dp),
         verticalArrangement = Arrangement.SpaceBetween,
     ) {
         // 4 Color buttons matching the 4 dots on "123"
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             listOf(
@@ -2028,7 +2376,7 @@ private fun NumpadLowerCard(
                     Box(
                         modifier = Modifier
                             .weight(1f)
-                            .height(42.dp)
+                            .height(40.dp)
                             .clip(RoundedCornerShape(12.dp))
                             .clickable {
                                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
@@ -2040,7 +2388,7 @@ private fun NumpadLowerCard(
                             },
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text(label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium, color = Color.White)
+                        Text(label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium, color = scheme.onSurface)
                     }
                 }
             }
@@ -2063,7 +2411,7 @@ private fun RemoteBottomBar(
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
+        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         when (target) {
@@ -2074,7 +2422,7 @@ private fun RemoteBottomBar(
                     onLongPress = { TvRemote.longPress(TvKey.BACK) },
                     modifier = Modifier.weight(1f),
                 ) {
-                    Icon(UndoBackIcon, contentDescription = "Back", tint = Color.White, modifier = Modifier.size(22.dp))
+                    Icon(UndoBackIcon, contentDescription = "Back", modifier = Modifier.size(22.dp))
                 }
 
                 BottomPillButton(
@@ -2083,7 +2431,7 @@ private fun RemoteBottomBar(
                     onLongPress = { TvRemote.longPress(TvKey.HOME) },
                     modifier = Modifier.weight(1f),
                 ) {
-                    Icon(HomeOutlineIcon, contentDescription = "Home", tint = Color.White, modifier = Modifier.size(24.dp))
+                    Icon(HomeOutlineIcon, contentDescription = "Home", modifier = Modifier.size(24.dp))
                 }
 
                 VoiceBottomPill(
@@ -2100,21 +2448,21 @@ private fun RemoteBottomBar(
                     onClick = { CastController.prev() },
                     modifier = Modifier.weight(1f),
                 ) {
-                    Icon(SkipPreviousIcon, contentDescription = "Previous", tint = Color.White, modifier = Modifier.size(24.dp))
+                    Icon(SkipPreviousIcon, contentDescription = "Previous", modifier = Modifier.size(24.dp))
                 }
                 BottomPillButton(
                     label = "Stop",
                     onClick = { CastController.stop() },
                     modifier = Modifier.weight(1f),
                 ) {
-                    Icon(StopSquareIcon, contentDescription = "Stop", tint = Color.White, modifier = Modifier.size(22.dp))
+                    Icon(StopSquareIcon, contentDescription = "Stop", modifier = Modifier.size(22.dp))
                 }
                 BottomPillButton(
                     label = "Next",
                     onClick = { CastController.next() },
                     modifier = Modifier.weight(1f),
                 ) {
-                    Icon(SkipNextIcon, contentDescription = "Next", tint = Color.White, modifier = Modifier.size(24.dp))
+                    Icon(SkipNextIcon, contentDescription = "Next", modifier = Modifier.size(24.dp))
                 }
             }
             is RemoteTarget.Web -> {
@@ -2124,18 +2472,16 @@ private fun RemoteBottomBar(
                         onClick = { onRemote(target.remote.deviceId, "nav:back") },
                         modifier = Modifier.fillMaxWidth(0.45f),
                     ) {
-                        Icon(UndoBackIcon, contentDescription = "Back", tint = Color.White, modifier = Modifier.size(22.dp))
+                        Icon(UndoBackIcon, contentDescription = "Back", modifier = Modifier.size(22.dp))
                     }
-                } else {
-                    Spacer(Modifier.height(12.dp))
                 }
             }
-            null -> Spacer(Modifier.height(52.dp))
+            null -> Spacer(Modifier.height(48.dp))
         }
     }
 }
 
-// ---- 1st Image: Inputs Bottom Sheet Overlay ------------------------------------------------------
+// ---- Inputs Bottom Sheet Overlay -----------------------------------------------------------------
 
 @Composable
 private fun InputsSheetOverlay(
@@ -2147,24 +2493,25 @@ private fun InputsSheetOverlay(
     onSelectTvInput: (TvInput) -> Unit,
     onManageDevices: () -> Unit,
 ) {
+    val scheme = MaterialTheme.colorScheme
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(enabled = false, onClick = {}),
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-        color = RemoteSheetBg,
+        color = scheme.surfaceContainerLow,
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Box(
                 modifier = Modifier
                     .align(Alignment.CenterHorizontally)
                     .size(width = 42.dp, height = 4.dp)
-                    .background(Color(0xFF56565E), RoundedCornerShape(2.dp)),
+                    .background(scheme.outlineVariant, RoundedCornerShape(2.dp)),
             )
 
             Row(
@@ -2176,10 +2523,10 @@ private fun InputsSheetOverlay(
                     "Inputs",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
-                    color = Color.White,
+                    color = scheme.onSurface,
                 )
                 TextButton(onClick = onManageDevices) {
-                    Text("Manage devices", color = RemoteAccentBlue)
+                    Text("Manage devices", color = scheme.primary)
                 }
             }
 
@@ -2187,11 +2534,11 @@ private fun InputsSheetOverlay(
             if (targets.size > 1 || (targets.isNotEmpty() && tvInputs.isEmpty())) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     if (tvInputs.isNotEmpty()) {
-                        Text("Connected devices", style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.6f))
+                        Text("Connected devices", style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant)
                     }
                     Row(
                         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(18.dp),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
                     ) {
                         targets.forEach { target ->
                             val selected = target.id == activeTarget?.id
@@ -2212,15 +2559,15 @@ private fun InputsSheetOverlay(
                 }
             }
 
-            // TV Ports / Inputs row (matching Image 1: Live TV, Set-Top Box, HDMI 2, HDMI 3)
+            // TV Ports / Inputs row
             if (tvInputs.isNotEmpty()) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     if (targets.size > 1) {
-                        Text("${activeTarget?.label ?: "TV"} ports", style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.6f))
+                        Text("${activeTarget?.label ?: "TV"} ports", style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant)
                     }
                     Row(
                         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(18.dp),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
                     ) {
                         tvInputs.forEach { input ->
                             val isSelected = input.id == activeTvInputId
@@ -2245,11 +2592,11 @@ private fun InputsSheetOverlay(
                 Text(
                     "No devices connected yet. Tap \"Manage devices\" to connect a TV, Chromecast, or Web screen.",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = Color.White.copy(alpha = 0.65f),
+                    color = scheme.onSurfaceVariant,
                 )
             }
 
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(4.dp))
         }
     }
 }
@@ -2262,6 +2609,7 @@ private fun InputCircleItem(
     connected: Boolean,
     onClick: () -> Unit,
 ) {
+    val scheme = MaterialTheme.colorScheme
     Column(
         modifier = Modifier
             .width(74.dp)
@@ -2276,9 +2624,9 @@ private fun InputCircleItem(
                     .clip(CircleShape)
                     .background(
                         when {
-                            selected -> RemoteInputBlue
-                            connected -> Color(0xFF4C4C52)
-                            else -> Color(0xFF2E2E32)
+                            selected -> scheme.primary
+                            connected -> scheme.surfaceContainerHighest
+                            else -> scheme.surfaceContainer
                         },
                     ),
                 contentAlignment = Alignment.Center,
@@ -2286,7 +2634,11 @@ private fun InputCircleItem(
                 Icon(
                     icon,
                     contentDescription = label,
-                    tint = if (connected || selected) Color.White else Color.White.copy(alpha = 0.45f),
+                    tint = when {
+                        selected -> scheme.onPrimary
+                        connected -> scheme.onSurface
+                        else -> scheme.onSurfaceVariant.copy(alpha = 0.55f)
+                    },
                     modifier = Modifier.size(28.dp),
                 )
             }
@@ -2296,17 +2648,17 @@ private fun InputCircleItem(
                         .size(20.dp)
                         .align(Alignment.TopStart)
                         .clip(CircleShape)
-                        .background(Color.White),
+                        .background(scheme.surfaceContainerLowest),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(Icons.Filled.Check, contentDescription = "Active", tint = RemoteInputBlue, modifier = Modifier.size(14.dp))
+                    Icon(Icons.Filled.Check, contentDescription = "Active", tint = scheme.primary, modifier = Modifier.size(14.dp))
                 }
             }
         }
         Text(
             text = label,
             style = MaterialTheme.typography.labelMedium,
-            color = if (connected || selected) Color.White else Color.White.copy(alpha = 0.5f),
+            color = if (connected || selected) scheme.onSurface else scheme.onSurfaceVariant.copy(alpha = 0.6f),
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
@@ -2335,11 +2687,12 @@ private fun VolumePillOrSetup(
             modifier = modifier,
         )
     } else if (caps.volumeSetup) {
+        val scheme = MaterialTheme.colorScheme
         Surface(
             onClick = onEnableVolume,
             modifier = modifier,
-            shape = RoundedCornerShape(28.dp),
-            color = RemoteTileBg,
+            shape = RoundedCornerShape(22.dp),
+            color = scheme.surfaceContainerHigh,
         ) {
             Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(8.dp)) {
                 Text(
@@ -2349,7 +2702,7 @@ private fun VolumePillOrSetup(
                         else -> "Enable\nVol"
                     },
                     style = MaterialTheme.typography.labelLarge,
-                    color = Color.White,
+                    color = scheme.onSurface,
                     textAlign = TextAlign.Center,
                 )
             }
@@ -2367,10 +2720,11 @@ private fun VerticalRockerTile(
     modifier: Modifier = Modifier,
 ) {
     val haptic = LocalHapticFeedback.current
+    val scheme = MaterialTheme.colorScheme
     Surface(
         modifier = modifier,
-        shape = RoundedCornerShape(28.dp),
-        color = RemoteTileBg,
+        shape = RoundedCornerShape(22.dp),
+        color = scheme.surfaceContainerHigh,
     ) {
         Column(
             modifier = Modifier.fillMaxSize(),
@@ -2387,9 +2741,9 @@ private fun VerticalRockerTile(
                     },
                 contentAlignment = Alignment.Center,
             ) {
-                Text(topSymbol, style = MaterialTheme.typography.headlineSmall, color = Color.White)
+                Text(topSymbol, style = MaterialTheme.typography.headlineSmall, color = scheme.onSurface)
             }
-            Text(label, style = MaterialTheme.typography.labelLarge, color = Color.White.copy(alpha = 0.85f), fontWeight = FontWeight.Medium)
+            Text(label, style = MaterialTheme.typography.labelLarge, color = scheme.onSurfaceVariant, fontWeight = FontWeight.Medium)
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -2400,7 +2754,7 @@ private fun VerticalRockerTile(
                     },
                 contentAlignment = Alignment.Center,
             ) {
-                Text(bottomSymbol, style = MaterialTheme.typography.headlineSmall, color = Color.White)
+                Text(bottomSymbol, style = MaterialTheme.typography.headlineSmall, color = scheme.onSurface)
             }
         }
     }
@@ -2412,13 +2766,15 @@ private fun CircleRemoteButton(
     size: Dp,
     containerColor: Color,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    contentColor: Color = MaterialTheme.colorScheme.onSurface,
     content: @Composable () -> Unit,
 ) {
     val haptic = LocalHapticFeedback.current
     var pressed by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(if (pressed) 0.92f else 1f, tween(80), label = "circlePress")
     Box(
-        modifier = Modifier
+        modifier = modifier
             .size(size)
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(CircleShape)
@@ -2442,7 +2798,7 @@ private fun CircleRemoteButton(
             },
         contentAlignment = Alignment.Center,
     ) {
-        CompositionLocalProvider(LocalContentColor provides Color.White) {
+        CompositionLocalProvider(LocalContentColor provides contentColor) {
             content()
         }
     }
@@ -2457,14 +2813,15 @@ private fun BottomPillButton(
     content: @Composable () -> Unit,
 ) {
     val haptic = LocalHapticFeedback.current
+    val scheme = MaterialTheme.colorScheme
     var pressed by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(if (pressed) 0.94f else 1f, tween(80), label = "pillPress")
     Box(
         modifier = modifier
-            .height(52.dp)
+            .height(48.dp)
             .graphicsLayer { scaleX = scale; scaleY = scale }
-            .clip(RoundedCornerShape(26.dp))
-            .background(if (pressed) RemoteTilePressed else RemoteBottomBarBg)
+            .clip(RoundedCornerShape(24.dp))
+            .background(if (pressed) scheme.surfaceContainerHighest else scheme.surfaceContainerHigh)
             .semantics {
                 contentDescription = label
                 role = Role.Button
@@ -2491,7 +2848,9 @@ private fun BottomPillButton(
             },
         contentAlignment = Alignment.Center,
     ) {
-        content()
+        CompositionLocalProvider(LocalContentColor provides scheme.onSurface) {
+            content()
+        }
     }
 }
 
@@ -2504,16 +2863,17 @@ private fun VoiceBottomPill(
     modifier: Modifier = Modifier,
 ) {
     val haptic = LocalHapticFeedback.current
+    val scheme = MaterialTheme.colorScheme
     var down by remember { mutableStateOf(false) }
     var listening by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(if (down) 0.94f else 1f, tween(90), label = "voicePill")
     val label = if (holdToTalk) "Voice, hold and speak" else "Voice, tap and speak"
     Box(
         modifier = modifier
-            .height(52.dp)
+            .height(48.dp)
             .graphicsLayer { scaleX = scale; scaleY = scale }
-            .clip(RoundedCornerShape(26.dp))
-            .background(if (listening) RemotePowerRed else RemoteBottomBarBg)
+            .clip(RoundedCornerShape(24.dp))
+            .background(if (listening) RemotePowerRed else scheme.surfaceContainerHigh)
             .semantics {
                 contentDescription = label
                 role = Role.Button
@@ -2685,15 +3045,16 @@ private fun DevicesPanel(
         )
     }
 
+    val scheme = MaterialTheme.colorScheme
     Surface(
         modifier = Modifier.fillMaxSize(),
         shape = RoundedCornerShape(24.dp),
-        color = Color(0xFF202024),
-        border = BorderStroke(1.dp, RemoteBorderSubtle),
+        color = scheme.surfaceContainerLow,
+        border = BorderStroke(1.dp, scheme.outlineVariant.copy(alpha = 0.45f)),
     ) {
         Column(modifier = Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             if (connecting) {
-                StatusPill("Connecting…", RemoteAccentBlue, pulsing = true)
+                StatusPill("Connecting…", scheme.primary, pulsing = true)
                 Text(
                     when {
                         state.viaAdb -> "Look at the TV and choose Allow (tick \"Always allow\")."
@@ -2701,16 +3062,16 @@ private fun DevicesPanel(
                         else -> "Connecting to the TV…"
                     },
                     style = MaterialTheme.typography.bodyMedium,
-                    color = Color.White,
+                    color = scheme.onSurface,
                 )
-                OutlinedButton(onClick = onDisconnect, shape = RoundedCornerShape(14.dp)) { Text("Cancel", color = Color.White) }
+                OutlinedButton(onClick = onDisconnect, shape = RoundedCornerShape(14.dp)) { Text("Cancel") }
             } else if (needsPin != null) {
-                StatusPill("Waiting for code", RemoteAccentBlue, pulsing = true)
+                StatusPill("Waiting for code", scheme.primary, pulsing = true)
                 Text(
                     if (androidTvCode) "Look at the TV: it shows a 6-character code. Type it here."
                     else "Look at the TV: it shows a 4-digit code. Type it here.",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = Color.White,
+                    color = scheme.onSurface,
                 )
                 OutlinedTextField(
                     value = pin,
@@ -2736,7 +3097,7 @@ private fun DevicesPanel(
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { onSubmitPin(pin) }, enabled = pin.length == pinLength, shape = RoundedCornerShape(14.dp)) { Text("Pair") }
-                    OutlinedButton(onClick = onDisconnect, shape = RoundedCornerShape(14.dp)) { Text("Cancel", color = Color.White) }
+                    OutlinedButton(onClick = onDisconnect, shape = RoundedCornerShape(14.dp)) { Text("Cancel") }
                 }
             } else {
                 Column(
@@ -2751,7 +3112,7 @@ private fun DevicesPanel(
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Box(modifier = Modifier.size(8.dp).background(LiveGreen, CircleShape))
-                                Text("Connected to ${state.host}", style = MaterialTheme.typography.bodyMedium, color = Color.White)
+                                Text("Connected to ${state.host}", style = MaterialTheme.typography.bodyMedium, color = scheme.onSurface)
                             }
                             TextButton(onClick = onDisconnect) { Text("Disconnect", color = RemotePowerRed) }
                         }
@@ -2770,17 +3131,17 @@ private fun DevicesPanel(
                                 onClick = { onWake(primaryTv.address, null) },
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(14.dp),
-                            ) { Text("Turn on with Wake-on-LAN", color = Color.White) }
+                            ) { Text("Turn on with Wake-on-LAN") }
                         } else {
                             TextButton(onClick = { macFor = primaryTv.address }) {
-                                Text("Set up Wake-on-LAN", color = Color.White.copy(alpha = 0.7f))
+                                Text("Set up Wake-on-LAN", color = scheme.onSurfaceVariant)
                             }
                         }
                     }
 
                     val otherSaved = saved.filter { it.address != primaryTv?.address }
                     if (otherSaved.isNotEmpty()) {
-                        Text("Other saved TVs", style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.65f))
+                        Text("Other saved TVs", style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant)
                         otherSaved.forEach { device ->
                             TvDeviceCard(
                                 name = device.kind ?: "Smart TV",
@@ -2795,7 +3156,7 @@ private fun DevicesPanel(
                     val allSavedAddresses = saved.map { it.address }.toSet() + listOfNotNull(primaryTv?.address)
                     val discoveredOther = found.filter { it.address !in allSavedAddresses }
                     if (discoveredOther.isNotEmpty()) {
-                        Text("Discovered TVs on Wi-Fi", style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.65f))
+                        Text("Discovered TVs on Wi-Fi", style = MaterialTheme.typography.labelMedium, color = scheme.onSurfaceVariant)
                         discoveredOther.forEach { device ->
                             TvDeviceCard(
                                 name = device.kind ?: "Smart TV",
@@ -2812,8 +3173,8 @@ private fun DevicesPanel(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
-                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = RemoteAccentBlue)
-                            Text("Searching for TVs on Wi-Fi…", style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = 0.7f))
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = scheme.primary)
+                            Text("Searching for TVs on Wi-Fi…", style = MaterialTheme.typography.bodyMedium, color = scheme.onSurfaceVariant)
                         }
                     }
 
@@ -2823,11 +3184,11 @@ private fun DevicesPanel(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Text("No smart TVs found", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, color = Color.White)
+                            Text("No smart TVs found", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, color = scheme.onSurface)
                             Text(
                                 "Make sure your TV is on and connected to the same Wi-Fi network.",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = Color.White.copy(alpha = 0.65f),
+                                color = scheme.onSurfaceVariant,
                                 textAlign = TextAlign.Center,
                             )
                             Button(onClick = onScan, shape = RoundedCornerShape(12.dp)) { Text("Search Wi-Fi for TVs") }
@@ -2837,10 +3198,10 @@ private fun DevicesPanel(
 
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     TextButton(onClick = onScan, enabled = !scanning) {
-                        Text("Rescan Wi-Fi", style = MaterialTheme.typography.labelSmall, color = RemoteAccentBlue)
+                        Text("Rescan Wi-Fi", style = MaterialTheme.typography.labelSmall, color = scheme.primary)
                     }
                     TextButton(onClick = { showManualDialog = true }) {
-                        Text("Add TV by IP", style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.75f))
+                        Text("Add TV by IP", style = MaterialTheme.typography.labelSmall, color = scheme.onSurfaceVariant)
                     }
                 }
             }
@@ -2859,12 +3220,13 @@ private fun TvDeviceCard(
     onClick: () -> Unit,
     onForget: (() -> Unit)? = null,
 ) {
+    val scheme = MaterialTheme.colorScheme
     Surface(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
-        color = if (primary) RemoteTileBg else Color(0xFF2B2B30),
-        border = BorderStroke(1.dp, if (primary) RemoteAccentBlue.copy(alpha = 0.45f) else RemoteBorderSubtle),
+        color = if (primary) scheme.surfaceContainerHigh else scheme.surfaceContainer,
+        border = BorderStroke(1.dp, if (primary) scheme.primary.copy(alpha = 0.45f) else scheme.outlineVariant.copy(alpha = 0.45f)),
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
@@ -2872,21 +3234,21 @@ private fun TvDeviceCard(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Box(
-                modifier = Modifier.size(38.dp).background(RemoteBg, RoundedCornerShape(10.dp)),
+                modifier = Modifier.size(38.dp).background(scheme.surface, RoundedCornerShape(10.dp)),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(RemoteIcon, contentDescription = null, tint = if (primary) RemoteAccentBlue else Color.White.copy(alpha = 0.75f), modifier = Modifier.size(20.dp))
+                Icon(RemoteIcon, contentDescription = null, tint = if (primary) scheme.primary else scheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
             }
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.65f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, color = scheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = scheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             if (onForget != null) {
                 IconButton(onClick = onForget, modifier = Modifier.size(30.dp)) {
-                    Icon(Icons.Filled.Close, contentDescription = "Forget saved TV", tint = Color.White.copy(alpha = 0.6f), modifier = Modifier.size(18.dp))
+                    Icon(Icons.Filled.Close, contentDescription = "Forget saved TV", tint = scheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
                 }
             }
-            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = Color.White.copy(alpha = 0.6f), modifier = Modifier.size(20.dp))
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = scheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
         }
     }
 }

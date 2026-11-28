@@ -187,4 +187,46 @@ class PairingManagerTest {
         assertEquals(false, PairingManager.isValid(token))
         assertEquals(0, PairingManager.devices.value.size)
     }
+
+    @Test
+    fun aLimitedScreenCanHavePhotoAndMusicLimitsKeptAcrossApprovals() {
+        PairingManager.clearKnown()
+        val token = approveWithToken("Edge", "edge1111edge")
+        PairingManager.setLimit("edge1111edge", setOf(1L))
+        PairingManager.setPhotoLimit("edge1111edge", setOf(10L, 11L))
+        PairingManager.setMusicLimit("edge1111edge", setOf(20L))
+        assertEquals(true, PairingManager.isLimited(token))
+        assertEquals(true, PairingManager.hasPhotoLimit(token))
+        assertEquals(true, PairingManager.hasMusicLimit(token))
+        assertEquals(true, PairingManager.allowsPhoto(token, 10L))
+        assertEquals(false, PairingManager.allowsPhoto(token, 12L))
+        assertEquals(true, PairingManager.allowsMusic(token, 20L))
+        assertEquals(false, PairingManager.allowsMusic(token, 21L))
+
+        PairingManager.reset()
+        val again = approveWithToken("Edge", "edge1111edge")
+        assertEquals(true, PairingManager.hasPhotoLimit(again))
+        assertEquals(true, PairingManager.hasMusicLimit(again))
+        assertEquals(true, PairingManager.allowsPhoto(again, 11L))
+        assertEquals(false, PairingManager.allowsPhoto(again, 12L))
+        assertEquals(true, PairingManager.allowsMusic(again, 20L))
+
+        PairingManager.clearLimit("edge1111edge")
+        assertEquals(false, PairingManager.isLimited(again))
+        assertEquals(false, PairingManager.hasVideoLimit(again))
+        assertEquals(false, PairingManager.hasPhotoLimit(again))
+        assertEquals(false, PairingManager.hasMusicLimit(again))
+    }
+
+    @Test
+    fun photoOrMusicLimitAloneDoesNotGrantVideoLimit() {
+        PairingManager.clearKnown()
+        val token = approveWithToken("Frame", "frame1111frm")
+        val deviceId = PairingManager.clientOf(token)!!.first
+        PairingManager.setPhotoLimit("frame1111frm", setOf(10L))
+        assertEquals(true, PairingManager.isLimited(token))
+        assertEquals(true, PairingManager.hasPhotoLimit(token))
+        assertEquals(false, PairingManager.hasVideoLimit(token))
+        assertEquals(false, PairingManager.isVideoAllowedForDevice(deviceId, 1L))
+    }
 }

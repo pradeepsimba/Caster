@@ -17,6 +17,8 @@ data class RemoteState(
     val reportedAt: Long,
     /** The page's volume, 0 to 100 (-1 when the page doesn't say). */
     val volume: Int = -1,
+    /** Media kind reported by the page: "v" (video), "a" (music/audio), or "i" (image). */
+    val kind: String = "v",
 )
 
 /**
