@@ -118,7 +118,7 @@ object TvRemote {
     private const val HINT_CHECKS = 20
 
     /** An ADB command that takes longer than this is treated as a dead connection (a sleeping TV never answers). */
-    private const val SHELL_DEADLINE_MS = 10_000L
+    private const val SHELL_DEADLINE_MS = 4_000L
     private const val WAKE_SETTLE_MS = 1_500L
     private const val PIN_TRIES = 4
     private const val DEVICE_NAME = "Caster"
@@ -191,6 +191,9 @@ object TvRemote {
     private val _activeInputId = MutableStateFlow<String?>(null)
     val activeInputId: StateFlow<String?> = _activeInputId.asStateFlow()
 
+    private val _foregroundAppId = MutableStateFlow<String?>(null)
+    val foregroundAppId: StateFlow<String?> = _foregroundAppId.asStateFlow()
+
     private val _installedApps = MutableStateFlow<List<InstalledTvApp>>(emptyList())
     val installedApps: StateFlow<List<InstalledTvApp>> = _installedApps.asStateFlow()
 
@@ -200,12 +203,14 @@ object TvRemote {
     @Volatile private var generation = 0
     private var connectJob: Job? = null
     private var sender: Job? = null
+    @Volatile private var reconnecting = false
 
     // Commands go through one queue, in order, and none is dropped (every typed letter matters). A held button is the
     // exception: it skips a press while the TV is still working through earlier ones, so it can't build up a lag.
     // Every connection has its own queue: a sender still busy with the old one can't pick up the new one's buttons.
-    @Volatile private var commands = Channel<() -> Unit>(Channel.UNLIMITED)
+    @Volatile private var commands = Channel<suspend () -> Unit>(Channel.UNLIMITED)
     private val transition = Any() // taken while a connection is made or ended, so the two can't interleave
+    private val reconnectLock = Any()
     private val pending = AtomicInteger(0)
 
     private var appContext: Context? = null
@@ -595,10 +600,7 @@ object TvRemote {
                 link.onInputsLoaded = { list -> if (mine == generation) _inputs.value = list }
                 link.onAppsLoaded = { list -> if (mine == generation) _installedApps.value = list }
                 link.onForegroundApp = { appId ->
-                    if (mine == generation) {
-                        val match = _inputs.value.firstOrNull { it.appId == appId }
-                        if (match != null) _activeInputId.value = match.id
-                    }
+                    if (mine == generation) updateActiveInputForApp(appId)
                 }
             } else {
                 _inputs.value = defaultTvInputs()
@@ -805,6 +807,7 @@ object TvRemote {
 
     private fun disconnectLocked() {
         generation++
+        reconnecting = false
         voiceHeld = false
         voiceJob?.cancel()
         voiceJob = null
@@ -832,6 +835,7 @@ object TvRemote {
         closeVolume()
         _inputs.value = emptyList()
         _activeInputId.value = null
+        _foregroundAppId.value = null
         _installedApps.value = emptyList()
         newQueue()
         pending.set(0)
@@ -939,20 +943,172 @@ object TvRemote {
                     // The Fire TV answered, just not with a yes (typing with no text box, play with nothing to play): it is still there.
                     if (mine == generation) donePending()
                 } catch (e: Throwable) {
+                    // On a transient IO drop (e.g. TV closed an idle socket), try to reconnect seamlessly in-place
+                    // and replay the failed button/command once before giving up.
+                    val canRetry = isActive && mine == generation && isRecoverableDrop(e) && reconnectInPlace(mine)
+                    if (canRetry) {
+                        try {
+                            task()
+                            if (mine == generation) donePending()
+                            continue
+                        } catch (retryErr: FireTvHttpException) {
+                            if (mine == generation) donePending()
+                            continue
+                        } catch (retryErr: Throwable) {
+                            if (isActive) lost(mine, retryErr, allowReconnect = false)
+                            break
+                        }
+                    }
                     // The TV went to sleep, left the network, turned ADB off or forgot this phone. (If the owner pressed
                     // Disconnect, this job was cancelled first and the screen already says so.)
-                    if (isActive) lost(mine, e)
+                    if (isActive) lost(mine, e, allowReconnect = false)
                     break
                 }
             }
         }
     }
 
+    private fun isRecoverableDrop(error: Throwable): Boolean =
+        error is IOException &&
+            error !is FireTvAuthException &&
+            error !is TvRefusedException &&
+            !isPinMismatch(error)
+
     /** The connection ended by itself. Does nothing if it isn't the current one any more, or was already reported. */
-    private fun lost(mine: Int, error: Throwable) {
+    private fun lost(mine: Int, error: Throwable, allowReconnect: Boolean = true) {
+        val connected = _state.value as? State.Connected
+        if (allowReconnect && connected != null && mine == generation && isRecoverableDrop(error) && !reconnecting) {
+            scope.launch {
+                if (!reconnectInPlace(mine)) {
+                    synchronized(transition) {
+                        if (mine == generation && _state.value is State.Connected) lostLocked(error)
+                    }
+                }
+            }
+            return
+        }
         synchronized(transition) {
             if (mine != generation || _state.value !is State.Connected) return
             lostLocked(error)
+        }
+    }
+
+    /**
+     * Attempts to silently re-establish the current TV connection (keeping [State.Connected] and the user's
+     * current remote/numpad screen intact). Returns true if a live link is ready after this call.
+     */
+    private fun reconnectInPlace(mine: Int): Boolean = synchronized(reconnectLock) {
+        if (mine != generation) return false
+        val current = _state.value as? State.Connected ?: return false
+        val app = appContext ?: return false
+        if (reconnecting) return false
+        reconnecting = true
+        try {
+            val host = current.host
+            val link = current.link
+            val store = prefs(app)
+            LanNetwork.refresh(app)
+            when (link) {
+                Link.FireTv -> {
+                    val f = FireTvLink(host, store.getString(KEY_TOKEN_PREFIX + host, null))
+                    f.wake()
+                    Thread.sleep(500)
+                    if (mine != generation) return false
+                    synchronized(transition) {
+                        if (mine != generation) return false
+                        fire = f
+                    }
+                    true
+                }
+                Link.Samsung -> {
+                    val token = store.getString(KEY_SAMSUNG_TOKEN + host, null) ?: return false
+                    val pinned = store.getString(KEY_SAMSUNG_PIN + host, null)
+                    val opened = SamsungTvLink.open(host, DEVICE_NAME, token, pinned, SamsungTvLink.ENDPOINTS, track(mine)) { e -> linkClosed(mine, e) }
+                    synchronized(transition) {
+                        if (mine != generation) {
+                            runCatching { opened.link.close() }
+                            return false
+                        }
+                        openingSocket = null
+                        runCatching { socketRemote?.close() }
+                        socketRemote = opened.link
+                    }
+                    true
+                }
+                Link.Lg -> {
+                    val key = store.getString(KEY_LG_KEY + host, null) ?: return false
+                    val pinned = store.getString(KEY_LG_PIN + host, null)
+                    val opened = LgTvLink.open(host, key, pinned, LgTvLink.ENDPOINTS, track(mine)) { e -> linkClosed(mine, e) }
+                    val newLink = opened.link
+                    synchronized(transition) {
+                        if (mine != generation) {
+                            runCatching { newLink.close() }
+                            return false
+                        }
+                        openingSocket = null
+                        runCatching { socketRemote?.close() }
+                        newLink.onInputsLoaded = { list -> if (mine == generation) _inputs.value = list }
+                        newLink.onAppsLoaded = { list -> if (mine == generation) _installedApps.value = list }
+                        newLink.onForegroundApp = { appId ->
+                            if (mine == generation) updateActiveInputForApp(appId)
+                        }
+                        socketRemote = newLink
+                    }
+                    true
+                }
+                Link.AndroidTv -> {
+                    val pinned = store.getString(KEY_ATV_PREFIX + host, null) ?: return false
+                    val identity = AndroidTvIdentity.loadOrCreate(app.filesDir)
+                    val opened = AndroidTvLink.open(host, identity, pinned, { error -> linkClosed(mine, error) })
+                    if (mine != generation) {
+                        runCatching { opened.close() }
+                        return false
+                    }
+                    atvOpening = opened
+                    val ready = opened.awaitReady(ATV_READY_MS)
+                    if (mine == generation) atvOpening = null
+                    if (!ready || mine != generation) {
+                        runCatching { opened.close() }
+                        return false
+                    }
+                    synchronized(transition) {
+                        if (mine != generation) {
+                            runCatching { opened.close() }
+                            return false
+                        }
+                        runCatching { atv?.close() }
+                        atv = opened
+                    }
+                    true
+                }
+                Link.Adb -> {
+                    if (!adbSupported) return false
+                    val target = TvCommands.parseTarget(host) ?: return false
+                    val opened = Dadb.create(target.host, target.port, keyPair(app), 3_000, 0)
+                    opening = opened
+                    try {
+                        shellGuarded(opened, "echo caster")
+                    } catch (t: Throwable) {
+                        runCatching { opened.close() }
+                        if (opening === opened) opening = null
+                        return false
+                    }
+                    synchronized(transition) {
+                        if (mine != generation) {
+                            runCatching { opened.close() }
+                            return false
+                        }
+                        opening = null
+                        runCatching { connection?.close() }
+                        connection = opened
+                    }
+                    true
+                }
+            }
+        } catch (_: Throwable) {
+            false
+        } finally {
+            reconnecting = false
         }
     }
 
@@ -996,7 +1152,7 @@ object TvRemote {
         }
     }
 
-    private fun enqueue(task: () -> Unit) {
+    private fun enqueue(task: suspend () -> Unit) {
         pending.incrementAndGet()
         if (!commands.trySend(task).isSuccess) donePending() // the connection just ended
     }
@@ -1064,8 +1220,18 @@ object TvRemote {
         }
     }
 
+    private fun updateActiveInputForApp(appId: String) {
+        _foregroundAppId.value = appId
+        val list = _inputs.value
+        val match = list.firstOrNull { it.appId == appId }
+            ?: if (appId == "com.webos.app.livetv") list.firstOrNull { it.kind == TvInput.InputKind.LIVE_TV } else null
+        // Clear activeInputId when switching to an OTT app or TV Home/OS UI so full controls re-enable.
+        _activeInputId.value = match?.id
+    }
+
     private fun defaultTvInputs(): List<TvInput> = listOf(
         TvInput("tv", "Live TV", TvInput.InputKind.LIVE_TV, connected = true),
+        TvInput("stb", "Set-top Box (DTH)", TvInput.InputKind.STB, connected = true),
         TvInput("hdmi1", "HDMI 1", TvInput.InputKind.HDMI, connected = true),
         TvInput("hdmi2", "HDMI 2", TvInput.InputKind.HDMI, connected = false),
         TvInput("hdmi3", "HDMI 3", TvInput.InputKind.HDMI, connected = false),
@@ -1077,36 +1243,61 @@ object TvRemote {
     /** One press of [code]. With [repeating] (a held button) a press is skipped while the TV is still catching up. */
     fun key(code: Int, repeating: Boolean = false) {
         if (repeating && pending.get() >= 1) return // one at a time: an even pace instead of bursts and gaps
-        val link = fire
-        val androidTv = atv
-        val remote = socketRemote
+        val connectedLink = (_state.value as? State.Connected)?.link ?: return
         // A held fast-forward would keep asking the TV to speed up; only a single press is sent there.
-        if (repeating && (link != null || androidTv != null || remote != null) && (code == TvKey.FAST_FORWARD || code == TvKey.REWIND)) return
-        val adb = connection
-        if (link != null && (code == TvKey.VOLUME_UP || code == TvKey.VOLUME_DOWN || code == TvKey.MUTE)) {
+        if (repeating && connectedLink != Link.Adb && (code == TvKey.FAST_FORWARD || code == TvKey.REWIND)) return
+        if (connectedLink == Link.FireTv && (code == TvKey.VOLUME_UP || code == TvKey.VOLUME_DOWN || code == TvKey.MUTE)) {
             sendVolume(code)
             return
         }
-        when {
-            link != null -> if (FireTvCommands.supports(code)) enqueue { sendPress(link, code) }
-            androidTv != null -> enqueue { androidTv.key(code) }
-            remote != null -> if (remote.supports(code)) enqueue { remote.press(code) }
-            adb != null -> enqueue { shellGuarded(adb, TvCommands.key(code)) }
+        if (connectedLink == Link.FireTv && !FireTvCommands.supports(code)) return
+        if ((connectedLink == Link.Samsung || connectedLink == Link.Lg) && socketRemote?.supports(code) == false) return
+        // Resolve the active link inside the queued task so a seamless reconnect-in-place replays on the new socket.
+        enqueue {
+            val link = fire
+            val androidTv = atv
+            val remote = socketRemote
+            val adb = connection
+            when {
+                link != null -> if (FireTvCommands.supports(code)) sendPress(link, code)
+                androidTv != null -> androidTv.key(code)
+                remote != null -> if (remote.supports(code)) remote.press(code)
+                adb != null -> shellGuarded(adb, TvCommands.key(code))
+            }
         }
     }
 
     /**
      * One complete press of [code] on a Fire TV. Fast-forward and rewind are sent as down and then up: a "down" alone is a
      * button that is never let go, which makes the TV scan faster and faster.
+     * On a transient network hiccup the press is retried once before propagating the error.
      */
     private fun sendPress(link: FireTvLink, code: Int) {
         val press = FireTvCommands.forKey(code) ?: return
-        link.send(press)
+        // Retry once on a transient connection failure (e.g. brief Wi-Fi blip) before giving up.
+        var lastEx: Exception? = null
+        for (attempt in 0..1) {
+            try {
+                link.send(press)
+                lastEx = null
+                break
+            } catch (e: FireTvHttpException) {
+                throw e // TV answered with an error — no retry needed
+            } catch (e: FireTvAuthException) {
+                throw e // auth failure — no retry
+            } catch (e: Exception) {
+                lastEx = e
+                if (attempt == 0) Thread.sleep(300) // brief pause before the retry
+            }
+        }
+        lastEx?.let { throw it }
         if (code == TvKey.FAST_FORWARD || code == TvKey.REWIND) {
             try {
                 FireTvCommands.hold(code, down = false)?.let { link.send(it) }
             } catch (e: FireTvHttpException) {
                 // This TV takes no key up; the press itself already went through.
+            } catch (_: Exception) {
+                // Key-up failed transiently; the TV's own timeout will release it.
             }
         }
     }

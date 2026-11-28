@@ -619,4 +619,45 @@ class WebSocketTvsTest {
             input.close()
         }
     }
+
+    @Test
+    fun lgReopensInputSocketWhenDroppedForChannelAndNumpad() {
+        val reconnectedButtons = mutableListOf<String>()
+        val firstInputDropped = CountDownLatch(1)
+        val firstInput = FakeTv { peer ->
+            // Drop immediately after handshake, simulating an idle input socket closed by the TV.
+            firstInputDropped.countDown()
+        }
+        val secondInput = FakeTv { peer ->
+            reconnectedButtons += peer.read()
+            reconnectedButtons += peer.read()
+        }
+        val main = FakeTv { peer ->
+            peer.read(); peer.send("""{"type":"hello","payload":{}}""")
+            peer.read(); peer.send("""{"type":"response","payload":{}}""")
+            peer.read(); peer.send("""{"type":"registered","id":"register_0","payload":{}}""")
+            peer.read(); peer.send("""{"type":"response","id":0,"payload":{"socketPath":"ws://127.0.0.1:${firstInput.port}/p1"}}""")
+            // Second request for pointer input socket after the first one dropped
+            peer.read(); peer.send("""{"type":"response","id":1,"payload":{"socketPath":"ws://127.0.0.1:${secondInput.port}/p2"}}""")
+            release.await(15, TimeUnit.SECONDS)
+        }
+        val closedCalled = java.util.concurrent.atomic.AtomicBoolean(false)
+        val opened = LgTvLink.open("127.0.0.1", "saved", null, plain(main.port), {}, { closedCalled.set(true) })
+        try {
+            assertTrue(firstInputDropped.await(5, TimeUnit.SECONDS))
+            firstInput.finish()
+            Thread.sleep(150) // allow caster-lg-input reader to observe EOF and mark inputDead
+            opened.link.press(TvKey.CHANNEL_UP)
+            opened.link.press(TvKey.DIGIT_7)
+            secondInput.finish()
+            assertTrue("main link should stay alive when only input socket drops", !closedCalled.get())
+            assertTrue(reconnectedButtons.any { it.contains("name:CHANNELUP") })
+            assertTrue(reconnectedButtons.any { it.contains("name:7") })
+        } finally {
+            opened.link.close()
+            main.close()
+            firstInput.close()
+            secondInput.close()
+        }
+    }
 }

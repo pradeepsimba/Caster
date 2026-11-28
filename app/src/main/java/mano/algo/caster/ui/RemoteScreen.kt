@@ -439,26 +439,41 @@ private data class RemoteCapabilities(
     val apps: Boolean = false,
 )
 
-private fun capabilitiesFor(target: RemoteTarget?, volume: TvRemote.VolumeState): RemoteCapabilities = when (target) {
+private fun isHomeAppId(appId: String?): Boolean =
+    appId == "com.webos.app.home" ||
+        appId == "com.webos.app.launcher" ||
+        appId == "com.palm.launcher"
+
+private fun capabilitiesFor(
+    target: RemoteTarget?,
+    volume: TvRemote.VolumeState,
+    activeTvInput: TvInput? = null,
+    isHomeScreen: Boolean = false,
+): RemoteCapabilities = when (target) {
     is RemoteTarget.Tv -> {
         val full = target.link != TvRemote.Link.FireTv
         val volReady = full || volume is TvRemote.VolumeState.Ready
+        // When the TV is on a Set-top Box (DTH), Cable TV, or Live TV input, hide D-pad, touchpad,
+        // and the Media tab (pause/seek) and focus on channel + numpad + guide controls.
+        val isBroadcast = full && (activeTvInput?.kind == TvInput.InputKind.STB || activeTvInput?.kind == TvInput.InputKind.LIVE_TV)
+        // When on the TV's Home/Launcher screen, hide media playback buttons (Play/Pause, Rewind/Fast-Forward).
+        val isHome = full && !isBroadcast && isHomeScreen
         RemoteCapabilities(
             power = TvRemote.supportsKey(target.link, TvKey.POWER),
-            dpad = true,
+            dpad = !isBroadcast,
             back = true,
             home = true,
-            playPause = true,
-            seekButtons = true,
+            playPause = !isBroadcast && !isHome,
+            seekButtons = !isBroadcast && !isHome,
             volumeButtons = volReady,
             volumeSetup = !volReady && TvRemote.adbSupported,
-            channels = full,
-            guide = full,
-            numpad = full,
+            channels = isBroadcast,
+            guide = isBroadcast,
+            numpad = isBroadcast,
             inputs = full,
-            trackpad = true,
+            trackpad = !isBroadcast,
             voice = true,
-            keyboard = true,
+            keyboard = !isBroadcast,
             apps = full,
         )
     }
@@ -526,6 +541,7 @@ fun RemoteScreen(
     val castState by CastController.state.collectAsStateWithLifecycle()
     val tvInputs by TvRemote.inputs.collectAsStateWithLifecycle()
     val activeTvInputId by TvRemote.activeInputId.collectAsStateWithLifecycle()
+    val foregroundAppId by TvRemote.foregroundAppId.collectAsStateWithLifecycle()
     val installedApps by TvRemote.installedApps.collectAsStateWithLifecycle()
 
     LaunchedEffect(savedHost) {
@@ -562,7 +578,9 @@ fun RemoteScreen(
     }
 
     val activeTarget = targets.firstOrNull { it.id == selectedTargetId } ?: targets.lastOrNull()
-    val caps = capabilitiesFor(activeTarget, volume)
+    val activeTvInput = if (activeTarget is RemoteTarget.Tv) tvInputs.firstOrNull { it.id == activeTvInputId } else null
+    val isHomeScreen = activeTarget is RemoteTarget.Tv && isHomeAppId(foregroundAppId)
+    val caps = capabilitiesFor(activeTarget, volume, activeTvInput, isHomeScreen)
 
     var lowerMode by rememberSaveable { mutableStateOf(LowerMode.DPAD) }
     var showDevicesPanel by rememberSaveable { mutableStateOf(false) }
@@ -573,6 +591,7 @@ fun RemoteScreen(
     val showingDevices = forceDevices || showDevicesPanel
 
     val effectiveLowerMode = when {
+        !caps.dpad && caps.numpad -> LowerMode.NUMPAD
         lowerMode == LowerMode.TOUCHPAD && !caps.trackpad -> LowerMode.DPAD
         lowerMode == LowerMode.NUMPAD && !caps.numpad -> LowerMode.DPAD
         else -> lowerMode
@@ -902,6 +921,11 @@ private fun UnifiedRemoteBody(
                     )
                     UpperPage.APPS -> AppsUpperPage(
                         apps = installedApps,
+                        showVolume = !caps.playPause && !caps.seekButtons && !caps.channels && (caps.volumeButtons || caps.volumeSetup),
+                        caps = caps,
+                        volume = volume,
+                        onEnableVolume = onEnableVolume,
+                        onKey = onKey,
                         onLaunch = { app -> TvRemote.launchAppById(app.id, app.fallbackApp) },
                     )
                     UpperPage.EXTRA -> ExtraUpperPage(
@@ -949,6 +973,7 @@ private fun UnifiedRemoteBody(
             when {
                 target is RemoteTarget.Tv && lowerMode == LowerMode.NUMPAD && caps.numpad -> {
                     NumpadLowerCard(
+                        showDpadButton = caps.dpad,
                         onKey = onKey,
                         onBackToDpad = { onChangeLowerMode(LowerMode.DPAD) },
                     )
@@ -1015,18 +1040,18 @@ private fun TvUpperPage(
             caps = caps,
             volume = volume,
             onEnableVolume = onEnableVolume,
-            onVolUp = { onKey(TvKey.VOLUME_UP, false) },
-            onVolDown = { onKey(TvKey.VOLUME_DOWN, false) },
+            onVolUp = { repeating -> onKey(TvKey.VOLUME_UP, repeating) },
+            onVolDown = { repeating -> onKey(TvKey.VOLUME_DOWN, repeating) },
             modifier = Modifier.weight(1f).fillMaxHeight(),
         )
 
-        // Middle: 123 (with 4 color dots) + GUIDE
+        // Middle: 123 (with 4 color dots) or INFO (when numpad is locked on in STB/Cable mode) + GUIDE
         Column(
             modifier = Modifier.weight(1.05f).fillMaxHeight(),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Surface(
-                onClick = onToggleNumpad,
+                onClick = { if (caps.dpad) onToggleNumpad() else onKey(TvKey.INFO, false) },
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 shape = RoundedCornerShape(22.dp),
                 color = scheme.surfaceContainerHigh,
@@ -1036,11 +1061,18 @@ private fun TvUpperPage(
                     verticalArrangement = Arrangement.Center,
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Text("123", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = scheme.onSurface)
-                    Spacer(Modifier.height(3.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                        listOf(Color(0xFFE53935), Color(0xFFFDD835), Color(0xFF43A047), Color(0xFF1E88E5)).forEach { c ->
-                            Box(modifier = Modifier.size(6.dp).background(c, CircleShape))
+                    Text(
+                        if (caps.dpad) "123" else "INFO",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = scheme.onSurface,
+                    )
+                    if (caps.dpad) {
+                        Spacer(Modifier.height(3.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                            listOf(Color(0xFFE53935), Color(0xFFFDD835), Color(0xFF43A047), Color(0xFF1E88E5)).forEach { c ->
+                                Box(modifier = Modifier.size(6.dp).background(c, CircleShape))
+                            }
                         }
                     }
                 }
@@ -1068,8 +1100,8 @@ private fun TvUpperPage(
             label = "CH",
             topSymbol = "⌃",
             bottomSymbol = "⌄",
-            onTop = { onKey(TvKey.CHANNEL_UP, false) },
-            onBottom = { onKey(TvKey.CHANNEL_DOWN, false) },
+            onTop = { repeating -> onKey(TvKey.CHANNEL_UP, repeating) },
+            onBottom = { repeating -> onKey(TvKey.CHANNEL_DOWN, repeating) },
             modifier = Modifier.weight(1f).fillMaxHeight(),
         )
     }
@@ -1095,9 +1127,9 @@ private fun MediaUpperPage(
                 caps = caps,
                 volume = volume,
                 onEnableVolume = onEnableVolume,
-                onVolUp = {
+                onVolUp = { repeating ->
                     when (target) {
-                        is RemoteTarget.Tv -> onKey(TvKey.VOLUME_UP, false)
+                        is RemoteTarget.Tv -> onKey(TvKey.VOLUME_UP, repeating)
                         is RemoteTarget.Cast -> CastController.adjustVolume(0.08)
                         is RemoteTarget.Web -> {
                             val next = ((target.remote.volume + 8).coerceIn(0, 100)) / 100f
@@ -1106,9 +1138,9 @@ private fun MediaUpperPage(
                         null -> Unit
                     }
                 },
-                onVolDown = {
+                onVolDown = { repeating ->
                     when (target) {
-                        is RemoteTarget.Tv -> onKey(TvKey.VOLUME_DOWN, false)
+                        is RemoteTarget.Tv -> onKey(TvKey.VOLUME_DOWN, repeating)
                         is RemoteTarget.Cast -> CastController.adjustVolume(-0.08)
                         is RemoteTarget.Web -> {
                             val next = ((target.remote.volume - 8).coerceIn(0, 100)) / 100f
@@ -1197,6 +1229,11 @@ private fun MediaUpperPage(
 @Composable
 private fun AppsUpperPage(
     apps: List<InstalledTvApp>,
+    showVolume: Boolean,
+    caps: RemoteCapabilities,
+    volume: TvRemote.VolumeState,
+    onEnableVolume: () -> Unit,
+    onKey: (Int, Boolean) -> Unit,
     onLaunch: (InstalledTvApp) -> Unit,
 ) {
     val haptic = LocalHapticFeedback.current
@@ -1235,68 +1272,86 @@ private fun AppsUpperPage(
     }
 
     val scheme = MaterialTheme.colorScheme
-    Surface(
+    Row(
         modifier = Modifier.fillMaxSize(),
-        shape = RoundedCornerShape(24.dp),
-        color = scheme.surfaceContainerHigh,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (apps.isEmpty()) {
-            Box(contentAlignment = Alignment.Center) {
-                Text("No apps reported by TV", color = scheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
-            }
-        } else {
-            val hasOverflow = apps.size > 8
-            val shown = if (hasOverflow) apps.take(7) else apps.take(8)
-            Column(
-                modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                val firstRow = shown.take(4)
-                val secondRow = shown.drop(4)
-                Row(
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    firstRow.forEach { app ->
-                        AppTileButton(
-                            app = app,
-                            onClick = {
-                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                onLaunch(app)
-                            },
-                            modifier = Modifier.weight(1f).fillMaxHeight(),
-                        )
-                    }
-                    repeat(4 - firstRow.size) { Spacer(Modifier.weight(1f)) }
+        if (showVolume) {
+            VolumePillOrSetup(
+                caps = caps,
+                volume = volume,
+                onEnableVolume = onEnableVolume,
+                onVolUp = { repeating -> onKey(TvKey.VOLUME_UP, repeating) },
+                onVolDown = { repeating -> onKey(TvKey.VOLUME_DOWN, repeating) },
+                modifier = Modifier.width(92.dp).fillMaxHeight(),
+            )
+        }
+        Surface(
+            modifier = Modifier.weight(1f).fillMaxHeight(),
+            shape = RoundedCornerShape(24.dp),
+            color = scheme.surfaceContainerHigh,
+        ) {
+            if (apps.isEmpty()) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text("No apps reported by TV", color = scheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
                 }
-                Row(
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+            } else {
+                val cols = if (showVolume) 3 else 4
+                val maxTiles = cols * 2
+                val hasOverflow = apps.size > maxTiles
+                val shown = if (hasOverflow) apps.take(maxTiles - 1) else apps.take(maxTiles)
+                Column(
+                    modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    secondRow.forEach { app ->
-                        AppTileButton(
-                            app = app,
-                            onClick = {
-                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                onLaunch(app)
-                            },
-                            modifier = Modifier.weight(1f).fillMaxHeight(),
-                        )
+                    val firstRow = shown.take(cols)
+                    val secondRow = shown.drop(cols)
+                    Row(
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        firstRow.forEach { app ->
+                            AppTileButton(
+                                app = app,
+                                onClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    onLaunch(app)
+                                },
+                                modifier = Modifier.weight(1f).fillMaxHeight(),
+                            )
+                        }
+                        repeat(cols - firstRow.size) { Spacer(Modifier.weight(1f)) }
                     }
-                    if (hasOverflow) {
-                        Surface(
-                            onClick = { showAllDialog = true },
-                            modifier = Modifier.weight(1f).fillMaxHeight(),
-                            shape = RoundedCornerShape(14.dp),
-                            color = scheme.surfaceContainerHighest,
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Text("•••", color = scheme.onSurface, style = MaterialTheme.typography.titleMedium)
+                    Row(
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        secondRow.forEach { app ->
+                            AppTileButton(
+                                app = app,
+                                onClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    onLaunch(app)
+                                },
+                                modifier = Modifier.weight(1f).fillMaxHeight(),
+                            )
+                        }
+                        if (hasOverflow) {
+                            Surface(
+                                onClick = { showAllDialog = true },
+                                modifier = Modifier.weight(1f).fillMaxHeight(),
+                                shape = RoundedCornerShape(14.dp),
+                                color = scheme.surfaceContainerHighest,
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Text("•••", color = scheme.onSurface, style = MaterialTheme.typography.titleMedium)
+                                }
                             }
                         }
+                        val used = secondRow.size + if (hasOverflow) 1 else 0
+                        repeat((cols - used).coerceAtLeast(0)) { Spacer(Modifier.weight(1f)) }
                     }
-                    val used = secondRow.size + if (hasOverflow) 1 else 0
-                    repeat((4 - used).coerceAtLeast(0)) { Spacer(Modifier.weight(1f)) }
                 }
             }
         }
@@ -1412,7 +1467,9 @@ private fun ExtraUpperPage(
             }
             target is RemoteTarget.Tv -> {
                 val fullRemote = target.link != TvRemote.Link.FireTv
-                var typed by rememberSaveable { mutableStateOf("") }
+                // Key on the connected host so the box clears when a different TV is connected,
+                // avoiding a state-desync where the phone thinks the TV has old text it no longer has.
+                var typed by rememberSaveable(target.host) { mutableStateOf("") }
                 Column(
                     modifier = Modifier.fillMaxSize().padding(12.dp),
                     verticalArrangement = Arrangement.SpaceBetween,
@@ -2318,6 +2375,7 @@ private fun VerticalTouchSlider(
 
 @Composable
 private fun NumpadLowerCard(
+    showDpadButton: Boolean = true,
     onKey: (Int, Boolean) -> Unit,
     onBackToDpad: () -> Unit,
 ) {
@@ -2333,7 +2391,7 @@ private fun NumpadLowerCard(
         listOf("1", "2", "3"),
         listOf("4", "5", "6"),
         listOf("7", "8", "9"),
-        listOf("D-Pad", "0", "OK"),
+        listOf(if (showDpadButton) "D-Pad" else "MENU", "0", "OK"),
     )
     Column(
         modifier = Modifier
@@ -2382,6 +2440,7 @@ private fun NumpadLowerCard(
                                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                 when (label) {
                                     "D-Pad" -> onBackToDpad()
+                                    "MENU" -> onKey(TvKey.MENU, false)
                                     "OK" -> onKey(TvKey.OK, false)
                                     else -> digitKeys[label]?.let { onKey(it, false) }
                                 }
@@ -2673,8 +2732,8 @@ private fun VolumePillOrSetup(
     caps: RemoteCapabilities,
     volume: TvRemote.VolumeState,
     onEnableVolume: () -> Unit,
-    onVolUp: () -> Unit,
-    onVolDown: () -> Unit,
+    onVolUp: (repeating: Boolean) -> Unit,
+    onVolDown: (repeating: Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     if (caps.volumeButtons) {
@@ -2715,11 +2774,10 @@ private fun VerticalRockerTile(
     label: String,
     topSymbol: String,
     bottomSymbol: String,
-    onTop: () -> Unit,
-    onBottom: () -> Unit,
+    onTop: (repeating: Boolean) -> Unit,
+    onBottom: (repeating: Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val haptic = LocalHapticFeedback.current
     val scheme = MaterialTheme.colorScheme
     Surface(
         modifier = modifier,
@@ -2731,32 +2789,67 @@ private fun VerticalRockerTile(
             verticalArrangement = Arrangement.SpaceBetween,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .clickable {
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        onTop()
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(topSymbol, style = MaterialTheme.typography.headlineSmall, color = scheme.onSurface)
-            }
+            RockerHalfHitArea(
+                label = "$label up",
+                symbol = topSymbol,
+                onStep = onTop,
+                modifier = Modifier.fillMaxWidth().weight(1f),
+            )
             Text(label, style = MaterialTheme.typography.labelLarge, color = scheme.onSurfaceVariant, fontWeight = FontWeight.Medium)
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .clickable {
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        onBottom()
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(bottomSymbol, style = MaterialTheme.typography.headlineSmall, color = scheme.onSurface)
-            }
+            RockerHalfHitArea(
+                label = "$label down",
+                symbol = bottomSymbol,
+                onStep = onBottom,
+                modifier = Modifier.fillMaxWidth().weight(1f),
+            )
         }
+    }
+}
+
+@Composable
+private fun RockerHalfHitArea(
+    label: String,
+    symbol: String,
+    onStep: (repeating: Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val haptic = LocalHapticFeedback.current
+    val scheme = MaterialTheme.colorScheme
+    val scope = rememberCoroutineScope()
+    var pressed by remember { mutableStateOf(false) }
+    Box(
+        modifier = modifier
+            .background(if (pressed) scheme.surfaceContainerHighest else Color.Transparent)
+            .semantics {
+                contentDescription = label
+                role = Role.Button
+                onClick(label) { onStep(false); true }
+            }
+            .pointerInput(label) {
+                detectTapGestures(
+                    onPress = {
+                        pressed = true
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onStep(false)
+                        val held = scope.launch {
+                            delay(350)
+                            while (true) {
+                                onStep(true)
+                                delay(150)
+                            }
+                        }
+                        try {
+                            tryAwaitRelease()
+                        } finally {
+                            pressed = false
+                            withContext(NonCancellable) { held.cancelAndJoin() }
+                        }
+                    },
+                )
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(symbol, style = MaterialTheme.typography.headlineSmall, color = scheme.onSurface)
     }
 }
 

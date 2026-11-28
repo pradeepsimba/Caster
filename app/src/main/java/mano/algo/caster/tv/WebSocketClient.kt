@@ -109,7 +109,9 @@ internal class WebSocketClient private constructor(
                 input.read()
             } catch (e: SocketTimeoutException) {
                 if (!keepAlive) throw e
-                if (++quiet >= 2) {
+                // Tolerate up to 2 missed pong intervals before treating an idle TV as gone,
+                // so a brief Wi-Fi blip or busy TV doesn't drop the remote.
+                if (++quiet >= 3) {
                     if (answersPings) throw e
                     quiet = 1
                 }

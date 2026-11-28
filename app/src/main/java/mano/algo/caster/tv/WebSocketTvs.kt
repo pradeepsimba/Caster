@@ -323,7 +323,7 @@ object LgTvCommands {
 
     fun deleteCharacters(count: Int) = "com.webos.service.ime/deleteCharacters" to """{"count":$count}"""
 
-    fun insertText(text: String) = "com.webos.service.ime/insertText" to """{"text":${FireTvCommands.jsonString(text)},"replace":0}"""
+    fun insertText(text: String, replace: Boolean = false) = "com.webos.service.ime/insertText" to """{"text":${FireTvCommands.jsonString(text)},"replace":${if (replace) 1 else 0}}"""
 
     fun openUrl(url: String) = "system.launcher/open" to """{"target":${FireTvCommands.jsonString(url)}}"""
 
@@ -429,8 +429,8 @@ object LgTvCommands {
             val appId = jsonStr(obj, "appId")
             val lower = (label + " " + id).lowercase()
             val kind = when {
-                "stb" in lower || "set-top" in lower || "settop" in lower || "cable" in lower -> TvInput.InputKind.STB
-                "live tv" in lower || "antenna" in lower || id.equals("tv", ignoreCase = true) -> TvInput.InputKind.LIVE_TV
+                "stb" in lower || "set-top" in lower || "settop" in lower || "cable" in lower || "dth" in lower || "dish" in lower || "satellite" in lower -> TvInput.InputKind.STB
+                "live tv" in lower || "livetv" in lower || "antenna" in lower || "dtv" in lower || "tuner" in lower || id.equals("tv", ignoreCase = true) -> TvInput.InputKind.LIVE_TV
                 "hdmi" in lower -> TvInput.InputKind.HDMI
                 "av" in lower || "comp" in lower -> TvInput.InputKind.AV
                 else -> TvInput.InputKind.OTHER
@@ -462,8 +462,9 @@ object LgTvCommands {
 
 internal class LgTvLink private constructor(
     private val main: WebSocketClient,
-    private val input: WebSocketClient,
+    @Volatile private var input: WebSocketClient,
     private val onClosed: (Throwable) -> Unit,
+    private val reopenInputSocket: ((String) -> WebSocketClient)? = null,
 ) : TvSocketRemote {
     class Opened(val link: LgTvLink, val clientKey: String, val fingerprint: String?)
 
@@ -472,6 +473,10 @@ internal class LgTvLink private constructor(
         private set
     private val ids = AtomicInteger(1)
     private var playing = true // the pause and play buttons are separate: pause first, then play, and so on
+    private val inputLock = Any()
+    @Volatile private var inputDead = false
+    @Volatile private var inputPathLatch: java.util.concurrent.CountDownLatch? = null
+    @Volatile private var pendingInputPath: String? = null
     @Volatile var onInputsLoaded: ((List<TvInput>) -> Unit)? = null
     @Volatile var onAppsLoaded: ((List<InstalledTvApp>) -> Unit)? = null
     @Volatile var onForegroundApp: ((String) -> Unit)? = null
@@ -487,20 +492,18 @@ internal class LgTvLink private constructor(
             TvKey.TV_INPUT -> request("system.launcher/launch", """{"id":"com.webos.app.connectionmanager"}""")
             TvKey.PLAY_PAUSE -> {
                 playing = !playing
-                input.sendText(LgTvCommands.button(if (playing) "PLAY" else "PAUSE"))
+                sendInput(LgTvCommands.button(if (playing) "PLAY" else "PAUSE"))
             }
-            else -> input.sendText(LgTvCommands.button(LgTvCommands.buttonName(code) ?: return))
+            else -> sendInput(LgTvCommands.button(LgTvCommands.buttonName(code) ?: return))
         }
     }
 
     override fun longPress(code: Int) = press(code) // the TV's buttons have no "held"
 
     override fun typed(old: String, new: String) {
-        var same = 0
-        while (same < old.length && same < new.length && old[same] == new[same]) same++
-        val removed = old.length - same
-        if (removed > 0) request(LgTvCommands.deleteCharacters(removed))
-        if (new.length > same) request(LgTvCommands.insertText(new.substring(same)))
+        // Use "replace":1 to replace all text in the field with the new value. This avoids
+        // cursor-position and delete-count mismatches: the TV always ends up with exactly [new].
+        request(LgTvCommands.insertText(new, replace = true))
     }
 
     override fun openUrl(url: String) = request(LgTvCommands.openUrl(url))
@@ -516,12 +519,22 @@ internal class LgTvLink private constructor(
     fun refreshMetadata() {
         request(LgTvCommands.GET_EXTERNAL_INPUTS, "{}")
         request(LgTvCommands.GET_LAUNCH_POINTS, "{}")
-        request(LgTvCommands.GET_FOREGROUND_APP, "{}")
+        main.sendText("""{"id":${ids.getAndIncrement()},"type":"subscribe","uri":"ssap://${LgTvCommands.GET_FOREGROUND_APP}"}""")
         main.sendText("""{"id":${ids.getAndIncrement()},"type":"subscribe","uri":"ssap://com.webos.service.ime/registerRemoteKeyboard"}""")
     }
 
     internal fun handleMainMessage(message: String) {
-        if (LgTvCommands.type(message) != "response") return
+        LgTvCommands.socketPath(message)?.let { path ->
+            if (inputPathLatch != null) {
+                pendingInputPath = path
+                inputPathLatch?.countDown()
+                return
+            }
+        }
+        // Both "response" (one-shot requests) and "subscription" (ongoing notifications such as
+        // registerRemoteKeyboard) carry useful payloads; don't drop subscription events.
+        val type = LgTvCommands.type(message)
+        if (type != "response" && type != "subscription") return
         when {
             message.contains("\"devices\"") -> {
                 val inputs = LgTvCommands.parseExternalInputs(message)
@@ -538,11 +551,64 @@ internal class LgTvLink private constructor(
     }
 
     override fun pointerMove(dx: Int, dy: Int, drag: Boolean) {
-        input.sendText(LgTvCommands.move(dx, dy, drag))
+        sendInput(LgTvCommands.move(dx, dy, drag))
     }
 
     override fun pointerClick() {
-        input.sendText(LgTvCommands.click())
+        sendInput(LgTvCommands.click())
+    }
+
+    /**
+     * Sends a command over the button/pointer [input] socket. If the TV closed the idle input socket
+     * while [main] is still alive, transparently reopens the input socket and retries once.
+     */
+    private fun sendInput(text: String) {
+        if (!inputDead) {
+            try {
+                input.sendText(text)
+                return
+            } catch (e: IOException) {
+                if (closed || reopenInputSocket == null) throw e
+            }
+        }
+        synchronized(inputLock) {
+            if (closed) throw IOException("The connection is closed")
+            if (!inputDead) {
+                try {
+                    input.sendText(text)
+                    return
+                } catch (_: IOException) {
+                    // fall through to reopen
+                }
+            }
+            val reopen = reopenInputSocket ?: throw IOException("No input socket")
+            runCatching { input.close() }
+            val latch = java.util.concurrent.CountDownLatch(1)
+            pendingInputPath = null
+            inputPathLatch = latch
+            try {
+                main.sendText(LgTvCommands.request(ids.getAndIncrement(), LgTvCommands.INPUT_SOCKET))
+                latch.await(STEP_MS.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)
+            } finally {
+                inputPathLatch = null
+            }
+            val path = pendingInputPath ?: throw IOException("The TV gave no button socket")
+            val next = reopen(path)
+            input = next
+            inputDead = false
+            startReader("caster-lg-input", next, null) { inputEnded(next) }
+            next.sendText(text)
+        }
+    }
+
+    private fun inputEnded(deadSocket: WebSocketClient) {
+        // Only mark the input socket as needing reopen; keep main alive so the next button press
+        // can seamlessly reopen the button channel without dropping the TV connection.
+        if (closed) return
+        if (input === deadSocket) {
+            inputDead = true
+        }
+        runCatching { deadSocket.close() }
     }
 
     private fun request(call: Pair<String, String>) = request(call.first, call.second)
@@ -603,9 +669,13 @@ internal class LgTvLink private constructor(
                     key = registered
                     stage = "opening the button channel"
                     input = openInput(main, host, endpoint, pinned, onSocket)
-                    val link = LgTvLink(main, input, onClosed)
+                    val reopen: (String) -> WebSocketClient = { path ->
+                        connectInputPath(path, host, endpoint, main.serverFingerprint ?: pinned, onSocket)
+                    }
+                    val link = LgTvLink(main, input, onClosed, reopen)
                     startReader("caster-lg-reader", main, link::handleMainMessage, link::ended)
-                    startReader("caster-lg-input", input, null, link::ended)
+                    val initialInput = input
+                    startReader("caster-lg-input", initialInput, null) { link.inputEnded(initialInput) }
                     return Opened(link, registered, main.serverFingerprint)
                 } catch (e: Throwable) {
                     main.close()
@@ -665,17 +735,35 @@ internal class LgTvLink private constructor(
         private fun openInput(main: WebSocketClient, host: String, endpoint: Endpoint, pinned: String?, onSocket: (Closeable) -> Unit): WebSocketClient {
             main.sendText(LgTvCommands.request(0, LgTvCommands.INPUT_SOCKET))
             var path: String? = null
-            repeat(MAX_SKIPPED) {
+            // Break early once the socket-path response arrives to avoid blocking on further messages.
+            for (i in 0 until MAX_SKIPPED) {
                 if (path == null) path = LgTvCommands.socketPath(main.readText(STEP_MS))
+                if (path != null) break
             }
-            val match = Regex("""^(wss?)://[^/:]+(?::(\d+))?(/.*)$""").matchEntire(path ?: throw IOException("The TV gave no button socket"))
+            return connectInputPath(
+                path ?: throw IOException("The TV gave no button socket"),
+                host,
+                endpoint,
+                main.serverFingerprint ?: pinned,
+                onSocket,
+            )
+        }
+
+        private fun connectInputPath(
+            path: String,
+            host: String,
+            endpoint: Endpoint,
+            pinned: String?,
+            onSocket: (Closeable) -> Unit,
+        ): WebSocketClient {
+            val match = Regex("""^(wss?)://[^/:]+(?::(\d+))?(/.*)$""").matchEntire(path)
                 ?: throw IOException("The TV's button socket address wasn't understood")
             // Whatever kind of connection the TV names is used: only button names go over it (the key was sent on the main one),
             // and it can only ever lead to the TV that was connected to, because only the port and the path are taken from it.
             val secure = match.groupValues[1] == "wss"
             val port = match.groupValues[2].toIntOrNull()?.takeIf { it in 1..65_535 } ?: endpoint.port
             return WebSocketClient.connect(
-                host, port, match.groupValues[3], secure, if (secure) main.serverFingerprint ?: pinned else null, onSocket, sendOrigin = false,
+                host, port, match.groupValues[3], secure, if (secure) pinned else null, onSocket, sendOrigin = false,
             )
         }
     }

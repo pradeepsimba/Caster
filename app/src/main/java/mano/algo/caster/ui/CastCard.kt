@@ -221,15 +221,15 @@ fun CastCard(onChooseVideo: () -> Unit, modifier: Modifier = Modifier) {
                             shape = RoundedCornerShape(14.dp),
                         ) { Text("Choose video") }
                     }
-                    if (cast.title != null && cast.error == null) {
+                    if (cast.title != null) {
                         Button(
                             onClick = {
                                 showDeviceActions = false
-                                CastController.togglePlayback()
+                                CastController.reconnect(context)
                             },
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(14.dp),
-                        ) { Text(if (!mediaLoaded) "Connect" else if (cast.playing) "Pause" else "Play") }
+                        ) { Text("Re-connect") }
                     }
                     FilledTonalButton(
                         onClick = {
